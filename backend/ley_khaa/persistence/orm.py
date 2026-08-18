@@ -18,5 +18,5 @@ class TaskRow(Base):
     state: Mapped[str] = mapped_column(String)
     title: Mapped[str] = mapped_column(String, default="")
     source_message_ids: Mapped[list] = mapped_column(JSON, default=list)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
