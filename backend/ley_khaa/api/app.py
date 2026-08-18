@@ -1,4 +1,5 @@
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +12,32 @@ from ..orchestrator.orchestrator import Orchestrator
 from ..persistence.repository import TaskRepository
 from .schemas import MessageIn, TaskOut
 
-app = FastAPI(title="ley-khaa")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    if settings.disable_startup:
+        yield
+        return
+    init_db()
+    session = SessionLocal()
+    try:
+        repo = TaskRepository(session)
+        if not repo.list():
+            Orchestrator(repo).ingest(
+                Message(
+                    source="simulator",
+                    client="demo",
+                    conversation_id="conv-seed",
+                    author="boss",
+                    text="Compare the Bloomberg universe against FactSet and send me what's missing.",
+                )
+            )
+    finally:
+        session.close()
+    yield
+
+
+app = FastAPI(title="ley-khaa", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -51,25 +77,3 @@ def get_task(task_id: str, session: Session = Depends(get_session)) -> TaskOut:
     if row is None:
         raise HTTPException(status_code=404, detail="task not found")
     return TaskOut.model_validate(row)
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    if settings.disable_startup:
-        return
-    init_db()
-    session = SessionLocal()
-    try:
-        repo = TaskRepository(session)
-        if not repo.list():
-            Orchestrator(repo).ingest(
-                Message(
-                    source="simulator",
-                    client="demo",
-                    conversation_id="conv-seed",
-                    author="boss",
-                    text="Compare the Bloomberg universe against FactSet and send me what's missing.",
-                )
-            )
-    finally:
-        session.close()
