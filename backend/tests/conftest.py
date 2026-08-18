@@ -5,15 +5,6 @@ os.environ["LEY_KHAA_DISABLE_STARTUP"] = "1"
 import pytest
 from fastapi.testclient import TestClient
 
-from ley_khaa.api.app import app
-
-
-@pytest.fixture
-def client() -> TestClient:
-    with TestClient(app) as c:
-        yield c
-
-
 import pytest as _pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -40,3 +31,13 @@ def session():
         yield s
     finally:
         s.close()
+
+
+@pytest.fixture
+def client(session):
+    from ley_khaa.api.app import app, get_session
+
+    app.dependency_overrides[get_session] = lambda: session
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
