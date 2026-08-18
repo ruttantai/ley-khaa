@@ -27,10 +27,20 @@ while keeping the human exactly as in control as they want to be.
 
 Everything else in the system exists to serve these two.
 
-A supporting principle runs through the whole system: **every result must be reproducible with
-evidence**. The deliverable is never a "magic sheet" — it always ships with the actual code/algorithm
-that produced it, the exact inputs, and a provenance manifest, so any run can be re-executed and
-audited (see §5.11 / §5.12).
+Two supporting principles run through the whole system:
+
+- **General by synthesis, not by menu.** Requests live in an open-ended space, so the system's
+  default is to **synthesize the algorithm** that solves a given request (in a sandbox) rather than
+  pick from a fixed list of operations. A **registry** of proven, promoted workflows acts as a
+  *learned cache* for recurring work — it starts near-empty and grows (see §5.6 / §5.10).
+- **Reproducible with evidence.** The deliverable is never a "magic sheet" — it always ships with the
+  actual code/algorithm that produced it, the exact inputs, and a provenance manifest, so any run can
+  be re-executed and audited (see §5.11).
+
+Intake is **multi-modal**: a request can arrive as text, pasted datasets/tables, and images
+(screenshots, charts, photos of documents) — anything copy-pasteable. Images are understood via
+Claude vision, with the extracted result captured as a checkpoint so downstream stays reproducible
+(see §5.2 / §5.11). Outputs in v1 are data / documents / algorithms; media *generation* is roadmap.
 
 ---
 
@@ -38,21 +48,22 @@ audited (see §5.11 / §5.12).
 
 ### In scope for v1 (deliberately ambitious — chosen by the product owner)
 
-- Multi-channel intake: **real Slack + Discord adapters** (activate with tokens) **plus a built-in
-  local message simulator** for instant fresh-clone demos.
+- **Multi-modal, multi-channel intake:** **real Slack + Discord adapters** (activate with tokens)
+  **plus a built-in local message simulator**; each message may carry text, pasted datasets/tables,
+  and/or images (understood via Claude vision).
 - **Task Crystallizer** (the focus feature): hybrid design — cheap per-message relevance/topic
   filter, then an LLM pass that maintains stateful task candidates and readiness detection.
 - Multi-client **project routing** with **concurrent, per-project task queues**.
-- **Interpreter**: NL → validated `TaskSpec`.
-- **Workflow registry** with **2 workflow types**: universe set-difference and summary-stats/aggregation.
+- **Interpreter**: multi-modal request → validated `TaskSpec`.
 - **Autonomy engine**: confidence + risk → recommended mode, with a plain-English reason.
 - **Human-in-the-loop** layer: approve / edit-spec / answer-clarification.
 - **Orchestrator**: per-task state machine, concurrency, **amendment detection** for ad-hoc
   requests that arrive mid-flight.
-- **Two-lane Executor + Validator** with a clarification loop: (a) predefined **registry
-  workflows**, and (b) a **sandboxed single-script codegen lane** for tasks beyond the registry.
-- **Model Router**: tiered LLM selection — Haiku for cheap high-volume stages, Opus for hard
-  reasoning/codegen, Ollama offline fallback (Sonnet slot available).
+- **Synthesis-first Executor + Validator** with a clarification loop: the default lane **synthesizes
+  a single Python script and runs it in a Docker sandbox** to handle arbitrary requests; a
+  **workflow registry (learned cache)** short-circuits recurring work with proven, promoted code.
+- **Model Router**: tiered LLM selection — Haiku for cheap high-volume stages, Opus (vision-capable)
+  for hard reasoning / codegen / image understanding, Ollama offline fallback (Sonnet slot available).
 - **Reproducible Output Bundle**: every task run emits a Task Workspace containing the deliverable,
   the generator code, the exact inputs, and a provenance manifest (re-runnable with a fixed seed).
 - **Document generation**: Excel (primary), Word (optional) — as one deliverable type within the bundle.
@@ -65,8 +76,9 @@ audited (see §5.11 / §5.12).
 
 Microsoft Teams + email adapters · real cloud deployment · **Tauri desktop packaging** for
 non-technical users (no API key path via local model) · richer memory/learning · auth / RBAC ·
-observability dashboards · additional workflow types · **full multi-file project/repo generation**
-(Lane B expanded beyond a single sandboxed script).
+observability dashboards · **full multi-file project/repo generation** (synthesis beyond a single
+sandboxed script) · **media/image OUTPUT generation** (v1 understands images but does not create
+them) · a local vision-capable model for fully-offline image understanding.
 
 ### Non-goals
 
@@ -89,22 +101,22 @@ observability dashboards · additional workflow types · **full multi-file proje
 
 ```
 Channels ──► Intake Gateway ──► Task Crystallizer ──► Project Router ──► Interpreter ──► Autonomy Engine
-(Slack/Discord/  (normalize to    (conversation →      (which project?)   (NL→TaskSpec)   (confidence+risk
- local simulator) canonical        task candidate;                                        → recommended mode)
-                  Message)         readiness)                                                    │
-                                        │                                                        ▼
+(Slack/Discord/  (normalize;       (conversation →      (which project?)   (multi-modal   (confidence+risk
+ local simulator) multi-modal:      task candidate;                         → TaskSpec)    → recommended mode)
+                  text/data/image;  readiness)                                                   │
+                  vision-extract)        │                                                       ▼
                                    not a task ──► notify user                            HITL (approve/edit/clarify)
                                                                                                  │
-   Task Memory ◄─ learns ─ Output Bundle ◄── Validator ◄── Executor (2 lanes) ◄────────────────┘
-   ("the usual")           (deliverable +    (clarify loop) (A: registry workflow
-                            generator +                      B: sandboxed codegen script)
+   Task Memory ◄─ learns ─ Output Bundle ◄── Validator ◄── Executor ◄──────────────────────────┘
+   ("the usual")           (deliverable +    (clarify loop) (default: SYNTHESIZE script → Docker sandbox;
+                            generator +                      fast path: registry cache of promoted workflows)
                             manifest, seeded)
 ```
 
-The **Model Router** (Haiku ↔ Opus + Ollama) picks the LLM per stage from the autonomy engine's
-complexity/risk signal. The **Orchestrator** wraps the whole pipeline as a **per-task state machine**
-so many tasks run concurrently, persist across pause/resume, and can be amended mid-flight. Every run
-emits a reproducible **Output Bundle**.
+The **Model Router** (Haiku ↔ Opus + Ollama; Opus is vision-capable) picks the LLM per stage from the
+autonomy engine's complexity/risk signal. The **Orchestrator** wraps the whole pipeline as a
+**per-task state machine** so many tasks run concurrently, persist across pause/resume, and can be
+amended mid-flight. Every run emits a reproducible **Output Bundle**.
 
 Every box is a small, independently testable unit behind a clear interface: you can state what it
 does, how to use it, and what it depends on, and test it in isolation.
@@ -119,9 +131,14 @@ supplied). A built-in **message simulator** replays synthetic conversations agai
 interface so a fresh clone demos with zero external accounts. Adapters only *ingest* and *notify*;
 they hold no business logic.
 
-### 5.2 Intake gateway
+### 5.2 Intake gateway (multi-modal)
 Normalizes any inbound message to a canonical `Message` (source, client, conversation/thread id,
-author, text, timestamp, message id). **Idempotent per message id** so retries never duplicate.
+author, timestamp, message id) with a list of **attachments** — text, tabular data (pasted
+CSV/Excel/tables), and images. **Idempotent per message id** so retries never duplicate. Images are
+not interpreted here; they are stored and passed downstream. When a step needs an image's content,
+**Claude vision** (via the Model Router) extracts it and the **extracted result is recorded as a
+checkpoint** (e.g. `inputs/extracted_table.csv`) so all downstream work runs on deterministic,
+reproducible data rather than re-reading the image.
 
 ### 5.3 Task Crystallizer  *(headline #1)*
 Replaces the naive single-message classifier. Hybrid, two-stage, each stage separately testable:
@@ -149,17 +166,24 @@ has its **own task queue**. New requests targeting an **active** task in the sam
 to the amendment detector (see 5.9).
 
 ### 5.5 Interpreter
-LLM → validated **`TaskSpec`** (Pydantic v2):
+Reasons across the candidate's **text + data + (vision-extracted) image content** → validated
+**`TaskSpec`** (Pydantic v2):
 `intent · inputs · operation · output_format · recipient · urgency · missing_fields · source_message_ids`.
 Malformed output → re-prompt with schema, then escalate to HITL.
 
-### 5.6 Workflow registry
-Each workflow type declares required inputs + output schema so the planner can select and bind
-correctly. v1 ships two distinct types:
+### 5.6 Workflow registry (learned cache)
+The registry is **not** the menu of what the system can do — synthesis (§5.10) handles the open-ended
+request space. The registry is a **cache of proven, promoted workflows** so recurring work runs
+known-good, deterministic, audited code instead of being re-synthesized (and re-paid-for) every time.
+Each cached workflow declares required inputs + output schema so the planner can match and bind a
+request to it. It **starts near-empty** and grows: a Lane-B synthesized script that proves reliable
+can be **promoted** into the registry as a permanent capability (promotion is manual/curated in v1).
 
-- **Universe set-difference** — compare list A vs list B; report missing / extra / duplicates
-  (normalize identifiers first).
-- **Summary-stats / aggregation** — group a dataset and produce summary statistics.
+Two workflows ship as **seed examples** (also useful as test fixtures) — illustrations of what a
+promoted, hardened capability looks like, not the limit of what the app does:
+
+- **`set_difference`** — compare list A vs list B on an id column; report missing / extra / duplicates.
+- **`summary_stats`** — group a dataset by a column and produce summary statistics.
 
 ### 5.7 Autonomy engine  *(headline #2)*
 Scores **confidence** (interpreter certainty, missing fields, crystallizer readiness) and **risk**
@@ -187,21 +211,24 @@ Concurrent across tasks and projects; state persisted in Postgres so tasks survi
 instead of spawning a duplicate. If a new request is marked urgent, the autonomy engine may propose
 reprioritizing the queue.
 
-### 5.10 Two-lane Executor + Validator
-The deliverable is a **spectrum** — from a single Excel sheet to a reusable algorithm/function to a
-generated script. The executor has two lanes:
+### 5.10 Synthesis-first Executor + Validator
+Requests live in an open-ended space, so **synthesis is the default**, with the registry as a fast
+path:
 
-- **Lane A — registry workflow:** runs a predefined workflow (set-difference, summary-stats) on the
-  synthetic data. `generator/` in the bundle references the registry function + params (real,
-  version-controlled code).
-- **Lane B — sandboxed single-script codegen:** for tasks with no matching registry workflow, an
-  LLM (Opus, via the Model Router) **synthesizes one Python script**, which runs inside a **Docker
-  sandbox** with resource/time limits and no outbound network. The script *and* its output are
-  captured into the bundle. (Full multi-file project/repo generation is roadmap, not v1.)
+- **Default — sandboxed synthesis:** an LLM (Opus, via the Model Router) **synthesizes one Python
+  script** to solve the task from its `TaskSpec` and materialized inputs (dataframes for tabular
+  data, image files, text, and any vision-extracted checkpoints). The script runs inside a **Docker
+  sandbox** with resource/time limits, a fixed allowed-library set, and **no outbound network**. The
+  script *and* its output are captured into the bundle. This is what covers the infinite variety of
+  requests; the domain in v1 is **data operations over the (possibly image/text-derived) inputs**.
+  (Full multi-file project/repo generation is roadmap, not v1.)
+- **Fast path — registry cache:** if the planner matches the request to a **promoted registry
+  workflow** (§5.6), it runs that proven, deterministic code instead of synthesizing. `generator/`
+  then references the registry function + params.
 
-Validator checks results (shape, sanity, required-field coverage); on failure it bounces a
-**clarification** back to HITL rather than emitting a bad output. For Lane B it also checks the
-script ran cleanly within limits.
+Either way, `generator/` in the bundle is real, re-runnable code. Validator checks results (shape,
+sanity, required-field coverage) and, for synthesized scripts, that the script ran cleanly within
+limits; on failure it bounces a **clarification** back to HITL rather than emitting a bad output.
 
 ### 5.11 Reproducible Output Bundle (Task Workspace)
 Every task run — either lane — produces a persisted workspace, surfaced in the dashboard by **path**
@@ -210,14 +237,17 @@ and downloadable as a bundle:
 ```
 task-<id>/
 ├── deliverable/     # the Excel / Word / dataset / algorithm output
-├── generator/       # the ACTUAL code that produced it (registry-fn ref or synthesized script)
-├── inputs/          # the exact synthetic inputs used
-└── manifest.json    # provenance: workflow, params, model used, seed, steps, timestamps
+├── generator/       # the ACTUAL code that produced it (synthesized script or registry-fn ref)
+├── inputs/          # the exact inputs used, INCLUDING vision-extracted checkpoints
+│                    #   (e.g. extracted_table.csv pulled from a pasted screenshot)
+└── manifest.json    # provenance: synthesis-vs-registry, params, model(s) used, seed, steps, times
 ```
 
-A **fixed seed** + `manifest.json` means `generator/` re-runs to the identical `deliverable/` —
-this is the reproducibility/audit evidence a developer needs. The dashboard lets you inspect the
-generator code and download the whole bundle.
+A **fixed seed** + `manifest.json` means `generator/` re-runs to the identical `deliverable/`. Where
+a step used non-deterministic vision to read an image, the **extracted result is frozen in `inputs/`**
+as the reproducible checkpoint, so re-runs start from that data rather than re-reading the image. This
+is the reproducibility/audit evidence a developer needs. The dashboard lets you inspect the generator
+code and download the whole bundle.
 
 ### 5.12 Document generator
 One deliverable type within the bundle: **Excel** via `openpyxl` (primary); **Word** via
@@ -226,9 +256,12 @@ One deliverable type within the bundle: **Excel** via `openpyxl` (primary); **Wo
 ### 5.13 Model Router
 Selects the LLM per stage/task from the complexity + risk signal the autonomy engine already
 computes. Defaults: **Haiku** for high-volume/low-stakes stages (relevance filter, routine
-crystallization), **Opus** for hard interpretation, planning, and Lane-B codegen, a **Sonnet** slot
-available in config, and **Ollama** as the offline fallback. A single `model_for(stage, signal)`
-seam so routing policy is testable and swappable.
+crystallization), **Opus** for hard interpretation, planning, synthesis codegen, and **image
+understanding (vision)**, a **Sonnet** slot available in config, and **Ollama** as the offline
+fallback. Note: any stage that must read an image routes to a **vision-capable** model (Opus/Sonnet);
+the Ollama fallback is **text-only** in v1, so fully-offline runs cannot do image understanding until
+a local vision model is added (roadmap). A single `model_for(stage, signal)` seam so routing policy
+is testable and swappable.
 
 ### 5.14 Task memory
 Stores recurring workflow definitions keyed per project/client. Recognizes phrasings like "do the
@@ -245,10 +278,12 @@ Output Bundle. This is what makes it feel like software and seeds the future des
 ## 6. Key data flows
 
 ### 6.1 Happy path
-Conversation messages → intake → crystallizer emits a `ready` candidate → router files it to a
-project → interpreter produces `TaskSpec` → autonomy engine recommends a mode → HITL gate(s) per
-mode → executor runs workflow → validator passes → document generated → delivered/downloadable →
-task memory updated.
+Multi-modal conversation messages (text + data + images) → intake (vision-extracts any images to
+checkpoints) → crystallizer emits a `ready` candidate → router files it to a project → interpreter
+produces `TaskSpec` → autonomy engine recommends a mode → HITL gate(s) per mode → executor **matches
+a registry workflow if one fits, else synthesizes a sandboxed script** → validator passes → Output
+Bundle assembled (deliverable + generator + inputs + manifest) → delivered/downloadable → task memory
+(and, on promotion, the registry) updated.
 
 ### 6.2 Not a task
 Crystallizer never produces a `ready` candidate (or classifies the thread as non-task) → user gets
@@ -271,9 +306,13 @@ answer merges back into the candidate/spec → flow resumes.
 - Malformed `TaskSpec` → re-prompt with schema, then escalate to HITL.
 - Validation failure → clarification loop (never emit a bad document).
 - Adapter error → dead-letter + surface in UI.
-- **Lane-B sandbox** failure (script error, timeout, resource/memory limit, attempted network) →
-  captured, run marked failed, surfaced in UI; never crashes the host or other tasks.
-- Model Router: if the selected tier is unavailable → step down a tier, ultimately to Ollama.
+- **Synthesis sandbox** failure (script error, timeout, resource/memory limit, attempted network) →
+  captured, one bounded re-synthesis retry with the error fed back, then marked failed and surfaced
+  in UI; never crashes the host or other tasks.
+- **Vision extraction** failure/low-confidence → surface the extracted result to HITL for
+  confirmation/correction before it's frozen as a checkpoint; never silently trust a bad read.
+- Model Router: if the selected tier is unavailable → step down a tier, ultimately to Ollama
+  (text-only; image steps error out gracefully rather than guess).
 - Every message **idempotent by id**; retries never duplicate tasks.
 
 ---
@@ -289,6 +328,7 @@ answer merges back into the candidate/spec → flow resumes.
 | Codegen sandbox | **Docker** (resource/time limits, no network) | Safely run LLM-synthesized scripts (Lane B) |
 | Frontend | React · Vite · Tailwind | Standard, brandable, wraps into Tauri later |
 | Documents | openpyxl (Excel), python-docx (Word) | Business-ready outputs |
+| Multi-modal in | Claude vision (Opus/Sonnet); pandas (tabular); Pillow (images) | Understand pasted text/data/images; freeze extractions as checkpoints |
 | Synthetic data | Faker-generated securities datasets | Deterministic, seedable, no real data |
 | Run | Docker Compose | One-command boot for the clone-and-run audience |
 
@@ -297,13 +337,16 @@ answer merges back into the candidate/spec → flow resumes.
 ## 9. Testing (TDD)
 
 - **Unit** tests per unit: relevance filter, crystallizer candidate/readiness logic (golden
-  conversation fixtures → expected candidates), interpreter (golden messages → expected specs),
-  each workflow (deterministic on seeded data), autonomy scoring (table-driven), amendment detector,
-  **model router** (`model_for` policy, table-driven), **reproducibility** (re-run a bundle's
-  `generator/` with its seed → byte-identical deliverable), **sandbox** (enforces timeout/memory/
-  no-network, captures failures safely).
-- **Integration**: one test drives a full conversation through the simulator end-to-end
-  (messy input with noise → correct task → correct Excel output).
+  conversation fixtures → expected candidates), interpreter (golden multi-modal messages → expected
+  specs), seed workflows (deterministic on seeded data), **registry match/promotion** logic, autonomy
+  scoring (table-driven), amendment detector, **model router** (`model_for` policy incl. vision
+  routing, table-driven), **vision-extraction checkpointing** (image fixture → frozen `inputs/`
+  artifact), **reproducibility** (re-run a bundle's `generator/` with its seed → byte-identical
+  deliverable), **sandbox** (enforces timeout/memory/no-network, captures failures safely).
+- **Integration**: (a) a full text conversation through the simulator end-to-end (messy input with
+  noise → correct task → correct Excel output via a registry workflow); (b) an **arbitrary request
+  with no registry match** → synthesis → sandboxed run → reproducible bundle; (c) a **request with a
+  pasted image** → vision extraction → checkpoint → deterministic output.
 - Synthetic datasets are **seeded and deterministic** so tests and demos are reproducible.
 
 ---
@@ -315,8 +358,8 @@ ley-khaa/
 ├── backend/          # FastAPI app, orchestrator, engines
 ├── frontend/         # React + Vite + Tailwind dashboard
 ├── adapters/         # Slack, Discord, simulator (common Adapter interface)
-├── workflows/        # set-difference, summary-stats, registry
-├── sandbox/          # Docker codegen sandbox (Lane B) + runner
+├── registry/         # workflow cache: seed workflows (set_difference, summary_stats) + promotion
+├── sandbox/          # Docker synthesis sandbox + runner (default execution lane)
 ├── synthetic-data/   # Faker generators + seed fixtures
 ├── task-workspaces/  # per-task Output Bundles (deliverable/generator/inputs/manifest)
 ├── docs/             # architecture, roadmap, this spec
@@ -334,15 +377,18 @@ fires a few example conversations so the dashboard is alive on first load.
 - Fresh clone → `docker compose up` → dashboard live with seeded demo conversations.
 - A messy, multi-message, noisy synthetic conversation is crystallized into the correct task with
   no manual extraction.
+- Intake accepts **multi-modal** input; a request carrying a **pasted image** is understood via
+  vision, its extraction frozen as a reproducible checkpoint.
 - The autonomy engine recommends a mode with a readable reason; human can override.
 - Requests from multiple clients route into the correct projects with concurrent queues.
 - An ad-hoc mid-flight request triggers the amendment detector.
-- At least the two workflow types run and produce a downloadable Excel output.
+- An **arbitrary request with no registry match** is handled by **synthesis**: an LLM writes a
+  script, it runs in the Docker sandbox within limits, and script + output land in the bundle.
+- A request matching a **seed registry workflow** takes the fast path and runs the proven code.
 - Every task produces a **reproducible Output Bundle** (deliverable + generator + inputs + manifest);
   re-running the generator with its seed reproduces the identical deliverable.
-- The **Model Router** selects tiers (Haiku vs Opus) by complexity/risk, with Ollama fallback.
-- A task with **no matching registry workflow** triggers **Lane B**: an LLM synthesizes a script,
-  it runs in the Docker sandbox within limits, and script + output land in the bundle.
+- The **Model Router** selects tiers (Haiku vs Opus, incl. vision routing) by complexity/risk, with
+  Ollama fallback.
 - Task memory recognizes a repeated request and pre-fills its spec.
 - Real Slack + Discord adapters function when tokens are supplied; simulator works with none.
 - Tests (unit + one end-to-end integration) pass.
