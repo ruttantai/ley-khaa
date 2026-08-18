@@ -42,6 +42,42 @@ Intake is **multi-modal**: a request can arrive as text, pasted datasets/tables,
 Claude vision, with the extracted result captured as a checkpoint so downstream stays reproducible
 (see §5.2 / §5.11). Outputs in v1 are data / documents / algorithms; media *generation* is roadmap.
 
+### 1.1 Who this is for (positioning)
+
+**Primary user: a developer like the author.** ley-khaa is a **personal automation layer**, not a
+mass-market product. It targets developers who already use coding agents (Claude Code, Codex) and
+feel one specific, recurring toil: *stopping to read a messy conversation, figuring out what's
+actually being asked, and hand-crafting a well-structured, context-rich prompt to feed the agent.*
+ley-khaa does that **interpret-and-prompt-engineer** step for you.
+
+**Why not just use Claude / ChatGPT / Claude Code directly?** You can — and for a single,
+already-understood task you should; ley-khaa uses Claude under the hood and is not a smarter model.
+It earns its place only where a chat window is weak and where the author actually feels pain:
+
+- it **watches ongoing conversation and extracts the task for you** (no manual interpretation),
+- it **auto-constructs the structured spec/prompt** a coding agent needs (no manual prompt engineering),
+- it runs **many requests across projects** concurrently (you are not the orchestrator), and
+- it returns a **reproducible artifact** (code + inputs + provenance), not just an answer.
+
+**Success criterion:** a developer reads the README, gets it, and finds it removes real toil from
+their day. It does **not** need to win the general public. The author is the first user (dogfooding),
+and every feature is checked against *"does this reduce toil for a developer like me?"*
+
+**Design consequences that follow from this positioning:**
+
+- The end user's effort must be **less** than pasting into a chat agent — ideally they do nothing
+  until there's a finished result to approve. All internal machinery (crystallizer, router, sandbox,
+  model router) stays invisible; the surface promise is simple: *"it read your threads, did the
+  prompt-engineering, here's a finished, reproducible result — approve?"*
+- **"Projects" = the developer's own workstreams/repos**, not external clients. Multi-project
+  routing means "file this request against the right repo/workstream."
+- The executor's synthesis lane is really **"auto-prompt-engineer → hand to an execution backend."**
+  In v1 the backend is the in-repo sandboxed synthesizer; the same seam can later **delegate to a
+  coding agent (Claude Code / Codex)** as the backend (roadmap). ley-khaa is the interpretation-and-
+  orchestration layer; the coding agent is the muscle.
+- The honest adoption risk is **setup friction** (running it, wiring a channel, trusting it with a
+  conversation), not the concept — acceptable for a dev audience and a synthetic demo.
+
 ---
 
 ## 2. Scope
@@ -77,8 +113,9 @@ Claude vision, with the extracted result captured as a checkpoint so downstream 
 Microsoft Teams + email adapters · real cloud deployment · **Tauri desktop packaging** for
 non-technical users (no API key path via local model) · richer memory/learning · auth / RBAC ·
 observability dashboards · **full multi-file project/repo generation** (synthesis beyond a single
-sandboxed script) · **media/image OUTPUT generation** (v1 understands images but does not create
-them) · a local vision-capable model for fully-offline image understanding.
+sandboxed script) · **coding-agent execution backend** (delegate the synthesis lane to Claude Code /
+Codex instead of the in-repo synthesizer) · **media/image OUTPUT generation** (v1 understands images
+but does not create them) · a local vision-capable model for fully-offline image understanding.
 
 ### Non-goals
 
