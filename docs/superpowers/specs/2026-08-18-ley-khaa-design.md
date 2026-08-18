@@ -399,13 +399,43 @@ ley-khaa/
 ├── sandbox/          # Docker synthesis sandbox + runner (default execution lane)
 ├── synthetic-data/   # Faker generators + seed fixtures
 ├── task-workspaces/  # per-task Output Bundles (deliverable/generator/inputs/manifest)
-├── docs/             # architecture, roadmap, this spec
+├── docs/             # architecture, roadmap, ADRs, specs (docs/superpowers/specs, docs/adr)
+├── .github/          # CI workflows, issue/PR templates
 ├── docker-compose.yml
-└── README.md         # "your AI secretary…" story + one-command run
+├── README.md         # positioning + "AI secretary" story + one-command run + synthetic-data note
+├── CHANGELOG.md      # Keep-a-Changelog format, one entry per released tag
+├── CONTRIBUTING.md   # branch/commit conventions, how to run tests
+└── LICENSE           # e.g. MIT (public portfolio repo)
 ```
 
 `docker compose up` boots Postgres + backend + frontend, seeds synthetic data, and the simulator
 fires a few example conversations so the dashboard is alive on first load.
+
+**Organizing principle:** each top-level component is self-contained — it owns its code *and* its
+tests, exposes a clear interface, and can be understood/tested in isolation. As the repo scales,
+non-obvious architecture decisions are recorded as short **ADRs** in `docs/adr/` so the "why" is
+never lost.
+
+### 10.1 Branching & versioning strategy
+
+- **Versioning: [SemVer](https://semver.org) + git tags.** v1 targets **`1.0.0`**. During the v1
+  build, tag visible milestones as `0.x.0` pre-releases (e.g. `0.1.0` backend + state machine,
+  `0.2.0` crystallizer, …) so the public history *shows* the system growing deliberately — itself a
+  portfolio signal. Tag **`1.0.0`** when the §11 Definition of Done is met.
+- **Branches now (v1, solo):** build on **`main`**; keep it green and runnable at every tag. This is
+  fine and simple for a single builder shipping v1 — no premature process.
+- **Branches as it scales:** move to **trunk-based** — short-lived `feature/<slug>`, `fix/<slug>`,
+  `docs/<slug>` branches off `main`, merged via **PRs even when solo** (review discipline + a visible,
+  reviewable history for the portfolio). `main` stays always-deployable; enable branch protection
+  (require green CI) once CI exists. Cut a `release/x.y` maintenance branch only when a shipped major
+  version needs back-porting.
+- **Commits: [Conventional Commits](https://www.conventionalcommits.org)** (`feat:`, `fix:`, `docs:`,
+  `refactor:`, `test:`) → readable history and an auto-derivable `CHANGELOG.md`.
+- **Milestones/issues:** each roadmap item (§2) becomes a GitHub issue; each build phase a GitHub
+  milestone, so the plan is legible to anyone browsing the repo.
+
+*(Meta note: the current commits during design used plain messages; the Conventional-Commits
+convention starts with the implementation work.)*
 
 ---
 
@@ -429,4 +459,6 @@ fires a few example conversations so the dashboard is alive on first load.
 - Task memory recognizes a repeated request and pre-fills its spec.
 - Real Slack + Discord adapters function when tokens are supplied; simulator works with none.
 - Tests (unit + one end-to-end integration) pass.
-- README tells the "AI secretary" story and documents synthetic-only data.
+- README tells the positioning + "AI secretary" story and documents synthetic-only data.
+- Public-repo hygiene present: `README`, `LICENSE`, `CONTRIBUTING`, `CHANGELOG`, CI workflow;
+  release tagged **`1.0.0`** with milestone pre-release tags along the way.
