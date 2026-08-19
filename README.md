@@ -52,10 +52,36 @@ docker compose up
 ```
 
 - Dashboard: http://localhost:5173
-- API: http://localhost:8000 — `/health`, `/tasks`, `/tasks/{id}`, `POST /messages`
+- API: http://localhost:8000
+  - `GET /health`
+  - `GET /tasks`, `GET /tasks/{id}`
+  - `POST /messages` — ingest one message through the full pipeline
+  - `GET /candidates` — task candidates and their state
+  - `GET /conversations/{id}/messages`
+  - `POST /simulate/{name}` — replay a synthetic conversation fixture
+  - `POST /candidates/sweep` — re-check ready candidates against the debounce gate
 
-Brings up Postgres + backend + frontend and seeds a synthetic demo task. Verified from a fresh
-clone on Docker 29 (Colima on Apple Silicon).
+Brings up Postgres + backend + frontend and seeds the demo by replaying a synthetic
+conversation through the real intake pipeline. Verified from a fresh clone on Docker 29
+(Colima on Apple Silicon).
+
+### Which model actually runs
+
+Stage A and Stage B call Claude through one seam. With no `ANTHROPIC_API_KEY` in the
+environment the backend falls back to **`HeuristicLLM`** — a deterministic, regex-based
+stand-in, not a model. It keeps a fresh clone and CI runnable without credentials, and it
+is intentionally dumb: keyword matching, no language understanding, no reasoning about
+which messages belong to the same request. It logs a warning at startup saying so. Every
+result you see in the demo without a key comes from that stub.
+
+For the real path, export a key before starting; Compose passes it through:
+
+```bash
+export ANTHROPIC_API_KEY=sk-...
+docker compose up
+```
+
+To force the stand-in even with a key set, run with `LEY_KHAA_LLM=heuristic`.
 
 ### Local dev (no Docker)
 
@@ -73,15 +99,16 @@ cd frontend && npm install && npm run dev
 ## Develop
 
 ```bash
-cd backend  && python -m pytest -v   # 19 tests
-cd frontend && npm test              # vitest
+cd backend  && python -m pytest -q   # 153 tests
+cd frontend && npm test              # 5 tests (vitest)
 ```
 
 ## Stack
 
-Python 3.12 · FastAPI · Pydantic v2 · SQLAlchemy · Postgres (SQLite for dev/test) · custom async
-state-machine orchestrator · tiered model router (Claude Haiku ↔ Opus, Ollama offline fallback) ·
-React · Vite · Tailwind · Docker Compose.
+Python 3.12 · FastAPI · Pydantic v2 · SQLAlchemy · Postgres (SQLite for dev/test) · custom
+synchronous state-machine orchestrator (with a background sweeper for the debounce gate) ·
+tiered model router (Claude Haiku ↔ Opus, with a deterministic `HeuristicLLM` stand-in when no
+API key is set) · React · Vite · Tailwind · Docker Compose.
 
 ## Conventions
 
