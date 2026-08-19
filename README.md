@@ -25,22 +25,22 @@ generator code, exact inputs, seeded manifest — so any result can be audited a
 
 ## Status
 
-**v0.1.0 — Foundation / walking skeleton.** A seeded synthetic message flows through the task state
-machine and appears in the dashboard. Verified from a fresh clone: `docker compose up` brings up
-Postgres + backend + frontend and serves the seeded task. Intelligence — crystallizer, interpreter,
-autonomy engine, executor — arrives in later phases.
+**v0.2.0 — Intake and Task Crystallizer.** A messy multi-message conversation is filtered for relevance,
+crystallized into task candidates that own only their own message ids, and only a `ready` candidate is
+promoted to a Task. A debounce gate holds emission until the conversation settles. Verified from a fresh
+clone: `docker compose up` brings up Postgres + backend + frontend and produces tasks from synthetic
+conversations. The interpreter, autonomy engine, and executor arrive in later phases.
 
 | Phase | Tag | Scope | State |
 |-------|-----|-------|-------|
 | 0 | `v0.1.0` | Walking skeleton: state machine, task API, dashboard, CI | ✅ shipped |
-| 1 | `v0.2.0` | Intake + **Task Crystallizer** | ⏳ next |
+| 1 | `v0.2.0` | Intake + **Task Crystallizer** | ✅ shipped |
 | 2 | `v0.3.0` | Interpreter + **Autonomy engine** + human-in-the-loop | 📋 planned |
 | 3 | `v0.4.0` | Synthesis-first executor, validator, Output Bundle | 📋 planned |
 | 4 | `v0.5.0` | Multi-channel adapters, project routing, task memory | 📋 planned |
 | — | `v1.0.0` | Definition of done (spec §11) | 🎯 target |
 
-Phase 1 is planned; phases 2–4 are an indicative grouping of the spec's components, not yet
-broken down into written plans.
+Phases 2–4 are an indicative grouping of the spec's components, not yet broken down into written plans.
 
 Design spec: [`docs/superpowers/specs/2026-08-18-ley-khaa-design.md`](docs/superpowers/specs/2026-08-18-ley-khaa-design.md).
 Phase plans: [`docs/superpowers/plans/`](docs/superpowers/plans/).
