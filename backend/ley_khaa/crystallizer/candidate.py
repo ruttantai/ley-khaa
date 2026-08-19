@@ -10,7 +10,9 @@ class CandidateState(str, Enum):
 
 
 # A candidate can slide backwards (a follow-up message reopens a settled request)
-# but PROMOTED and ABANDONED are terminal.
+# to any other non-terminal state, but PROMOTED and ABANDONED are terminal. The
+# three non-terminal states (FORMING, CRYSTALLIZING, READY) are therefore mutually
+# reachable and each self-reachable; PROMOTED is reachable only from READY.
 _ALLOWED: dict[CandidateState, set[CandidateState]] = {
     CandidateState.FORMING: {
         CandidateState.FORMING,
@@ -27,6 +29,7 @@ _ALLOWED: dict[CandidateState, set[CandidateState]] = {
     CandidateState.READY: {
         CandidateState.READY,
         CandidateState.CRYSTALLIZING,
+        CandidateState.FORMING,
         CandidateState.PROMOTED,
         CandidateState.ABANDONED,
     },

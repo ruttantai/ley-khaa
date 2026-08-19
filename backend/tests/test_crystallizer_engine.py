@@ -180,6 +180,24 @@ def test_promoted_candidate_is_not_resurrected(session):
     assert engine.observe("c1", RELEVANT) == []
 
 
+def test_ready_candidate_reopened_as_forming_does_not_crash(session):
+    # The rolling window can age out the messages that justified "ready"; the
+    # model may then legitimately re-report the same candidate as "forming".
+    # That is a backwards, non-terminal move and must not raise.
+    rows = _seed(session, ["compare universes"])
+    llm = FakeLLM(
+        [
+            CrystallizerOutput(candidates=[_draft(state="ready", message_ids=[rows[0].id])]),
+            CrystallizerOutput(candidates=[_draft(state="forming", message_ids=[rows[0].id])]),
+        ]
+    )
+    engine = _engine(session, llm)
+    engine.observe("c1", RELEVANT)
+    result = engine.observe("c1", RELEVANT)
+    assert len(result) == 1
+    assert result[0].state == "forming"
+
+
 def test_complex_conversation_routes_to_opus(session):
     rows = _seed(session, [f"message {i}" for i in range(15)])
     llm = FakeLLM([CrystallizerOutput(candidates=[_draft(message_ids=[rows[0].id])])])

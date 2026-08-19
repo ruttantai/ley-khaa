@@ -18,6 +18,7 @@ from ley_khaa.crystallizer.candidate import (
         (CandidateState.CRYSTALLIZING, CandidateState.FORMING, True),
         (CandidateState.READY, CandidateState.PROMOTED, True),
         (CandidateState.READY, CandidateState.CRYSTALLIZING, True),
+        (CandidateState.READY, CandidateState.FORMING, True),
         (CandidateState.PROMOTED, CandidateState.READY, False),
         (CandidateState.PROMOTED, CandidateState.FORMING, False),
         (CandidateState.ABANDONED, CandidateState.FORMING, False),
