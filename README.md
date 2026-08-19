@@ -26,8 +26,9 @@ generator code, exact inputs, seeded manifest — so any result can be audited a
 ## Status
 
 **v0.1.0 — Foundation / walking skeleton.** A seeded synthetic message flows through the task state
-machine and appears in the dashboard. Verified end to end on the local dev path (see below).
-Intelligence — crystallizer, interpreter, autonomy engine, executor — arrives in later phases.
+machine and appears in the dashboard. Verified from a fresh clone: `docker compose up` brings up
+Postgres + backend + frontend and serves the seeded task. Intelligence — crystallizer, interpreter,
+autonomy engine, executor — arrives in later phases.
 
 | Phase | Tag | Scope | State |
 |-------|-----|-------|-------|
@@ -46,28 +47,28 @@ Phase plans: [`docs/superpowers/plans/`](docs/superpowers/plans/).
 
 ## Run
 
-### Local dev (no Docker required) — *verified*
+```bash
+docker compose up
+```
+
+- Dashboard: http://localhost:5173
+- API: http://localhost:8000 — `/health`, `/tasks`, `/tasks/{id}`, `POST /messages`
+
+Brings up Postgres + backend + frontend and seeds a synthetic demo task. Verified from a fresh
+clone on Docker 29 (Colima on Apple Silicon).
+
+### Local dev (no Docker)
+
+The backend reads `DATABASE_URL`, so it runs on SQLite with no Postgres:
 
 ```bash
-# backend — SQLite, no Postgres needed
+# backend
 cd backend && pip install -e ".[dev]"
 DATABASE_URL="sqlite:///./leykhaa.db" uvicorn ley_khaa.api.app:app --port 8000
 
 # frontend (separate shell)
 cd frontend && npm install && npm run dev
 ```
-
-- Dashboard: http://localhost:5173
-- API: http://localhost:8000 — `/health`, `/tasks`, `/tasks/{id}`, `POST /messages`
-
-### One-command (Docker + Postgres) — *not yet run on real hardware*
-
-```bash
-docker compose up
-```
-
-The Compose stack (Postgres + backend + frontend) is written and builds in CI, but has not yet been
-executed on a machine with Docker installed. Use the local dev path above until that is confirmed.
 
 ## Develop
 
