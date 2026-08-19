@@ -177,3 +177,31 @@ def test_add_reraises_an_integrity_error_that_is_not_the_duplicate_external_id(s
     # Same primary key, no external_id: nothing for the recovery lookup to find.
     with pytest.raises(IntegrityError):
         repo.add(first)
+
+
+def test_record_verdict_persists_stage_a_output(session):
+    repo = MessageRepository(session)
+    row = repo.add(_msg("compare the universes"))
+    assert row.relevant is None and row.topic is None and row.confidence is None
+
+    updated = repo.record_verdict(row.id, relevant=True, topic="universe-check", confidence=0.82)
+    assert updated.relevant is True
+    assert updated.topic == "universe-check"
+    assert updated.confidence == 0.82
+
+
+def test_window_can_exclude_messages_stage_a_judged_noise(session):
+    repo = MessageRepository(session)
+    base = datetime.now(timezone.utc)
+    keep = repo.add(_msg("compare the universes", ts=base))
+    noise = repo.add(_msg("haha nice one", ts=base + timedelta(seconds=1)))
+    unjudged = repo.add(_msg("month end please", ts=base + timedelta(seconds=2)))
+    repo.record_verdict(keep.id, relevant=True, topic="universe-check", confidence=0.9)
+    repo.record_verdict(noise.id, relevant=False, topic="chatter", confidence=0.9)
+
+    texts = [m.text for m in repo.window("c1", exclude_noise=True)]
+    assert texts == ["compare the universes", "month end please"]
+    # Unjudged messages are kept: absence of a verdict is not evidence of noise.
+    assert unjudged.text in texts
+    # And the default still returns everything.
+    assert len(repo.window("c1")) == 3
