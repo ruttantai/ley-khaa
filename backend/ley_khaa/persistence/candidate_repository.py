@@ -1,11 +1,12 @@
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..crystallizer.candidate import CandidateState, ensure_transition
-from .orm import CandidateRow, _now
+from .orm import CandidateRow
 
 
 class CandidateRepository:
@@ -106,7 +107,7 @@ class CandidateRepository:
                 CandidateRow.id == candidate_id,
                 CandidateRow.state == CandidateState.READY.value,
             )
-            .values(state=CandidateState.PROMOTED.value, updated_at=_now())
+            .values(state=CandidateState.PROMOTED.value, updated_at=datetime.now(timezone.utc))
         )
         self.session.commit()
         return result.rowcount == 1

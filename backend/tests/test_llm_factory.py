@@ -1,7 +1,16 @@
 import logging
 
+import pytest
+
+from ley_khaa.llm import factory
 from ley_khaa.llm.factory import build_llm
 from ley_khaa.llm.heuristic import HeuristicLLM
+
+
+@pytest.fixture(autouse=True)
+def _reset_warned_once(monkeypatch):
+    # The notice is emitted once per process; each test wants a clean slate.
+    monkeypatch.setattr(factory, "_warned_about_fallback", False)
 
 
 def test_explicit_heuristic_backend_is_not_a_fallback(monkeypatch, caplog):
@@ -31,3 +40,13 @@ def test_a_present_api_key_does_not_warn(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="ley_khaa.llm.factory"):
         assert build_llm("anthropic") is sentinel
     assert caplog.records == []
+
+
+def test_the_fallback_warning_is_not_repeated_on_every_call(monkeypatch, caplog):
+    """build_llm runs per request and per background sweep — once is enough."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with caplog.at_level(logging.WARNING, logger="ley_khaa.llm.factory"):
+        build_llm("anthropic")
+        build_llm("anthropic")
+        build_llm("anthropic")
+    assert len(caplog.records) == 1
