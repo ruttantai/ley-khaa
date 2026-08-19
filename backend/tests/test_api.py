@@ -119,3 +119,18 @@ def test_sweep_promotes_a_ready_candidate_once_the_conversation_goes_quiet(clien
         assert len(client.get("/tasks").json()) == 1
     finally:
         object.__setattr__(settings, "crystallizer_debounce_seconds", original_debounce)
+
+
+def test_empty_text_is_rejected_with_422(client):
+    resp = client.post("/messages", json={"text": ""})
+    assert resp.status_code == 422
+
+
+def test_whitespace_only_text_is_rejected_with_422(client):
+    resp = client.post("/messages", json={"text": "   "})
+    assert resp.status_code == 422
+    assert client.get("/conversations/conv-1/messages").json() == []
+
+
+def test_missing_text_is_rejected_with_422(client):
+    assert client.post("/messages", json={}).status_code == 422

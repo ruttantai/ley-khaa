@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AttachmentIn(BaseModel):
@@ -14,9 +14,18 @@ class MessageIn(BaseModel):
     client: str = "demo"
     conversation_id: str = "conv-1"
     author: str = "user"
-    text: str
+    # Validated here so an empty body is a 422 from the schema rather than a bare
+    # ValueError out of the intake gateway, which surfaced as a 500.
+    text: str = Field(min_length=1)
     attachments: list[AttachmentIn] = []
     external_id: str | None = None
+
+    @field_validator("text")
+    @classmethod
+    def _reject_blank_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("text must not be blank")
+        return value
 
 
 class IntakeOut(BaseModel):
