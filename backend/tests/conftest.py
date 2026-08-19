@@ -1,11 +1,12 @@
 import os
 
 os.environ["LEY_KHAA_DISABLE_STARTUP"] = "1"
+os.environ["LEY_KHAA_LLM"] = "heuristic"
+os.environ["LEY_KHAA_DEBOUNCE_SECONDS"] = "0"
 
 import pytest
 from fastapi.testclient import TestClient
 
-import pytest as _pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -14,7 +15,7 @@ from ley_khaa.db import Base
 from ley_khaa.persistence import orm  # noqa: F401 — register TaskRow
 
 
-@_pytest.fixture
+@pytest.fixture
 def session():
     test_engine = create_engine(
         "sqlite://",
