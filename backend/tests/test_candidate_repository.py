@@ -139,51 +139,63 @@ def test_scoping_invariant_same_key_different_conversations_allowed(session):
     assert len(repo.list_for_conversation("c2")) == 1
 
 
-def test_upsert_handles_race_condition_and_applies_update(session):
-    """Verify upsert catches IntegrityError on duplicate and applies the requested update to the winner."""
-    from ley_khaa.persistence.orm import CandidateRow
-    import uuid
-    from sqlalchemy.exc import IntegrityError
+def test_upsert_recovers_when_a_concurrent_insert_wins_the_race(session):
+    """Genuinely drives the IntegrityError recovery branch in upsert.
 
+    The branch needs the pre-check to miss AND the insert to then collide, which
+    only happens when another request commits the same (conversation_id,
+    candidate_key) in between. A before_flush hook reproduces that interleaving:
+    it fires after upsert's get_by_key returned None, and a second session commits
+    the winning row right then. The duplicate INSERT, the IntegrityError, the
+    rollback and the recovery update are all real.
+    """
+    from sqlalchemy import event
+    from sqlalchemy.orm import sessionmaker
+
+    other_session = sessionmaker(
+        bind=session.get_bind(), autoflush=False, expire_on_commit=False, future=True
+    )
     repo = CandidateRepository(session)
+    winner: dict[str, object] = {}
+    fired: list[int] = []
 
-    # Simulate a race: create row that will "win"
-    race_winner = CandidateRow(
-        id=str(uuid.uuid4()),
-        conversation_id="race-conv",
-        candidate_key="race-key",
-        state=CandidateState.FORMING.value,
-        title="Winner original title",
-        summary="Winner original summary",
-        message_ids=["winner-orig"],
-        missing_fields=[],
-        open_question=None,
-    )
-    session.add(race_winner)
-    session.commit()
-    winner_id = race_winner.id
+    def commit_the_winner(sess, flush_context, instances):
+        if fired:  # only race the first flush; the recovery path flushes again
+            return
+        fired.append(1)
+        other = other_session()
+        try:
+            winner["row"] = _upsert(
+                CandidateRepository(other),
+                key="race-key",
+                conv="race-conv",
+                state=CandidateState.FORMING,
+                message_ids=["winner-orig"],
+            )
+        finally:
+            other.close()
 
-    # Create a separate repository instance (simulating a different request)
-    repo2 = CandidateRepository(session)
+    event.listen(session, "before_flush", commit_the_winner)
+    try:
+        result = repo.upsert(
+            conversation_id="race-conv",
+            candidate_key="race-key",
+            title="Loser title",
+            summary="Loser summary",
+            state=CandidateState.CRYSTALLIZING,
+            message_ids=["m1", "m2"],
+            missing_fields=["field1"],
+            open_question="Q?",
+        )
+    finally:
+        event.remove(session, "before_flush", commit_the_winner)
 
-    # This upsert will fail because the key already exists (race condition)
-    # upsert should catch IntegrityError, re-fetch the existing row, and apply the update
-    result = repo2.upsert(
-        conversation_id="race-conv",
-        candidate_key="race-key",
-        title="Loser title",  # Different from winner
-        summary="Loser summary",
-        state=CandidateState.CRYSTALLIZING,  # Different state
-        message_ids=["m1", "m2"],  # Different message_ids
-        missing_fields=["field1"],
-        open_question="Q?",
-    )
-
-    # The result should be the existing row (race winner's ID)
-    assert result.id == winner_id
-    # The state should be updated to what the loser requested
+    assert fired, "the race was never interposed"
+    # The row that won the race is the one that survives...
+    assert result.id == winner["row"].id
+    assert len(repo.list_for_conversation("race-conv")) == 1
+    # ...and the losing caller's update is applied on top of it.
     assert result.state == "crystallizing"
-    # The data should be updated to what the loser provided
     assert result.title == "Loser title"
     assert result.summary == "Loser summary"
     assert result.message_ids == ["m1", "m2"]

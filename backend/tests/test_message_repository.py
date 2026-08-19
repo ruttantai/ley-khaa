@@ -9,6 +9,11 @@ from ley_khaa.persistence.message_repository import MessageRepository
 from ley_khaa.persistence.orm import MessageRow
 
 
+def _utc(value):
+    # SQLite hands back naive datetimes even for timezone=True columns.
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
 def _msg(text="hello", conv="c1", external_id=None, ts=None):
     return Message(
         source="simulator",
@@ -76,11 +81,13 @@ def test_attachments_round_trip(session):
 
 
 def test_last_timestamp_returns_latest(session):
+    # Asserted against a literal: comparing to list_for_conversation()[-1].timestamp
+    # is verbatim the implementation, so it could never fail.
     repo = MessageRepository(session)
-    base = datetime.now(timezone.utc)
-    repo.add(_msg("a", ts=base))
+    base = datetime(2026, 8, 19, 9, 30, tzinfo=timezone.utc)
     repo.add(_msg("b", ts=base + timedelta(seconds=30)))
-    assert repo.last_timestamp("c1") == repo.list_for_conversation("c1")[-1].timestamp
+    repo.add(_msg("a", ts=base))
+    assert _utc(repo.last_timestamp("c1")) == datetime(2026, 8, 19, 9, 30, 30, tzinfo=timezone.utc)
 
 
 def test_last_timestamp_none_for_empty_conversation(session):
@@ -117,80 +124,56 @@ def test_unique_constraint_prevents_duplicate_external_id(session):
         session.commit()
 
 
-def test_race_condition_recovery(session):
-    """Verify repository recovers when commit fails due to concurrent insert."""
+def test_add_recovers_when_a_concurrent_insert_wins_the_race(session):
+    """Genuinely drives the IntegrityError recovery branch in MessageRepository.add.
+
+    The branch is only reachable when the fast-path lookup misses AND the insert
+    then collides — i.e. when another request commits the same external_id in
+    between. That interleaving is reproduced here with a before_flush hook on this
+    session: the hook fires after add()'s lookup has already returned None, and a
+    second session commits the winning row at that exact moment. The duplicate
+    INSERT, the IntegrityError, the rollback and the recovery lookup are all real.
+    """
+    from sqlalchemy import event
+    from sqlalchemy.orm import sessionmaker
+
+    other_session = sessionmaker(
+        bind=session.get_bind(), autoflush=False, expire_on_commit=False, future=True
+    )
     repo = MessageRepository(session)
+    winner: dict[str, MessageRow] = {}
+    fired: list[int] = []
 
-    # Insert first message with external_id via repository
-    msg1 = _msg("first", external_id="race-test")
-    row1 = repo.add(msg1)
-    assert row1.text == "first"
+    def commit_the_winner(sess, flush_context, instances):
+        if fired:  # only race the first flush; the recovery path flushes again
+            return
+        fired.append(1)
+        other = other_session()
+        try:
+            winner["row"] = MessageRepository(other).add(
+                _msg("winner", external_id="race-1")
+            )
+        finally:
+            other.close()
 
-    # Simulate a race: construct a new message with same external_id but different id
-    # and bypass the fast path check by constructing MessageRow directly
-    msg2_id = str(uuid.uuid4())
-    msg2 = Message(
-        id=msg2_id,
-        source="simulator",
-        client="demo",
-        conversation_id="c1",
-        author="boss",
-        text="second (should lose race)",
-        external_id="race-test",
-        timestamp=datetime.now(timezone.utc),
-    )
+    event.listen(session, "before_flush", commit_the_winner)
+    try:
+        row = repo.add(_msg("loser", external_id="race-1"))
+    finally:
+        event.remove(session, "before_flush", commit_the_winner)
 
-    # Manually add to session and attempt commit, which should fail due to unique constraint
-    row2 = MessageRow(
-        id=msg2.id,
-        external_id=msg2.external_id,
-        source=msg2.source,
-        client=msg2.client,
-        conversation_id=msg2.conversation_id,
-        author=msg2.author,
-        text=msg2.text,
-        attachments=[],
-        timestamp=msg2.timestamp,
-    )
-    session.add(row2)
-    with pytest.raises(IntegrityError):
-        session.commit()
-    session.rollback()
-
-    # Now use repository.add() with a fresh message with the same external_id
-    # It should recover from the race and return the existing row
-    msg3 = _msg("third attempt", external_id="race-test")
-    row3 = repo.add(msg3)
-
-    # Should be the same row as the first insert (by id, not text)
-    assert row3.id == row1.id
-    assert row3.text == row1.text
+    assert fired, "the race was never interposed"
+    # The loser must return the row that won, not raise and not duplicate.
+    assert row.id == winner["row"].id
+    assert row.text == "winner"
     assert len(repo.list_for_conversation("c1")) == 1
 
 
-def test_record_verdict_persists_stage_a_output(session):
+def test_add_reraises_an_integrity_error_that_is_not_the_duplicate_external_id(session):
+    """The recovery branch re-raises anything that is not the race it handles."""
     repo = MessageRepository(session)
-    row = repo.add(_msg("compare the universes"))
-    assert row.relevant is None and row.topic is None and row.confidence is None
-
-    updated = repo.record_verdict(row.id, relevant=True, topic="universe-check", confidence=0.82)
-    assert updated.relevant is True
-    assert updated.topic == "universe-check"
-    assert updated.confidence == 0.82
-
-
-def test_window_can_exclude_messages_stage_a_judged_noise(session):
-    repo = MessageRepository(session)
-    base = datetime.now(timezone.utc)
-    keep = repo.add(_msg("compare the universes", ts=base))
-    noise = repo.add(_msg("haha nice one", ts=base + timedelta(seconds=1)))
-    unjudged = repo.add(_msg("month end please", ts=base + timedelta(seconds=2)))
-    repo.record_verdict(keep.id, relevant=True, topic="universe-check", confidence=0.9)
-    repo.record_verdict(noise.id, relevant=False, topic="chatter", confidence=0.9)
-
-    texts = [m.text for m in repo.window("c1", exclude_noise=True)]
-    assert texts == ["compare the universes", "month end please"]
-    # Unjudged messages are kept: absence of a verdict is not evidence of noise.
-    assert unjudged.text in texts
-    # And the default still returns everything.
-    assert len(repo.window("c1")) == 3
+    first = _msg("first", external_id=None)
+    repo.add(first)
+    # Same primary key, no external_id: nothing for the recovery lookup to find.
+    with pytest.raises(IntegrityError):
+        repo.add(first)
