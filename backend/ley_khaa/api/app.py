@@ -1,5 +1,7 @@
-from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager
+import asyncio
+import logging
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +18,8 @@ from ..persistence.message_repository import MessageRepository
 from ..persistence.repository import TaskRepository
 from .schemas import CandidateOut, IntakeOut, MessageIn, MessageOut, TaskOut
 
+logger = logging.getLogger(__name__)
+
 
 def build_orchestrator(session: Session) -> Orchestrator:
     return Orchestrator(
@@ -27,9 +31,42 @@ def build_orchestrator(session: Session) -> Orchestrator:
     )
 
 
+def _sweep_once() -> int:
+    """One sweep, on its own session. Synchronous: the orchestrator stays sync."""
+    session = SessionLocal()
+    try:
+        return len(build_orchestrator(session).sweep())
+    finally:
+        session.close()
+
+
+async def _periodic_sweeper(interval: float, sweep: Callable[[], int] = _sweep_once) -> None:
+    """Wake on an interval and give debounced candidates a chance to promote.
+
+    ingest() is invoked BY the newest message, so the conversation is never quiet
+    at that moment and a non-zero debounce can only ever clear later. sweep() is
+    the trigger for that, and nothing called it: a live user posting to
+    /messages watched candidates pile up in READY and never got tasks.
+
+    The sweep itself runs in a worker thread so the sync orchestrator never
+    blocks the event loop, and a failing sweep is logged but never kills the loop.
+    CancelledError is a BaseException, so shutdown still cancels this cleanly.
+    """
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            created = await asyncio.to_thread(sweep)
+        except Exception:
+            logger.exception("periodic candidate sweep failed")
+        else:
+            if created:
+                logger.info("periodic candidate sweep promoted %d candidate(s)", created)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if settings.disable_startup:
+        app.state.sweeper = None
         yield
         return
     init_db()
@@ -40,7 +77,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             Simulator(build_orchestrator(session)).replay("messy_universe_check")
     finally:
         session.close()
-    yield
+
+    app.state.sweeper = asyncio.create_task(_periodic_sweeper(settings.sweep_interval_seconds))
+    try:
+        yield
+    finally:
+        app.state.sweeper.cancel()
+        with suppress(asyncio.CancelledError):
+            await app.state.sweeper
+        app.state.sweeper = None
 
 
 app = FastAPI(title="ley-khaa", lifespan=lifespan)
