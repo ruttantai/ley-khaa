@@ -7,7 +7,7 @@ from ..llm.router import Stage, model_for
 from ..persistence.candidate_repository import CandidateRepository
 from ..persistence.message_repository import MessageRepository
 from ..persistence.orm import CandidateRow
-from .candidate import CandidateState
+from .candidate import TERMINAL_STATES, CandidateState
 from .relevance import RelevanceVerdict
 
 # Above this many messages in the window, the assembly problem stops being
@@ -29,7 +29,9 @@ Rules:
   question is open.
 - missing_fields: names of what is still unknown (e.g. output_format, deadline, source).
 - open_question: one plain-English question to ask the human, or null. Only set it when
-  the candidate is genuinely blocked."""
+  the candidate is genuinely blocked.
+- Any candidate listed under "Already handled" is finished. Do NOT report it again, under
+  its old key or a new one, and do not claim its message ids for another candidate."""
 
 
 class CandidateDraft(BaseModel):
@@ -80,13 +82,17 @@ class Crystallizer:
         # PROMOTED/ABANDONED are terminal: the model will keep re-reporting a
         # candidate it already emitted, and resurrecting it would both raise on
         # the transition rules and double-create the task.
-        terminal = {CandidateState.PROMOTED.value, CandidateState.ABANDONED.value}
         existing_by_key = {c.candidate_key: c for c in existing}
+
+        # The model's ids are untrusted. A candidate may legitimately own messages
+        # that have aged out of the window, so validate against the whole
+        # conversation — but a hallucinated id must never reach a Task.
+        known_ids = {m.id for m in self.messages.list_for_conversation(conversation_id)}
 
         rows = []
         for draft in output.candidates:
             prior = existing_by_key.get(draft.candidate_key)
-            if prior is not None and prior.state in terminal:
+            if prior is not None and prior.state in TERMINAL_STATES:
                 continue
             rows.append(
                 self.candidates.upsert(
@@ -95,12 +101,15 @@ class Crystallizer:
                     title=draft.title,
                     summary=draft.summary,
                     state=CandidateState(draft.state),
-                    message_ids=draft.message_ids,
+                    message_ids=[mid for mid in draft.message_ids if mid in known_ids],
                     missing_fields=draft.missing_fields,
                     open_question=draft.open_question,
                 )
             )
         return rows
+
+
+HANDLED_HEADER = "## Already handled — do NOT report these again"
 
 
 def _render(window, existing) -> str:
@@ -110,13 +119,29 @@ def _render(window, existing) -> str:
         for a in row.attachments or []:
             lines.append(f"    attachment: {a['kind']} named {a['name']}")
 
+    active = [r for r in existing if r.state not in TERMINAL_STATES]
+    handled = [r for r in existing if r.state in TERMINAL_STATES]
+
     lines.append("")
     lines.append("## Candidates you reported previously")
-    if not existing:
+    if not active:
         lines.append("(none yet)")
-    for row in existing:
+    for row in active:
         lines.append(
             f"- {row.candidate_key} [{row.state}] {row.title} "
-            f"owns={row.message_ids} missing={row.missing_fields}"
+            f"owns=[{_ids(row.message_ids)}] missing={row.missing_fields}"
         )
+
+    # Terminal candidates are labelled rather than hidden: hiding them leaves the
+    # model looking at messages no candidate covers, which invites it to re-report
+    # the same request under a fresh key and double-create the Task.
+    if handled:
+        lines.append("")
+        lines.append(HANDLED_HEADER)
+        for row in handled:
+            lines.append(f"- {row.candidate_key} {row.title} owns=[{_ids(row.message_ids)}]")
     return "\n".join(lines)
+
+
+def _ids(message_ids) -> str:
+    return ", ".join(message_ids or [])

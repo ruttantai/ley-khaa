@@ -211,3 +211,57 @@ def test_short_conversation_stays_on_haiku(session):
     llm = FakeLLM([CrystallizerOutput(candidates=[_draft(message_ids=[rows[0].id])])])
     _engine(session, llm).observe("c1", RELEVANT)
     assert llm.calls[0].choice.model == "claude-haiku-4-5"
+
+
+def test_hallucinated_message_id_never_reaches_the_stored_candidate(session):
+    # The model's ids are untrusted: an id that belongs to no real message must be
+    # dropped, or it lands in TaskRow.source_message_ids and blows up any consumer
+    # that indexes messages by id.
+    rows = _seed(session, ["compare universes"])
+    llm = FakeLLM(
+        [
+            CrystallizerOutput(
+                candidates=[_draft(message_ids=[rows[0].id, "hallucinated-id-42"])]
+            )
+        ]
+    )
+    result = _engine(session, llm).observe("c1", RELEVANT)
+    assert result[0].message_ids == [rows[0].id]
+    stored = CandidateRepository(session).list_for_conversation("c1")[0]
+    assert "hallucinated-id-42" not in stored.message_ids
+
+
+def test_ids_that_aged_out_of_the_window_are_still_accepted(session):
+    # Validation is against the whole conversation, not the window: a candidate
+    # legitimately keeps owning messages the window has scrolled past.
+    rows = _seed(session, [f"message {i}" for i in range(10)])
+    llm = FakeLLM([CrystallizerOutput(candidates=[_draft(message_ids=[rows[0].id])])])
+    engine = Crystallizer(
+        llm, MessageRepository(session), CandidateRepository(session), window_size=3
+    )
+    result = engine.observe("c1", RELEVANT)
+    assert result[0].message_ids == [rows[0].id]
+
+
+def test_promoted_candidates_are_rendered_as_already_handled(session):
+    # Excluding them from the prompt entirely leaves the model staring at messages
+    # no candidate covers; it then re-reports the same request under a new key and
+    # the caller double-creates the task. Label them instead.
+    rows = _seed(session, ["compare universes", "and also send the risk report"])
+    llm = FakeLLM(
+        [
+            CrystallizerOutput(candidates=[_draft(state="ready", message_ids=[rows[0].id])]),
+            CrystallizerOutput(candidates=[]),
+        ]
+    )
+    engine = _engine(session, llm)
+    engine.observe("c1", RELEVANT)
+    repo = CandidateRepository(session)
+    repo.mark_promoted(repo.list_for_conversation("c1")[0].id, task_id="t1")
+
+    engine.observe("c1", RELEVANT)
+    prompt = llm.calls[1].user
+    assert "## Already handled" in prompt
+    assert f"cand-universe Universe reconciliation owns=[{rows[0].id}]" in prompt
+    # A terminal candidate is never offered back as a live one to update.
+    assert "[promoted]" not in prompt

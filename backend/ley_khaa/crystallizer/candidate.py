@@ -9,6 +9,13 @@ class CandidateState(str, Enum):
     ABANDONED = "abandoned"
 
 
+# PROMOTED and ABANDONED are terminal: a candidate in one of them is done being
+# reported on and must never be resurrected.
+TERMINAL_STATES: frozenset[str] = frozenset(
+    {CandidateState.PROMOTED.value, CandidateState.ABANDONED.value}
+)
+
+
 # A candidate can slide backwards (a follow-up message reopens a settled request)
 # to any other non-terminal state, but PROMOTED and ABANDONED are terminal. The
 # three non-terminal states (FORMING, CRYSTALLIZING, READY) are therefore mutually
