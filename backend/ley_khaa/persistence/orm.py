@@ -34,3 +34,21 @@ class MessageRow(Base):
     text: Mapped[str] = mapped_column(String)
     attachments: Mapped[list] = mapped_column(JSON, default=list)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class CandidateRow(Base):
+    __tablename__ = "task_candidates"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String, index=True)
+    # Stable key the crystallizer reuses to re-identify a candidate across turns.
+    candidate_key: Mapped[str] = mapped_column(String, index=True)
+    title: Mapped[str] = mapped_column(String, default="")
+    summary: Mapped[str] = mapped_column(String, default="")
+    state: Mapped[str] = mapped_column(String)
+    message_ids: Mapped[list] = mapped_column(JSON, default=list)
+    missing_fields: Mapped[list] = mapped_column(JSON, default=list)
+    open_question: Mapped[str | None] = mapped_column(String, nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
