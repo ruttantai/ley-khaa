@@ -5,11 +5,12 @@ import App from "./App";
 beforeEach(() => {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () => ({
+    vi.fn(async (url: string) => ({
       ok: true,
-      json: async () => [
-        { id: "t1", project: "default", state: "done", title: "compare universes" },
-      ],
+      json: async () =>
+        String(url).includes("/candidates")
+          ? []
+          : [{ id: "t1", project: "default", state: "done", title: "compare universes" }],
     })),
   );
 });
