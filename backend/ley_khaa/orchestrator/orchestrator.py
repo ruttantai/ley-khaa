@@ -76,7 +76,9 @@ class Orchestrator:
         now = datetime.now(timezone.utc)
         for candidate in candidates:
             if self.gate.should_emit(candidate, last_message_at=last_at, now=now):
-                result.task_ids.append(self._promote(candidate))
+                task_id = self._promote(candidate)
+                if task_id is not None:
+                    result.task_ids.append(task_id)
         return result
 
     def sweep(self, conversation_id: str | None = None) -> list[str]:
@@ -97,10 +99,20 @@ class Orchestrator:
         for candidate in ready:
             last_at = self.messages.last_timestamp(candidate.conversation_id)
             if self.gate.should_emit(candidate, last_message_at=last_at, now=now):
-                task_ids.append(self._promote(candidate))
+                task_id = self._promote(candidate)
+                if task_id is not None:
+                    task_ids.append(task_id)
         return task_ids
 
-    def _promote(self, candidate: CandidateRow) -> str:
+    def _promote(self, candidate: CandidateRow) -> str | None:
+        """Promote a ready candidate to a Task, or None if another caller won it.
+
+        The claim comes first and is conditional on the candidate still being
+        READY. Creating the task first made concurrent sweeps double-create it and
+        left the loser raising InvalidCandidateTransition out of a 500.
+        """
+        if not self.candidates.claim_for_promotion(candidate.id):
+            return None
         task = self.repo.create(
             project="default",
             title=candidate.title,
@@ -108,5 +120,5 @@ class Orchestrator:
         )
         for state in STUB_PATH:
             self.repo.update_state(task.id, state)
-        self.candidates.mark_promoted(candidate.id, task_id=task.id)
+        self.candidates.attach_task(candidate.id, task.id)
         return task.id

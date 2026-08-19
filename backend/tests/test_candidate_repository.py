@@ -39,17 +39,35 @@ def test_candidate_keys_are_scoped_per_conversation(session):
 def test_upsert_rejects_illegal_transition(session):
     repo = CandidateRepository(session)
     row = _upsert(repo, state=CandidateState.READY)
-    repo.mark_promoted(row.id, task_id="t1")
+    assert repo.claim_for_promotion(row.id)
+    repo.attach_task(row.id, task_id="t1")
     with pytest.raises(InvalidCandidateTransition):
         _upsert(repo, state=CandidateState.FORMING)
 
 
-def test_mark_promoted_records_task_id(session):
+def test_claim_then_attach_records_task_id(session):
     repo = CandidateRepository(session)
     row = _upsert(repo, state=CandidateState.READY)
-    promoted = repo.mark_promoted(row.id, task_id="task-99")
+    assert repo.claim_for_promotion(row.id) is True
+    promoted = repo.attach_task(row.id, task_id="task-99")
     assert promoted.state == "promoted"
     assert promoted.task_id == "task-99"
+
+
+def test_only_one_caller_can_claim_a_ready_candidate(session):
+    """The conditional update is what makes promotion safe under concurrency."""
+    repo = CandidateRepository(session)
+    row = _upsert(repo, state=CandidateState.READY)
+    assert repo.claim_for_promotion(row.id) is True
+    # Second caller read the same row as READY and now tries to claim it.
+    assert repo.claim_for_promotion(row.id) is False
+
+
+def test_claiming_a_candidate_that_was_never_ready_fails(session):
+    repo = CandidateRepository(session)
+    row = _upsert(repo, state=CandidateState.CRYSTALLIZING)
+    assert repo.claim_for_promotion(row.id) is False
+    assert repo.get_by_key("c1", "cand-a").state == "crystallizing"
 
 
 def test_list_by_state_filters(session):

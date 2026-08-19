@@ -173,9 +173,10 @@ def test_promoted_candidate_is_not_resurrected(session):
     )
     engine = _engine(session, llm)
     engine.observe("c1", RELEVANT)
-    CandidateRepository(session).mark_promoted(
-        CandidateRepository(session).list_for_conversation("c1")[0].id, task_id="t1"
-    )
+    repo = CandidateRepository(session)
+    promoted = repo.list_for_conversation("c1")[0]
+    assert repo.claim_for_promotion(promoted.id)
+    repo.attach_task(promoted.id, task_id="t1")
     # Second turn re-reports the same key: it must be ignored, not raise.
     assert engine.observe("c1", RELEVANT) == []
 
@@ -257,7 +258,9 @@ def test_promoted_candidates_are_rendered_as_already_handled(session):
     engine = _engine(session, llm)
     engine.observe("c1", RELEVANT)
     repo = CandidateRepository(session)
-    repo.mark_promoted(repo.list_for_conversation("c1")[0].id, task_id="t1")
+    promoted = repo.list_for_conversation("c1")[0]
+    assert repo.claim_for_promotion(promoted.id)
+    repo.attach_task(promoted.id, task_id="t1")
 
     engine.observe("c1", RELEVANT)
     prompt = llm.calls[1].user

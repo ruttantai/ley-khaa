@@ -1,11 +1,11 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..crystallizer.candidate import CandidateState, ensure_transition
-from .orm import CandidateRow
+from .orm import CandidateRow, _now
 
 
 class CandidateRepository:
@@ -91,12 +91,31 @@ class CandidateRepository:
     def list_all(self) -> list[CandidateRow]:
         return list(self.session.scalars(select(CandidateRow).order_by(CandidateRow.created_at)))
 
-    def mark_promoted(self, candidate_id: str, task_id: str) -> CandidateRow:
+    def claim_for_promotion(self, candidate_id: str) -> bool:
+        """Atomically take a candidate out of READY. Returns True if we won it.
+
+        FastAPI runs sync endpoints in a threadpool, so two concurrent sweeps can
+        both read the same candidate as READY. The WHERE state='ready' guard means
+        exactly one of them wins the row; the loser simply gets False and must not
+        promote. Claiming happens BEFORE the task is created, so a loser never
+        creates a duplicate task.
+        """
+        result = self.session.execute(
+            update(CandidateRow)
+            .where(
+                CandidateRow.id == candidate_id,
+                CandidateRow.state == CandidateState.READY.value,
+            )
+            .values(state=CandidateState.PROMOTED.value, updated_at=_now())
+        )
+        self.session.commit()
+        return result.rowcount == 1
+
+    def attach_task(self, candidate_id: str, task_id: str) -> CandidateRow:
+        """Record the task a claimed candidate produced."""
         row = self.session.get(CandidateRow, candidate_id)
         if row is None:
             raise KeyError(candidate_id)
-        ensure_transition(CandidateState(row.state), CandidateState.PROMOTED)
-        row.state = CandidateState.PROMOTED.value
         row.task_id = task_id
         self.session.commit()
         self.session.refresh(row)

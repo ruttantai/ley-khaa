@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+from ley_khaa.crystallizer.candidate import CandidateState
 from ley_khaa.crystallizer.engine import CandidateDraft, CrystallizerOutput
 from ley_khaa.crystallizer.gate import ReadinessGate
 from ley_khaa.crystallizer.relevance import RelevanceVerdict
@@ -195,3 +196,41 @@ def test_ingest_persists_the_stage_a_verdict_on_the_message(session):
     assert row.relevant is False
     assert row.topic == "chatter"
     assert row.confidence == 0.6
+
+
+def test_concurrent_promotion_creates_exactly_one_task_and_does_not_raise(session):
+    """Two sweeps racing on the same ready candidate.
+
+    FastAPI runs sync endpoints in a threadpool, so two POST /candidates/sweep
+    calls can both pass the readiness gate before either promotes. Modelled here
+    with two orchestrators on two sessions over the same database, both holding
+    the candidate they read as READY. Before the conditional claim this created
+    two DONE tasks and the loser raised InvalidCandidateTransition into a 500.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    orch_a = _orch(session, HeuristicLLM(), debounce=600)
+    orch_a.ingest({"text": "compare the universes"})
+    _backdate_conversation(session, "conv-1", seconds=700)
+
+    other = sessionmaker(bind=session.get_bind(), autoflush=False, expire_on_commit=False)()
+    try:
+        orch_b = _orch(other, HeuristicLLM(), debounce=600)
+
+        # Both callers read the candidate as READY before either has promoted.
+        candidate_a = CandidateRepository(session).list_by_state(CandidateState.READY)[0]
+        candidate_b = CandidateRepository(other).list_by_state(CandidateState.READY)[0]
+        assert candidate_a.id == candidate_b.id
+
+        won = orch_a._promote(candidate_a)
+        lost = orch_b._promote(candidate_b)
+
+        assert won is not None
+        assert lost is None
+        assert len(TaskRepository(session).list()) == 1
+
+        promoted = CandidateRepository(session).list_for_conversation("conv-1")[0]
+        assert promoted.state == "promoted"
+        assert promoted.task_id == won
+    finally:
+        other.close()
