@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Any
 
 from ..domain.models import Attachment, Message
@@ -23,6 +24,9 @@ class IntakeGateway:
         conversation_id = raw.get("conversation_id") or raw.get("thread_id") or "conv-1"
         attachments = [Attachment(**a) for a in raw.get("attachments", [])]
 
+        raw_ts = raw.get("timestamp")
+        timestamp = datetime.fromisoformat(raw_ts) if raw_ts else datetime.now(timezone.utc)
+
         message = Message(
             source=raw.get("source", "simulator"),
             client=raw.get("client", "demo"),
@@ -31,5 +35,6 @@ class IntakeGateway:
             text=text,
             external_id=raw.get("external_id"),
             attachments=attachments,
+            timestamp=timestamp,
         )
         return self.repo.add(message)

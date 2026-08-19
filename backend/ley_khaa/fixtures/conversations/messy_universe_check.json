@@ -1,0 +1,15 @@
+{
+  "conversation_id": "conv-universe",
+  "client": "demo",
+  "messages": [
+    {"author": "alice", "text": "morning all"},
+    {"author": "boss", "text": "hey did anyone see the game last night"},
+    {"author": "alice", "text": "haha yes what a finish"},
+    {"author": "boss", "text": "anyway - I need something for the 10am"},
+    {"author": "boss", "text": "can you compare the Bloomberg universe against FactSet"},
+    {"author": "alice", "text": "sure, which date?"},
+    {"author": "boss", "text": "month end please, and send me what's missing as an Excel file"},
+    {"author": "alice", "text": "cool, on it"},
+    {"author": "boss", "text": "thanks!"}
+  ]
+}
