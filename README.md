@@ -51,6 +51,10 @@ Phase plans: [`docs/superpowers/plans/`](docs/superpowers/plans/).
 docker compose up
 ```
 
+> Upgrading from v0.1.0? This release adds columns to the `messages` table and there is no
+> migration tooling yet, so drop the old database first: `docker compose down -v` (or delete your
+> local `leykhaa.db`). A fresh clone needs nothing.
+
 - Dashboard: http://localhost:5173
 - API: http://localhost:8000
   - `GET /health`

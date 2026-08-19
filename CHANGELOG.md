@@ -6,6 +6,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
 ## [Unreleased]
 
 ## [0.2.0] — 2026-08-19
+
+> **Upgrading from 0.1.0:** this release adds columns to the `messages` table and the project has
+> no migration tooling yet. Drop your existing database first — `docker compose down -v` for the
+> Postgres volume, or delete your local `leykhaa.db` for the SQLite dev path. A fresh clone is
+> unaffected.
 ### Added
 - Intake gateway: canonical multi-modal `Message` (text/table/image attachments), idempotent per external id.
 - Task Crystallizer stage A — cheap per-message relevance and topic filter.
