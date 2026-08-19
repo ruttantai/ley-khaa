@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..domain.models import Message
@@ -31,7 +32,20 @@ class MessageRepository:
             timestamp=message.timestamp,
         )
         self.session.add(row)
-        self.session.commit()
+        try:
+            self.session.commit()
+        except IntegrityError:
+            # Race: another request inserted the same external_id after our check.
+            self.session.rollback()
+            if message.external_id is not None:
+                existing = self.session.scalars(
+                    select(MessageRow).where(MessageRow.external_id == message.external_id)
+                ).first()
+                if existing is not None:
+                    return existing
+            # If external_id was None or still not found, re-raise the integrity error
+            # (should not happen in normal operation).
+            raise
         self.session.refresh(row)
         return row
 

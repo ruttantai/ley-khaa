@@ -1,7 +1,12 @@
 from datetime import datetime, timedelta, timezone
+import uuid
+
+from sqlalchemy.exc import IntegrityError
+import pytest
 
 from ley_khaa.domain.models import Attachment, AttachmentKind, Message
 from ley_khaa.persistence.message_repository import MessageRepository
+from ley_khaa.persistence.orm import MessageRow
 
 
 def _msg(text="hello", conv="c1", external_id=None, ts=None):
@@ -80,3 +85,84 @@ def test_last_timestamp_returns_latest(session):
 
 def test_last_timestamp_none_for_empty_conversation(session):
     assert MessageRepository(session).last_timestamp("nope") is None
+
+
+def test_unique_constraint_prevents_duplicate_external_id(session):
+    """Verify the DB-level unique constraint on external_id is real."""
+    # Insert a row with external_id directly
+    row1 = MessageRow(
+        id=str(uuid.uuid4()),
+        external_id="unique-123",
+        source="test",
+        client="test",
+        conversation_id="c1",
+        author="test",
+        text="first",
+    )
+    session.add(row1)
+    session.commit()
+
+    # Attempt to insert another row with the same external_id
+    row2 = MessageRow(
+        id=str(uuid.uuid4()),
+        external_id="unique-123",
+        source="test",
+        client="test",
+        conversation_id="c1",
+        author="test",
+        text="second",
+    )
+    session.add(row2)
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_race_condition_recovery(session):
+    """Verify repository recovers when commit fails due to concurrent insert."""
+    repo = MessageRepository(session)
+
+    # Insert first message with external_id via repository
+    msg1 = _msg("first", external_id="race-test")
+    row1 = repo.add(msg1)
+    assert row1.text == "first"
+
+    # Simulate a race: construct a new message with same external_id but different id
+    # and bypass the fast path check by constructing MessageRow directly
+    msg2_id = str(uuid.uuid4())
+    msg2 = Message(
+        id=msg2_id,
+        source="simulator",
+        client="demo",
+        conversation_id="c1",
+        author="boss",
+        text="second (should lose race)",
+        external_id="race-test",
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    # Manually add to session and attempt commit, which should fail due to unique constraint
+    row2 = MessageRow(
+        id=msg2.id,
+        external_id=msg2.external_id,
+        source=msg2.source,
+        client=msg2.client,
+        conversation_id=msg2.conversation_id,
+        author=msg2.author,
+        text=msg2.text,
+        attachments=[],
+        timestamp=msg2.timestamp,
+    )
+    session.add(row2)
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+    # Now use repository.add() with a fresh message with the same external_id
+    # It should recover from the race and return the existing row
+    msg3 = _msg("third attempt", external_id="race-test")
+    row3 = repo.add(msg3)
+
+    # Should be the same row as the first insert (by id, not text)
+    assert row3.id == row1.id
+    assert row3.text == row1.text
+    assert len(repo.list_for_conversation("c1")) == 1

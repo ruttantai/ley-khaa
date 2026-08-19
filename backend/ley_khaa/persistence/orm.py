@@ -26,7 +26,7 @@ class MessageRow(Base):
     __tablename__ = "messages"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    external_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    external_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True, unique=True)
     source: Mapped[str] = mapped_column(String)
     client: Mapped[str] = mapped_column(String)
     conversation_id: Mapped[str] = mapped_column(String, index=True)
