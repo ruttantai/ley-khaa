@@ -40,14 +40,31 @@ def test_unknown_fixture_raises(session):
         _sim(session).replay("no_such_conversation")
 
 
-def test_messy_conversation_yields_a_task_that_excludes_the_chatter(session):
-    """The headline integration test: noise in, one clean task out."""
+def test_messy_conversation_yields_tasks_that_exclude_the_chatter(session):
+    """The headline integration test: noise in, clean tasks out.
+
+    The offline HeuristicLLM promotes each request as soon as the gate clears, so
+    the fixture's two request messages land as two tasks rather than one assembled
+    task — a real model with a live debounce accumulates them into one candidate.
+    What matters here, and what is asserted, is that no chatter is ever owned.
+    """
     _sim(session).replay("messy_universe_check")
     tasks = TaskRepository(session).list()
     assert len(tasks) >= 1
 
     messages = {m.id: m.text for m in MessageRepository(session).list_for_conversation("conv-universe")}
-    owned = [messages[mid] for mid in tasks[-1].source_message_ids]
+    owned = [messages[mid] for task in tasks for mid in task.source_message_ids]
     assert any("Bloomberg" in t for t in owned)
     assert not any("game last night" in t for t in owned)
     assert not any(t.strip().lower() == "thanks!" for t in owned)
+    assert not any(t.strip().lower() == "morning all" for t in owned)
+
+
+def test_a_second_request_later_in_the_conversation_is_not_swallowed(session):
+    """Every request after the first used to vanish: one hardcoded candidate key
+    matched the already-promoted candidate and was silently skipped."""
+    _sim(session).replay("messy_universe_check")
+    messages = {m.id: m.text for m in MessageRepository(session).list_for_conversation("conv-universe")}
+    owned = [messages[mid] for task in TaskRepository(session).list() for mid in task.source_message_ids]
+    assert any("Bloomberg" in t for t in owned)
+    assert any("what's missing as an Excel file" in t for t in owned)

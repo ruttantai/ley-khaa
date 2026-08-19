@@ -158,3 +158,31 @@ def test_sweep_with_conversation_id_only_touches_that_conversation(session):
     c2_candidate = CandidateRepository(session).list_for_conversation("c2")[0]
     assert c1_candidate.state == "promoted"
     assert c2_candidate.state == "ready"
+
+
+def test_two_separate_requests_in_one_conversation_produce_two_tasks(session):
+    """A conversation is not limited to one task.
+
+    The offline heuristic used to hardcode a single candidate key, so once the
+    first candidate was promoted every later request in that conversation matched
+    the terminal candidate and was silently discarded.
+    """
+    orch = _orch(session, HeuristicLLM())
+    first = orch.ingest({"text": "compare the Bloomberg universe against FactSet"})
+    second = orch.ingest({"text": "also build the risk report and send it"})
+
+    assert len(first.task_ids) == 1
+    assert len(second.task_ids) == 1
+    assert first.task_ids != second.task_ids
+    assert len(TaskRepository(session).list()) == 2
+
+
+def test_a_follow_up_accumulates_into_the_same_candidate_before_promotion(session):
+    """The key must stay stable while one request is still gathering follow-ups."""
+    orch = _orch(session, HeuristicLLM(), debounce=600)
+    orch.ingest({"text": "compare the Bloomberg universe against FactSet"})
+    orch.ingest({"text": "send me what's missing as an Excel file"})
+
+    candidates = CandidateRepository(session).list_for_conversation("conv-1")
+    assert len(candidates) == 1
+    assert len(candidates[0].message_ids) == 2

@@ -3,7 +3,7 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
-from ..crystallizer.engine import CandidateDraft, CrystallizerOutput
+from ..crystallizer.engine import HANDLED_HEADER, CandidateDraft, CrystallizerOutput
 from ..crystallizer.relevance import RelevanceVerdict
 from .router import ModelChoice
 
@@ -19,6 +19,7 @@ _NOISE_PATTERNS = (
 )
 
 _MESSAGE_LINE = re.compile(r"^\[(?P<id>[^\]]+)\]\s+(?P<author>[^:]+):\s*(?P<text>.*)$")
+_OWNS = re.compile(r"owns=\[(?P<ids>[^\]]*)\]")
 
 
 class HeuristicLLM:
@@ -51,11 +52,17 @@ class HeuristicLLM:
         )
 
     def _crystallize(self, user: str) -> CrystallizerOutput:
+        handled = _handled_message_ids(user)
         owned: list[str] = []
         title = "Untitled request"
         for line in user.splitlines():
             m = _MESSAGE_LINE.match(line)
             if not m:
+                continue
+            # Messages belonging to an already-handled candidate are retired: the
+            # prompt says not to report them again, and re-reporting them is what
+            # made every later request in a conversation vanish.
+            if m.group("id") in handled:
                 continue
             text = m.group("text")
             lowered = text.lower()
@@ -71,7 +78,11 @@ class HeuristicLLM:
         return CrystallizerOutput(
             candidates=[
                 CandidateDraft(
-                    candidate_key="heuristic-1",
+                    # Keyed off the first message the candidate owns: stable while
+                    # the same request keeps accumulating follow-ups, and different
+                    # once a genuinely new request starts. A constant key meant a
+                    # conversation could only ever produce one task.
+                    candidate_key=f"heuristic-{owned[0]}",
                     title=title,
                     summary=title,
                     message_ids=owned,
@@ -81,3 +92,19 @@ class HeuristicLLM:
                 )
             ]
         )
+
+
+def _handled_message_ids(user: str) -> set[str]:
+    """Message ids the prompt marks as belonging to already-handled candidates."""
+    ids: set[str] = set()
+    in_handled = False
+    for line in user.splitlines():
+        if line.startswith("## "):
+            in_handled = line.startswith(HANDLED_HEADER)
+            continue
+        if not in_handled:
+            continue
+        m = _OWNS.search(line)
+        if m:
+            ids.update(part.strip() for part in m.group("ids").split(",") if part.strip())
+    return ids
