@@ -11,8 +11,8 @@ T = TypeVar("T", bound=BaseModel)
 class LLMClient(Protocol):
     """The single seam every LLM call goes through.
 
-    Implementations: AnthropicLLM (production) and FakeLLM (tests). An Ollama
-    offline fallback plugs in here in a later phase.
+    Implementations: AnthropicLLM (production), HeuristicLLM (the offline
+    regex stand-in used when no API key is set) and FakeLLM (tests).
     """
 
     def parse(self, *, choice: ModelChoice, system: str, user: str, output_format: type[T]) -> T:

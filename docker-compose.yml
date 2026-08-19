@@ -17,6 +17,11 @@ services:
     build: ./backend
     environment:
       DATABASE_URL: postgresql+psycopg://ley:ley@db:5432/leykhaa
+      # Without these the backend silently runs the offline HeuristicLLM stand-in
+      # even for a user who has exported a key. Empty means "no key": the factory
+      # falls back and says so in the log.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LEY_KHAA_LLM: ${LEY_KHAA_LLM:-anthropic}
     ports:
       - "8000:8000"
     depends_on:

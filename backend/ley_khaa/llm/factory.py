@@ -1,7 +1,10 @@
+import logging
 import os
 
 from .client import AnthropicLLM, LLMClient
 from .heuristic import HeuristicLLM
+
+logger = logging.getLogger(__name__)
 
 
 def build_llm(backend: str = "anthropic") -> LLMClient:
@@ -10,5 +13,13 @@ def build_llm(backend: str = "anthropic") -> LLMClient:
     if backend == "heuristic":
         return HeuristicLLM()
     if not os.getenv("ANTHROPIC_API_KEY"):
+        # Loud on purpose: silently degrading to a regex stub is how a reader ends
+        # up believing they are looking at model output.
+        logger.warning(
+            "ANTHROPIC_API_KEY is not set — falling back to HeuristicLLM, the offline "
+            "regex stand-in. Relevance and crystallizer results will be crude: keyword "
+            "matching only, no language understanding, no reasoning about which "
+            "messages belong together. Export ANTHROPIC_API_KEY for the real path."
+        )
         return HeuristicLLM()
     return AnthropicLLM()
