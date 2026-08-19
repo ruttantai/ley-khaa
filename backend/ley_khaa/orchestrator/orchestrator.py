@@ -54,6 +54,12 @@ class Orchestrator:
     def ingest(self, raw: dict) -> IntakeResult:
         row = self.gateway.accept(raw)
         verdict = self.relevance.judge(row)
+        self.messages.record_verdict(
+            row.id,
+            relevant=verdict.relevant,
+            topic=verdict.topic,
+            confidence=verdict.confidence,
+        )
         candidates = self.crystallizer.observe(row.conversation_id, verdict)
 
         result = IntakeResult(

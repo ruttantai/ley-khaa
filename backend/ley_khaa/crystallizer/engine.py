@@ -68,7 +68,9 @@ class Crystallizer:
         if not verdict.relevant:
             return []
 
-        window = self.messages.window(conversation_id, limit=self.window_size)
+        # Stage A's stored verdicts prune known chatter here — the filter saves a
+        # call AND shrinks the prompt, instead of only saving a call.
+        window = self.messages.window(conversation_id, limit=self.window_size, exclude_noise=True)
         existing = self.candidates.list_for_conversation(conversation_id)
         complexity = "hard" if len(window) > _HARD_WINDOW else "routine"
 

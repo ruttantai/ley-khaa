@@ -58,9 +58,32 @@ class MessageRepository:
             )
         )
 
-    def window(self, conversation_id: str, limit: int = 30) -> list[MessageRow]:
-        """The most recent `limit` messages, oldest-first."""
-        return self.list_for_conversation(conversation_id)[-limit:]
+    def record_verdict(
+        self, message_id: str, *, relevant: bool, topic: str, confidence: float
+    ) -> MessageRow:
+        """Persist stage A's verdict on the message it judged."""
+        row = self.session.get(MessageRow, message_id)
+        if row is None:
+            raise KeyError(message_id)
+        row.relevant = relevant
+        row.topic = topic
+        row.confidence = confidence
+        self.session.commit()
+        self.session.refresh(row)
+        return row
+
+    def window(
+        self, conversation_id: str, limit: int = 30, *, exclude_noise: bool = False
+    ) -> list[MessageRow]:
+        """The most recent `limit` messages, oldest-first.
+
+        With exclude_noise, messages stage A judged irrelevant are dropped before
+        the limit is applied. Messages with no stored verdict are always kept.
+        """
+        rows = self.list_for_conversation(conversation_id)
+        if exclude_noise:
+            rows = [r for r in rows if r.relevant is not False]
+        return rows[-limit:]
 
     def last_timestamp(self, conversation_id: str) -> datetime | None:
         rows = self.list_for_conversation(conversation_id)

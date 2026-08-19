@@ -265,3 +265,19 @@ def test_promoted_candidates_are_rendered_as_already_handled(session):
     assert f"cand-universe Universe reconciliation owns=[{rows[0].id}]" in prompt
     # A terminal candidate is never offered back as a live one to update.
     assert "[promoted]" not in prompt
+
+
+def test_messages_stage_a_judged_noise_are_pruned_from_the_prompt(session):
+    """The cheap filter must prune, not merely skip a call."""
+    rows = _seed(session, ["compare universes", "haha nice one", "by month end"])
+    messages = MessageRepository(session)
+    messages.record_verdict(rows[1].id, relevant=False, topic="chatter", confidence=0.9)
+
+    llm = FakeLLM([CrystallizerOutput(candidates=[_draft(message_ids=[rows[0].id])])])
+    _engine(session, llm).observe("c1", RELEVANT)
+
+    prompt = llm.calls[0].user
+    assert "haha nice one" not in prompt
+    assert rows[1].id not in prompt
+    assert "compare universes" in prompt
+    assert "by month end" in prompt

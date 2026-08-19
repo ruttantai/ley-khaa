@@ -186,3 +186,12 @@ def test_a_follow_up_accumulates_into_the_same_candidate_before_promotion(sessio
     candidates = CandidateRepository(session).list_for_conversation("conv-1")
     assert len(candidates) == 1
     assert len(candidates[0].message_ids) == 2
+
+
+def test_ingest_persists_the_stage_a_verdict_on_the_message(session):
+    orch = _orch(session, HeuristicLLM())
+    result = orch.ingest({"text": "morning all"})
+    row = session.get(MessageRow, result.message_id)
+    assert row.relevant is False
+    assert row.topic == "chatter"
+    assert row.confidence == 0.6

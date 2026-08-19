@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, JSON, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, JSON, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
@@ -34,6 +34,11 @@ class MessageRow(Base):
     text: Mapped[str] = mapped_column(String)
     attachments: Mapped[list] = mapped_column(JSON, default=list)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # Stage A's verdict, persisted so stage B can actually prune known noise from
+    # its window. NULL means "not judged yet" and is treated as relevant.
+    relevant: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    topic: Mapped[str | None] = mapped_column(String, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class CandidateRow(Base):
