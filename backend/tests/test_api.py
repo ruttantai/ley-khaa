@@ -134,3 +134,12 @@ def test_whitespace_only_text_is_rejected_with_422(client):
 
 def test_missing_text_is_rejected_with_422(client):
     assert client.post("/messages", json={}).status_code == 422
+
+
+def test_two_requests_in_one_conversation_yield_two_tasks_over_http(client):
+    """The bug as reproduced: every request after the first returned task_ids []."""
+    first = client.post("/messages", json={"text": "compare the Bloomberg universe against FactSet"})
+    second = client.post("/messages", json={"text": "also build the risk report and send it"})
+    assert len(first.json()["task_ids"]) == 1
+    assert len(second.json()["task_ids"]) == 1
+    assert len(client.get("/tasks").json()) == 2

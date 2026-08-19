@@ -99,7 +99,7 @@ cd frontend && npm install && npm run dev
 ## Develop
 
 ```bash
-cd backend  && python -m pytest -q   # 154 tests
+cd backend  && python -m pytest -q   # 155 tests
 cd frontend && npm test              # 5 tests (vitest)
 ```
 
