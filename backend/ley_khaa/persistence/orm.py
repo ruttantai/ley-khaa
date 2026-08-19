@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, JSON, String
+from sqlalchemy import DateTime, JSON, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
@@ -38,6 +38,9 @@ class MessageRow(Base):
 
 class CandidateRow(Base):
     __tablename__ = "task_candidates"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "candidate_key", name="uq_candidate_per_conversation"),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     conversation_id: Mapped[str] = mapped_column(String, index=True)

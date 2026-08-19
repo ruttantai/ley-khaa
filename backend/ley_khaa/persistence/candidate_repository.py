@@ -1,6 +1,7 @@
 import uuid
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..crystallizer.candidate import CandidateState, ensure_transition
@@ -40,7 +41,24 @@ class CandidateRepository:
         row.message_ids = message_ids
         row.missing_fields = missing_fields
         row.open_question = open_question
-        self.session.commit()
+        try:
+            self.session.commit()
+        except IntegrityError:
+            # Race: another request inserted the same (conversation_id, candidate_key) after our check.
+            self.session.rollback()
+            row = self.get_by_key(conversation_id, candidate_key)
+            if row is None:
+                # Integrity error was not the duplicate key (should not happen in normal operation).
+                raise
+            # Apply the requested update to the row that won the race.
+            ensure_transition(CandidateState(row.state), state)
+            row.state = state.value
+            row.title = title
+            row.summary = summary
+            row.message_ids = message_ids
+            row.missing_fields = missing_fields
+            row.open_question = open_question
+            self.session.commit()
         self.session.refresh(row)
         return row
 
