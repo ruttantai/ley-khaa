@@ -9,6 +9,7 @@ from ley_khaa.llm.heuristic import HeuristicLLM
 from ley_khaa.orchestrator.orchestrator import Orchestrator
 from ley_khaa.persistence.candidate_repository import CandidateRepository
 from ley_khaa.persistence.message_repository import MessageRepository
+from ley_khaa.persistence.orm import MessageRow
 from ley_khaa.persistence.repository import TaskRepository
 
 
@@ -91,3 +92,69 @@ def test_ingest_is_idempotent_per_external_id(session):
 def test_result_reports_conversation_id(session):
     result = _orch(session, HeuristicLLM()).ingest({"text": "compare universes", "conversation_id": "c9"})
     assert result.conversation_id == "c9"
+
+
+def _backdate_conversation(session, conversation_id, seconds):
+    rows = MessageRepository(session).list_for_conversation(conversation_id)
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=seconds)
+    for row in rows:
+        session.query(MessageRow).filter(MessageRow.id == row.id).update({"timestamp": cutoff})
+    session.commit()
+
+
+def test_sweep_promotes_a_ready_candidate_once_the_conversation_goes_quiet(session):
+    orch = _orch(session, HeuristicLLM(), debounce=600)
+    result = orch.ingest({"text": "compare the universes"})
+    assert result.task_ids == []
+
+    _backdate_conversation(session, "conv-1", seconds=700)
+
+    task_ids = orch.sweep()
+    assert len(task_ids) == 1
+    task = TaskRepository(session).get(task_ids[0])
+    assert task.state == TaskState.DONE.value
+    candidate = CandidateRepository(session).list_for_conversation("conv-1")[0]
+    assert candidate.state == "promoted"
+    assert candidate.task_id == task_ids[0]
+
+
+def test_sweep_does_not_promote_a_still_active_conversation(session):
+    orch = _orch(session, HeuristicLLM(), debounce=600)
+    orch.ingest({"text": "compare the universes"})
+
+    task_ids = orch.sweep()
+    assert task_ids == []
+    candidate = CandidateRepository(session).list_for_conversation("conv-1")[0]
+    assert candidate.state == "ready"
+
+
+def test_sweep_is_a_noop_with_no_ready_candidates_and_idempotent_after_promotion(session):
+    orch = _orch(session, HeuristicLLM(), debounce=600)
+
+    assert orch.sweep() == []
+
+    orch.ingest({"text": "compare the universes"})
+    _backdate_conversation(session, "conv-1", seconds=700)
+
+    first = orch.sweep()
+    assert len(first) == 1
+
+    second = orch.sweep()
+    assert second == []
+    assert len(TaskRepository(session).list()) == 1
+
+
+def test_sweep_with_conversation_id_only_touches_that_conversation(session):
+    orch = _orch(session, HeuristicLLM(), debounce=600)
+    orch.ingest({"text": "compare the universes", "conversation_id": "c1"})
+    orch.ingest({"text": "compare the universes", "conversation_id": "c2"})
+    _backdate_conversation(session, "c1", seconds=700)
+    _backdate_conversation(session, "c2", seconds=700)
+
+    task_ids = orch.sweep(conversation_id="c1")
+    assert len(task_ids) == 1
+
+    c1_candidate = CandidateRepository(session).list_for_conversation("c1")[0]
+    c2_candidate = CandidateRepository(session).list_for_conversation("c2")[0]
+    assert c1_candidate.state == "promoted"
+    assert c2_candidate.state == "ready"

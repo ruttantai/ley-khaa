@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from ..crystallizer.candidate import CandidateState
 from ..crystallizer.engine import Crystallizer
 from ..crystallizer.gate import ReadinessGate
 from ..crystallizer.relevance import RelevanceFilter
@@ -61,12 +62,37 @@ class Orchestrator:
             candidates=candidates,
         )
 
-        last_at = self.messages.last_timestamp(row.conversation_id) or row.timestamp
+        # The message that triggered this call is always the newest one in the
+        # conversation, so this is only ever ~0 seconds quiet. That's fine: it
+        # lets debounce_seconds=0 promote inline. A real (non-zero) debounce is
+        # only ever satisfied later, by sweep().
+        last_at = self.messages.last_timestamp(row.conversation_id)
         now = datetime.now(timezone.utc)
         for candidate in candidates:
             if self.gate.should_emit(candidate, last_message_at=last_at, now=now):
                 result.task_ids.append(self._promote(candidate))
         return result
+
+    def sweep(self, conversation_id: str | None = None) -> list[str]:
+        """Re-evaluate READY candidates against the gate with no new message.
+
+        The debounce gate wants "the conversation has gone quiet," which is
+        never true inside ingest() itself since ingest() is called BY a new
+        message. sweep() is the trigger a poller/scheduler calls later, once
+        that message is no longer the newest thing in the conversation, to
+        let a candidate's quiet period actually elapse and promote it.
+        """
+        ready = self.candidates.list_by_state(CandidateState.READY)
+        if conversation_id is not None:
+            ready = [c for c in ready if c.conversation_id == conversation_id]
+
+        now = datetime.now(timezone.utc)
+        task_ids: list[str] = []
+        for candidate in ready:
+            last_at = self.messages.last_timestamp(candidate.conversation_id)
+            if self.gate.should_emit(candidate, last_message_at=last_at, now=now):
+                task_ids.append(self._promote(candidate))
+        return task_ids
 
     def _promote(self, candidate: CandidateRow) -> str:
         task = self.repo.create(
