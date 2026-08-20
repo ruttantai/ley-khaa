@@ -3,7 +3,7 @@ from collections.abc import Callable
 
 from ..autonomy.engine import recommend
 from ..autonomy.modes import AutonomyMode
-from ..domain.states import TaskState
+from ..domain.states import InvalidTransition, TaskState
 from ..interpreter.interpreter import Interpreter, MalformedSpec
 from ..interpreter.spec import TaskSpec
 from ..llm.client import LLMClient
@@ -70,6 +70,58 @@ class TaskDriver:
                 return self.repo.get(task_id)
         logger.warning("task %s hit the step ceiling; leaving it where it is", task_id)
         return self.repo.get(task_id)
+
+    # --- human actions ----------------------------------------------------
+
+    def approve(self, task_id: str) -> TaskRow:
+        if not self.repo.claim(
+            task_id, expected=TaskState.AWAITING_APPROVAL, target=TaskState.EXECUTING
+        ):
+            raise InvalidTransition(f"task {task_id} is not awaiting approval")
+        return self.advance(task_id)
+
+    def reject(self, task_id: str, reason: str = "rejected by the human") -> TaskRow:
+        self.repo.record_failure(task_id, reason)
+        if not self.repo.claim(
+            task_id, expected=TaskState.AWAITING_APPROVAL, target=TaskState.FAILED
+        ):
+            raise InvalidTransition(f"task {task_id} is not awaiting approval")
+        return self.repo.get(task_id)
+
+    def override(self, task_id: str, mode: AutonomyMode | None) -> TaskRow:
+        """Pin the mode, or pass None to clear the pin and follow the recommendation."""
+        self.repo.set_override(task_id, mode.value if mode is not None else None)
+        row = self.repo.get(task_id)
+        if row is None:
+            raise KeyError(task_id)
+        if TaskState(row.state) is TaskState.AWAITING_APPROVAL:
+            # Send it back through the gate so the new mode is actually applied.
+            # This is what makes flipping the dial to Auto release a parked task.
+            self.repo.claim(
+                task_id, expected=TaskState.AWAITING_APPROVAL, target=TaskState.INTERPRETED
+            )
+        return self.advance(task_id)
+
+    def edit_spec(self, task_id: str, patch: dict) -> TaskRow:
+        row = self.repo.get(task_id)
+        if row is None:
+            raise KeyError(task_id)
+        if not row.spec:
+            raise InvalidTransition(f"task {task_id} has no spec to edit yet")
+
+        # extra="forbid" on TaskSpec turns a misspelled key into a ValidationError
+        # here rather than a silently dropped edit. The API maps it to a 422.
+        spec = TaskSpec.model_validate({**row.spec, **patch})
+        self.repo.save_spec(task_id, spec)
+
+        state = TaskState(row.state)
+        if state in (TaskState.AWAITING_APPROVAL, TaskState.NEEDS_CLARIFICATION):
+            # Re-enter scoring, NOT interpretation: an edit changes confidence and
+            # risk, so the recommendation must be recomputed — but re-running the
+            # interpreter would overwrite the human's correction with the model's
+            # original reading.
+            self.repo.claim(task_id, expected=state, target=TaskState.INTERPRETED)
+        return self.advance(task_id)
 
     # --- automatic steps --------------------------------------------------
 
