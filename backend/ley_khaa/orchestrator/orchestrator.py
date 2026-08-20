@@ -125,15 +125,24 @@ class Orchestrator:
         This is what retries a task whose interpretation hit a transport failure:
         it stays in CLASSIFIED, and the next sweep picks it up.
         """
-        advanced: list[str] = []
-        for state in (
+        mid_flight = (
             TaskState.RECEIVED,
             TaskState.CLASSIFIED,
             TaskState.INTERPRETED,
             TaskState.EXECUTING,
             TaskState.VALIDATING,
-        ):
+        )
+        # Collect first, then drive. Advancing inline while iterating state by
+        # state let one sweep find the same task twice — once in RECEIVED, then
+        # again in CLASSIFIED after it had just moved there — which burned two
+        # retry attempts per sweep instead of one.
+        task_ids: list[str] = []
+        seen: set[str] = set()
+        for state in mid_flight:
             for row in self.repo.list_by_state(state):
-                self.driver.advance(row.id)
-                advanced.append(row.id)
-        return advanced
+                if row.id not in seen:
+                    seen.add(row.id)
+                    task_ids.append(row.id)
+        for task_id in task_ids:
+            self.driver.advance(task_id)
+        return task_ids

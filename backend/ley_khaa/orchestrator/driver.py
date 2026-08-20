@@ -52,7 +52,6 @@ class TaskDriver:
         candidates: CandidateRepository,
     ) -> None:
         self.repo = repo
-        self.messages = messages
         self.candidates = candidates
         self.interpreter = Interpreter(llm, messages)
 
@@ -128,16 +127,19 @@ class TaskDriver:
             spec,
             candidate_missing_fields=list(candidate.missing_fields or []) if candidate else [],
         )
-        self.repo.save_recommendation(
+        updated = self.repo.save_recommendation(
             row.id,
             mode=recommendation.mode.value,
             confidence=recommendation.confidence,
             risk=recommendation.risk,
             reason=recommendation.reason,
         )
-        # Re-read: effective_mode is only meaningful once the recommendation is
-        # stored, and a human's override must still beat what we just computed.
-        effective = self.repo.get(row.id).effective_mode
+        # effective_mode is only meaningful once the recommendation is stored, and
+        # a human override set earlier must still beat what we just computed.
+        # save_recommendation returns the updated row, so no second read is needed.
+        # (A concurrent override arriving mid-scoring is not reachable while the
+        # orchestrator is synchronous; per-project concurrency is Phase 0.5.0.)
+        effective = updated.effective_mode
         target = (
             TaskState.EXECUTING
             if effective == AutonomyMode.AUTO.value

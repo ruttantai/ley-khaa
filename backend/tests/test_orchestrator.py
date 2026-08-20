@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+from ley_khaa.autonomy.modes import AutonomyMode
 from ley_khaa.crystallizer.candidate import CandidateState
 from ley_khaa.crystallizer.engine import CandidateDraft, CrystallizerOutput
 from ley_khaa.crystallizer.gate import ReadinessGate
@@ -31,18 +32,33 @@ def test_noise_message_creates_no_task(session):
 
 
 def test_request_message_creates_one_task(session):
-    """The offline HeuristicLLM reports certainty 0.55, below the Auto threshold,
-    so a promoted task now parks for a human instead of racing to done. The
-    format is spelled out here so the spec is complete and the task actually
-    reaches the gate rather than stopping earlier for a missing field."""
+    """The offline HeuristicLLM reports certainty 0.55, below the Copilot
+    confidence threshold of 0.6, so a promoted task now parks in Suggest
+    instead of racing to done. The format is spelled out here so the spec is
+    complete and the task actually reaches the gate rather than stopping
+    earlier for a missing field."""
     result = _orch(session, HeuristicLLM()).ingest(
         {"text": "compare the universes and send the difference as excel"}
     )
     assert len(result.task_ids) == 1
     task = TaskRepository(session).get(result.task_ids[0])
     assert task.state == TaskState.AWAITING_APPROVAL.value
-    assert task.recommended_mode is not None
+    assert task.recommended_mode == AutonomyMode.SUGGEST.value
     assert task.autonomy_reason is not None
+
+
+def test_a_gap_in_the_spec_sends_the_task_to_clarification_end_to_end(session):
+    """Real HeuristicLLM path: no format word means output_format is missing,
+    so the task must stop at NEEDS_CLARIFICATION before it ever reaches the
+    gate — it never gets a recommendation at all."""
+    result = _orch(session, HeuristicLLM()).ingest(
+        {"text": "compare the universes and send the difference"}
+    )
+    assert len(result.task_ids) == 1
+    task = TaskRepository(session).get(result.task_ids[0])
+    assert task.state == TaskState.NEEDS_CLARIFICATION.value
+    assert "output_format" in task.open_question
+    assert task.recommended_mode is None
 
 
 def test_task_owns_only_the_candidates_messages(session):
@@ -123,10 +139,11 @@ def test_sweep_promotes_a_ready_candidate_once_the_conversation_goes_quiet(sessi
     task_ids = orch.sweep()
     assert len(task_ids) == 1
     task = TaskRepository(session).get(task_ids[0])
-    # The offline HeuristicLLM reports certainty 0.55, below the Auto threshold,
-    # so the promoted task parks for a human instead of racing to done.
+    # The offline HeuristicLLM reports certainty 0.55, below the Copilot
+    # confidence threshold of 0.6, so the promoted task parks in Suggest
+    # instead of racing to done.
     assert task.state == TaskState.AWAITING_APPROVAL.value
-    assert task.recommended_mode is not None
+    assert task.recommended_mode == AutonomyMode.SUGGEST.value
     candidate = CandidateRepository(session).list_for_conversation("conv-1")[0]
     assert candidate.state == "promoted"
     assert candidate.task_id == task_ids[0]
@@ -257,3 +274,30 @@ def test_a_promoted_task_now_parks_instead_of_racing_to_done(session):
     assert task.state == TaskState.AWAITING_APPROVAL.value
     assert task.autonomy_reason is not None
     assert task.candidate_id is not None
+
+
+def test_advance_stalled_costs_exactly_one_attempt_per_sweep(session):
+    """Regression: advancing inline while iterating state-by-state let one
+    sweep find the same task twice — once in RECEIVED, then again in
+    CLASSIFIED right after it had just moved there — burning two retry
+    attempts (and returning the id twice) instead of one. A task with the LLM
+    down must retry once per sweep, not twice, or it fails after two sweeps
+    instead of the intended three spaced retries.
+    """
+    from ley_khaa.llm.client import FakeLLM
+
+    # Two failures queued: the buggy double-drive would consume both in a
+    # single advance_stalled() call. The fix must leave the second unused.
+    llm = FakeLLM([ConnectionError("boom"), ConnectionError("boom")])
+    orch = _orch(session, llm)
+    task = TaskRepository(session).create(
+        project="default", title="stalled task", source_message_ids=[]
+    )
+    assert task.state == TaskState.RECEIVED.value
+
+    task_ids = orch.advance_stalled()
+
+    assert task_ids == [task.id]
+    result = TaskRepository(session).get(task.id)
+    assert result.state == TaskState.CLASSIFIED.value
+    assert result.interpret_attempts == 1
