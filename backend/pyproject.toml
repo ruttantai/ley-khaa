@@ -1,9 +1,10 @@
 [project]
 name = "ley-khaa"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI secretary — turns conversations into validated work"
 requires-python = ">=3.12"
 dependencies = [
+    "anthropic>=0.70",
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
     "sqlalchemy>=2.0",
@@ -20,6 +21,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["ley_khaa*"]
+
+[tool.setuptools.package-data]
+ley_khaa = ["fixtures/conversations/*.json"]
 
 [tool.pytest.ini_options]
 filterwarnings = [
