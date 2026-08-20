@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..crystallizer.gate import ReadinessGate
-from ..db import SessionLocal, init_db
+from ..db import SessionLocal, run_migrations
 from ..intake.simulator import Simulator
 from ..llm.factory import build_llm
 from ..orchestrator.orchestrator import Orchestrator
@@ -69,7 +69,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.sweeper = None
         yield
         return
-    init_db()
+    run_migrations()
     session = SessionLocal()
     try:
         repo = TaskRepository(session)
