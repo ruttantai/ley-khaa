@@ -1,4 +1,11 @@
-from ley_khaa.autonomy.engine import recommend
+from ley_khaa.autonomy.engine import (
+    _AUTO_CONFIDENCE,
+    _AUTO_RISK,
+    _BASELINE_RISK,
+    _COPILOT_CONFIDENCE,
+    _COPILOT_RISK,
+    recommend,
+)
 from ley_khaa.autonomy.modes import AutonomyMode
 from ley_khaa.interpreter.spec import TaskSpec
 
@@ -74,3 +81,33 @@ def test_recommendation_is_deterministic():
     """Same inputs, same answer — every time. This is why it is not an LLM call."""
     spec = _spec(certainty=0.7, recipient="boss")
     assert recommend(spec) == recommend(spec)
+
+
+def test_the_offline_heuristic_can_never_reach_auto():
+    """Cross-module safety invariant: a fresh clone with no API key must never
+    run tasks unattended on regex keyword matching."""
+    from ley_khaa.llm.heuristic import _HEURISTIC_CERTAINTY
+
+    assert _HEURISTIC_CERTAINTY < _AUTO_CONFIDENCE
+    # Proven through the public API too, not only by comparing constants.
+    assert recommend(_spec(certainty=_HEURISTIC_CERTAINTY)).mode is not AutonomyMode.AUTO
+
+
+def test_the_mode_thresholds_are_pinned():
+    """These four numbers are the policy. Pin them so a drift fails here."""
+    assert (_AUTO_CONFIDENCE, _AUTO_RISK) == (0.85, 0.25)
+    assert (_COPILOT_CONFIDENCE, _COPILOT_RISK) == (0.6, 0.6)
+
+
+def test_each_risk_contribution_is_pinned_by_magnitude():
+    base = recommend(_spec()).risk
+    assert base == _BASELINE_RISK == 0.1
+    assert round(recommend(_spec(recipient="boss")).risk - base, 4) == 0.35
+    assert round(recommend(_spec(intent="settle the invoice")).risk - base, 4) == 0.4
+    assert round(recommend(_spec(urgency="high")).risk - base, 4) == 0.15
+
+
+def test_the_unsettled_conversation_penalty_is_pinned():
+    settled = recommend(_spec()).confidence
+    unsettled = recommend(_spec(), candidate_missing_fields=["deadline"]).confidence
+    assert round(settled - unsettled, 4) == 0.1
