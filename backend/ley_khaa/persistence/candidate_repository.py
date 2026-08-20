@@ -63,6 +63,9 @@ class CandidateRepository:
         self.session.refresh(row)
         return row
 
+    def get(self, candidate_id: str) -> CandidateRow | None:
+        return self.session.get(CandidateRow, candidate_id)
+
     def get_by_key(self, conversation_id: str, candidate_key: str) -> CandidateRow | None:
         return self.session.scalars(
             select(CandidateRow).where(

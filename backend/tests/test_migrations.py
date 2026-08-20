@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import sqlalchemy as sa
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
@@ -41,9 +42,19 @@ def test_a_pre_alembic_database_is_stamped_rather_than_recreated(tmp_path):
 
     url = f"sqlite:///{tmp_path / 'legacy.db'}"
     legacy = create_engine(url, future=True)
-    Base.metadata.create_all(legacy)  # exactly what 0.2.0 did
+    # Build exactly the 0.2.0 schema. Base.metadata.create_all() would use
+    # whatever columns orm.py declares *today* — which, now that phase-2 columns
+    # exist, is no longer the 0.2.0 schema. Running only the baseline migration
+    # and then dropping alembic_version reproduces a genuine pre-alembic
+    # database: the tables exist, but nothing ever stamped a version.
+    config = Config(str(ALEMBIC_INI))
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "0001_baseline")
+    with legacy.begin() as connection:
+        connection.execute(sa.text("DROP TABLE alembic_version"))
     assert "alembic_version" not in set(inspect(legacy).get_table_names())
 
     run_migrations(url)  # must not raise "table tasks already exists"
 
     assert "alembic_version" in set(inspect(legacy).get_table_names())
+    assert "spec" in {c["name"] for c in inspect(legacy).get_columns("tasks")}

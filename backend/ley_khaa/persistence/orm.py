@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, JSON, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
@@ -20,6 +20,26 @@ class TaskRow(Base):
     source_message_ids: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+    # Set when the task came from a crystallized candidate. The back-link exists
+    # because the driver needs to read the candidate's readiness when scoring,
+    # and CandidateRow.task_id only points the other way.
+    candidate_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    spec: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    recommended_mode: Mapped[str | None] = mapped_column(String, nullable=True)
+    mode_override: Mapped[str | None] = mapped_column(String, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    risk: Mapped[float | None] = mapped_column(Float, nullable=True)
+    autonomy_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    open_question: Mapped[str | None] = mapped_column(String, nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    interpret_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    clarification_rounds: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+    @property
+    def effective_mode(self) -> str | None:
+        """The mode actually in force. Computed, never stored, so a human's
+        override cannot go stale against a later re-score."""
+        return self.mode_override or self.recommended_mode
 
 
 class MessageRow(Base):
@@ -39,6 +59,10 @@ class MessageRow(Base):
     relevant: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     topic: Mapped[str | None] = mapped_column(String, nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Set when this message is a reply to an existing task rather than raw intake.
+    # Intake routes such a message straight to that task and skips candidate
+    # formation, so it can never spawn a duplicate candidate (spec §5.8).
+    reply_to_task_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
 
 class CandidateRow(Base):
