@@ -31,10 +31,18 @@ def test_noise_message_creates_no_task(session):
 
 
 def test_request_message_creates_one_task(session):
-    result = _orch(session, HeuristicLLM()).ingest({"text": "compare the universes and send the difference"})
+    """The offline HeuristicLLM reports certainty 0.55, below the Auto threshold,
+    so a promoted task now parks for a human instead of racing to done. The
+    format is spelled out here so the spec is complete and the task actually
+    reaches the gate rather than stopping earlier for a missing field."""
+    result = _orch(session, HeuristicLLM()).ingest(
+        {"text": "compare the universes and send the difference as excel"}
+    )
     assert len(result.task_ids) == 1
     task = TaskRepository(session).get(result.task_ids[0])
-    assert task.state == TaskState.DONE.value
+    assert task.state == TaskState.AWAITING_APPROVAL.value
+    assert task.recommended_mode is not None
+    assert task.autonomy_reason is not None
 
 
 def test_task_owns_only_the_candidates_messages(session):
@@ -104,8 +112,10 @@ def _backdate_conversation(session, conversation_id, seconds):
 
 
 def test_sweep_promotes_a_ready_candidate_once_the_conversation_goes_quiet(session):
+    # The format is spelled out so the spec is complete and the task actually
+    # reaches the gate rather than stopping earlier for a missing field.
     orch = _orch(session, HeuristicLLM(), debounce=600)
-    result = orch.ingest({"text": "compare the universes"})
+    result = orch.ingest({"text": "compare the universes and export as excel"})
     assert result.task_ids == []
 
     _backdate_conversation(session, "conv-1", seconds=700)
@@ -113,7 +123,10 @@ def test_sweep_promotes_a_ready_candidate_once_the_conversation_goes_quiet(sessi
     task_ids = orch.sweep()
     assert len(task_ids) == 1
     task = TaskRepository(session).get(task_ids[0])
-    assert task.state == TaskState.DONE.value
+    # The offline HeuristicLLM reports certainty 0.55, below the Auto threshold,
+    # so the promoted task parks for a human instead of racing to done.
+    assert task.state == TaskState.AWAITING_APPROVAL.value
+    assert task.recommended_mode is not None
     candidate = CandidateRepository(session).list_for_conversation("conv-1")[0]
     assert candidate.state == "promoted"
     assert candidate.task_id == task_ids[0]
@@ -234,3 +247,13 @@ def test_concurrent_promotion_creates_exactly_one_task_and_does_not_raise(sessio
         assert promoted.task_id == won
     finally:
         other.close()
+
+
+def test_a_promoted_task_now_parks_instead_of_racing_to_done(session):
+    """The Phase 1 stub walked every task to done. That was the point of this phase."""
+    orchestrator = _orch(session, HeuristicLLM())
+    result = orchestrator.ingest({"text": "compare bloomberg against factset and send me an excel"})
+    task = TaskRepository(session).get(result.task_ids[0])
+    assert task.state == TaskState.AWAITING_APPROVAL.value
+    assert task.autonomy_reason is not None
+    assert task.candidate_id is not None

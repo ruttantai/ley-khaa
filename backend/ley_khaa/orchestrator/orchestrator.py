@@ -12,15 +12,7 @@ from ..persistence.candidate_repository import CandidateRepository
 from ..persistence.message_repository import MessageRepository
 from ..persistence.orm import CandidateRow
 from ..persistence.repository import TaskRepository
-
-# Execution is still a stub: the real executor arrives in phase 0.4.0.
-STUB_PATH: list[TaskState] = [
-    TaskState.CLASSIFIED,
-    TaskState.INTERPRETED,
-    TaskState.EXECUTING,
-    TaskState.VALIDATING,
-    TaskState.DONE,
-]
+from .driver import TaskDriver
 
 
 @dataclass
@@ -50,6 +42,7 @@ class Orchestrator:
         self.relevance = RelevanceFilter(llm)
         self.crystallizer = Crystallizer(llm, messages, candidates)
         self.gate = gate or ReadinessGate()
+        self.driver = TaskDriver(repo, llm=llm, messages=messages, candidates=candidates)
 
     def ingest(self, raw: dict) -> IntakeResult:
         row = self.gateway.accept(raw)
@@ -117,8 +110,30 @@ class Orchestrator:
             project="default",
             title=candidate.title,
             source_message_ids=list(candidate.message_ids),
+            candidate_id=candidate.id,
         )
-        for state in STUB_PATH:
-            self.repo.update_state(task.id, state)
         self.candidates.attach_task(candidate.id, task.id)
+        # The driver owns everything from here: interpret, score, and either park
+        # for a human or (on Auto) run through. The orchestrator's job ends at
+        # turning a settled candidate into a task.
+        self.driver.advance(task.id)
         return task.id
+
+    def advance_stalled(self) -> list[str]:
+        """Re-drive every task that is mid-flight but not waiting on a human.
+
+        This is what retries a task whose interpretation hit a transport failure:
+        it stays in CLASSIFIED, and the next sweep picks it up.
+        """
+        advanced: list[str] = []
+        for state in (
+            TaskState.RECEIVED,
+            TaskState.CLASSIFIED,
+            TaskState.INTERPRETED,
+            TaskState.EXECUTING,
+            TaskState.VALIDATING,
+        ):
+            for row in self.repo.list_by_state(state):
+                self.driver.advance(row.id)
+                advanced.append(row.id)
+        return advanced
