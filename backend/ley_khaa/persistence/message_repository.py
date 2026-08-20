@@ -88,3 +88,10 @@ class MessageRepository:
     def last_timestamp(self, conversation_id: str) -> datetime | None:
         rows = self.list_for_conversation(conversation_id)
         return rows[-1].timestamp if rows else None
+
+    def get_many(self, message_ids: list[str]) -> list[MessageRow]:
+        """The named messages, oldest-first. Unknown ids are skipped."""
+        if not message_ids:
+            return []
+        rows = self.session.scalars(select(MessageRow).where(MessageRow.id.in_(message_ids)))
+        return sorted(rows, key=lambda r: (r.timestamp, r.id))

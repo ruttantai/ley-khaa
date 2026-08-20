@@ -37,7 +37,12 @@ class FakeLLM:
     def parse(self, *, choice: ModelChoice, system: str, user: str, output_format: type[T]) -> T:
         self.calls.append(RecordedCall(choice=choice, system=system, user=user, output_format=output_format))
         assert self.responses, "FakeLLM exhausted: more parse() calls than queued responses"
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        # A queued exception is raised rather than returned, so tests can drive
+        # the malformed-output and transport-failure branches without mocks.
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 class AnthropicLLM:
