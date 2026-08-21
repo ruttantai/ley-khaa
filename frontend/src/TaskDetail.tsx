@@ -14,6 +14,11 @@ const MODES = [
 // reading of the request and are better fixed by answering, not editing.
 const EDITABLE = ["operation", "output_format", "recipient", "urgency"] as const;
 
+// Only `recipient` is nullable server-side (TaskSpec, backend/ley_khaa/interpreter/
+// spec.py). Sending null for the others 422s — clear them to an empty string
+// instead.
+const NULLABLE_FIELDS: readonly string[] = ["recipient"];
+
 const pct = (value: number | null) => (value === null ? "—" : `${Math.round(value * 100)}%`);
 
 export default function TaskDetail({
@@ -31,6 +36,11 @@ export default function TaskDetail({
 
   const waiting = task.state === "awaiting_approval";
   const blocked = task.state === "needs_clarification";
+  // Mirrors the driver's _ACTIONABLE set (backend/ley_khaa/orchestrator/
+  // driver.py): approve/reject/override/edit_spec all refuse to touch a task
+  // outside these two states, so the controls that trigger them must not be
+  // live outside them either.
+  const modeEditable = waiting || blocked;
 
   return (
     <div className="rounded border border-gray-200 p-4 space-y-4">
@@ -43,31 +53,33 @@ export default function TaskDetail({
         {task.autonomy_reason && <p className="mt-1">{task.autonomy_reason}</p>}
       </div>
 
-      <div className="flex gap-2">
-        {MODES.map((mode) => (
-          <button
-            key={mode.value}
-            aria-label={mode.label}
-            aria-pressed={task.effective_mode === mode.value}
-            onClick={() => run(setTaskMode(task.id, mode.value))}
-            className={`rounded px-3 py-1 text-sm border ${
-              task.effective_mode === mode.value
-                ? "border-blue-500 bg-blue-50 text-blue-800"
-                : "border-gray-200 text-gray-600"
-            }`}
-          >
-            {mode.label}
-          </button>
-        ))}
-        {task.mode_override && (
-          <button
-            onClick={() => run(setTaskMode(task.id, null))}
-            className="text-sm text-gray-500 underline"
-          >
-            follow the recommendation
-          </button>
-        )}
-      </div>
+      {modeEditable && (
+        <div className="flex gap-2">
+          {MODES.map((mode) => (
+            <button
+              key={mode.value}
+              aria-label={mode.label}
+              aria-pressed={task.effective_mode === mode.value}
+              onClick={() => run(setTaskMode(task.id, mode.value))}
+              className={`rounded px-3 py-1 text-sm border ${
+                task.effective_mode === mode.value
+                  ? "border-blue-500 bg-blue-50 text-blue-800"
+                  : "border-gray-200 text-gray-600"
+              }`}
+            >
+              {mode.label}
+            </button>
+          ))}
+          {task.mode_override && (
+            <button
+              onClick={() => run(setTaskMode(task.id, null))}
+              className="text-sm text-gray-500 underline"
+            >
+              follow the recommendation
+            </button>
+          )}
+        </div>
+      )}
 
       {task.spec && (
         <dl className="grid grid-cols-[8rem_1fr] gap-y-1 text-sm">
@@ -102,6 +114,14 @@ export default function TaskDetail({
               Answer
             </button>
           </div>
+          {/* A human facing a question they cannot answer still needs a way
+              out: needs_clarification -> failed is legal server-side. */}
+          <button
+            className="rounded border border-gray-300 px-3 py-1 text-sm"
+            onClick={() => run(rejectTask(task.id, "rejected from the dashboard"))}
+          >
+            Reject
+          </button>
         </div>
       )}
 
@@ -162,7 +182,12 @@ function FieldRow({
           // visibly jumpy.
           onBlur={() => {
             if (value === current) return;
-            patchTaskSpec(task.id, { [field]: value || null })
+            // Only `recipient` is nullable server-side. Sending null for a
+            // cleared operation/output_format/urgency is rejected with a 422
+            // (they're non-nullable TaskSpec fields) — send the empty string
+            // for those instead, so a clear is still a valid patch.
+            const cleared = NULLABLE_FIELDS.includes(field) ? null : "";
+            patchTaskSpec(task.id, { [field]: value || cleared })
               .then(onChanged)
               .catch((e) => onError(String(e)));
           }}
