@@ -53,6 +53,27 @@ def test_approving_twice_is_a_conflict_not_a_crash(session):
         driver.approve(task.id)
 
 
+def test_rejecting_a_finished_task_does_not_corrupt_its_record(session):
+    """A refused rejection must be a no-op, not a partial write.
+
+    reject() used to call record_failure() before claim() validated the
+    transition, so a caller that rejected an already-DONE task would get
+    InvalidTransition (reasonably read as "nothing happened") while
+    failure_reason was permanently stamped onto a task that actually
+    succeeded. claim() must run first.
+    """
+    repo, driver, task = _parked(session, [_spec(recipient="boss")])
+    driver.approve(task.id)
+    assert repo.get(task.id).state == TaskState.DONE.value
+
+    with pytest.raises(InvalidTransition):
+        driver.reject(task.id, "actually this was wrong")
+
+    result = repo.get(task.id)
+    assert result.state == TaskState.DONE.value
+    assert result.failure_reason is None
+
+
 def test_overriding_to_auto_releases_the_task_on_the_spot(session):
     """This is the dial having teeth: one click moves a parked task."""
     repo, driver, task = _parked(session, [_spec(recipient="boss")])
@@ -103,11 +124,54 @@ def test_editing_the_spec_rescores_and_can_change_the_recommendation(session):
 
 
 def test_editing_does_not_re_run_the_interpreter(session):
-    """The human's correction is authoritative; re-interpreting would undo it."""
+    """The human's correction is authoritative; re-interpreting would undo it.
+
+    This covers the awaiting_approval path. What actually guards it here is
+    the state machine, not the FakeLLM: awaiting_approval -> classified is not
+    a legal transition (see domain/states.py), so edit_spec's claim() to
+    INTERPRETED is the only way forward and _interpret() is never reached.
+    The empty FakeLLM([]) is a belt-and-braces trip wire, not the mechanism
+    that proves this — if _interpret() ever did run, any of its .parse()
+    calls would raise AssertionError. The needs_clarification path, where
+    re-entering CLASSIFIED *is* legal, is covered separately by
+    test_editing_from_needs_clarification_moves_to_awaiting_approval, which
+    asserts the resulting state directly rather than relying on a call
+    failing loudly.
+    """
     repo, driver, task = _parked(session, [_spec(recipient="boss")])
-    driver.interpreter.llm = FakeLLM([])  # any call would assert-fail
+    driver.interpreter.llm = FakeLLM([])  # trip wire: any call would assert-fail
     driver.edit_spec(task.id, {"output_format": "csv"})
     assert TaskSpec.model_validate(repo.get(task.id).spec).output_format == "csv"
+
+
+def test_editing_from_needs_clarification_moves_to_awaiting_approval(session):
+    """edit_spec on a needs_clarification task also re-enters scoring, not
+    interpretation.
+
+    Unlike the awaiting_approval case, classified is a legal target from
+    needs_clarification (see domain/states.py), so an accidental
+    re-interpretation wouldn't be caught by the state machine here — it has
+    to be caught by asserting where the task actually lands. A fill-in edit
+    must carry it through INTERPRETED to AWAITING_APPROVAL, not leave it at
+    (or send it back to) a state that would imply the interpreter ran again.
+    """
+    repo = TaskRepository(session)
+    messages = MessageRepository(session)
+    row = messages.add(Message(source="s", client="c", conversation_id="conv-1",
+                               author="boss", text="compare bloomberg against factset"))
+    task = repo.create(project="default", title="t", source_message_ids=[row.id])
+    driver = TaskDriver(
+        repo,
+        llm=FakeLLM([_spec(recipient=None, missing_fields=["recipient"])]),
+        messages=messages,
+        candidates=CandidateRepository(session),
+    )
+    driver.advance(task.id)
+    assert repo.get(task.id).state == TaskState.NEEDS_CLARIFICATION.value
+
+    result = driver.edit_spec(task.id, {"recipient": "boss"})
+
+    assert result.state == TaskState.AWAITING_APPROVAL.value
 
 
 def test_a_misspelled_patch_key_is_rejected(session):

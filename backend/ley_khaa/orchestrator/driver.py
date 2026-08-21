@@ -81,19 +81,21 @@ class TaskDriver:
         return self.advance(task_id)
 
     def reject(self, task_id: str, reason: str = "rejected by the human") -> TaskRow:
-        self.repo.record_failure(task_id, reason)
+        # Claim before recording: writing the reason first left it stamped on tasks
+        # whose rejection was then refused, corrupting records of work that succeeded.
         if not self.repo.claim(
             task_id, expected=TaskState.AWAITING_APPROVAL, target=TaskState.FAILED
         ):
             raise InvalidTransition(f"task {task_id} is not awaiting approval")
+        self.repo.record_failure(task_id, reason)
         return self.repo.get(task_id)
 
     def override(self, task_id: str, mode: AutonomyMode | None) -> TaskRow:
         """Pin the mode, or pass None to clear the pin and follow the recommendation."""
         self.repo.set_override(task_id, mode.value if mode is not None else None)
+        # set_override() already raises KeyError for a missing id via self._row(),
+        # so no None-check is needed on this read.
         row = self.repo.get(task_id)
-        if row is None:
-            raise KeyError(task_id)
         if TaskState(row.state) is TaskState.AWAITING_APPROVAL:
             # Send it back through the gate so the new mode is actually applied.
             # This is what makes flipping the dial to Auto release a parked task.
