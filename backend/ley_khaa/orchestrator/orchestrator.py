@@ -15,6 +15,18 @@ from ..persistence.repository import TaskRepository
 from .driver import TaskDriver
 
 
+class ForeignReplyTarget(Exception):
+    """`reply_to_task_id` names a task that belongs to a different conversation.
+
+    A reply must only ever extend the task it names with a message from that
+    task's OWN conversation. Accepting a cross-conversation id would let a
+    foreign message join task.source_message_ids and, from there, the spec the
+    interpreter reads on its next pass — the exact "a candidate owns only its
+    own message ids" guarantee Phase 1 established, one field away from being
+    violated.
+    """
+
+
 @dataclass
 class IntakeResult:
     message_id: str
@@ -49,7 +61,7 @@ class Orchestrator:
     def ingest(self, raw: dict, *, promote: bool = True) -> IntakeResult:
         row = self.gateway.accept(raw)
         if row.reply_to_task_id:
-            return self._route_reply(row)
+            return self._route_reply(row, promote=promote)
         verdict = self.relevance.judge(row)
         self.messages.record_verdict(
             row.id,
@@ -89,7 +101,7 @@ class Orchestrator:
                     result.task_ids.append(task_id)
         return result
 
-    def _route_reply(self, row: MessageRow) -> IntakeResult:
+    def _route_reply(self, row: MessageRow, *, promote: bool = True) -> IntakeResult:
         """Attach a reply to the task it answers; never form a candidate from it.
 
         The task's candidate is PROMOTED, which is terminal. Letting this message
@@ -99,10 +111,38 @@ class Orchestrator:
         This is deliberately the route a Slack thread reply takes in Phase 0.5.0:
         the adapter maps thread_ts to the task owning the thread, sets
         reply_to_task_id, and this branch fires unchanged.
+
+        `promote` is honored the same way ingest() documents it elsewhere: with
+        it False, the task is still linked to the reply but is not driven any
+        further here. Unreachable today (no caller replies while replaying with
+        promote=False), but the contract stated on ingest() must hold if one ever
+        does.
         """
         task = self.repo.get(row.reply_to_task_id)
         if task is None:
+            # gateway.accept() already committed this message before we get here.
+            # Leaving its `relevant` column NULL would make the crystallizer
+            # window (which treats NULL as "not yet judged" and keeps it) hang
+            # onto an orphaned reply forever. Mark it noise before raising so no
+            # conversation's window is polluted by a message naming a task that
+            # never existed.
+            self.messages.record_verdict(
+                row.id, relevant=False, topic="task-reply", confidence=1.0
+            )
             raise KeyError(row.reply_to_task_id)
+
+        task_conversation_id = self._task_conversation_id(task)
+        if task_conversation_id is not None and task_conversation_id != row.conversation_id:
+            # Same reasoning as the unknown-task case above: don't leave this
+            # message looking relevant-by-default, and never let it touch a task
+            # it does not belong to.
+            self.messages.record_verdict(
+                row.id, relevant=False, topic="task-reply", confidence=1.0
+            )
+            raise ForeignReplyTarget(
+                f"task {task.id} belongs to conversation {task_conversation_id!r}, "
+                f"not {row.conversation_id!r}"
+            )
 
         # Scoped honesty: `relevant` gates whether stage B may consider owning a
         # message for a NEW candidate. This one belongs to a task that already
@@ -117,6 +157,8 @@ class Orchestrator:
             conversation_id=row.conversation_id,
             replied_to_task_id=task.id,
         )
+        if not promote:
+            return result
         if TaskState(task.state) is TaskState.NEEDS_CLARIFICATION:
             self.repo.increment_clarification_rounds(task.id)
             self.repo.set_open_question(task.id, None)
@@ -131,6 +173,18 @@ class Orchestrator:
         # keeping — it is context for the next interpretation — but it does not
         # restart a task the human is already reviewing.
         return result
+
+    def _task_conversation_id(self, task) -> str | None:
+        """The conversation a task's own source messages live in.
+
+        TaskRow carries no conversation_id of its own; it is derived from the
+        messages that formed it, the same lookup app.py's answer_task endpoint
+        already does. None means the task has no source messages to check
+        against (should not happen for a task that reached a human), in which
+        case the mismatch check is skipped rather than blocking a reply.
+        """
+        sources = self.messages.get_many(list(task.source_message_ids or []))
+        return sources[0].conversation_id if sources else None
 
     def sweep(self, conversation_id: str | None = None) -> list[str]:
         """Re-evaluate READY candidates against the gate with no new message.

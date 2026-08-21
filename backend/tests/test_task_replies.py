@@ -3,7 +3,7 @@ import pytest
 from ley_khaa.crystallizer.gate import ReadinessGate
 from ley_khaa.domain.states import TaskState
 from ley_khaa.llm.heuristic import HeuristicLLM
-from ley_khaa.orchestrator.orchestrator import Orchestrator
+from ley_khaa.orchestrator.orchestrator import ForeignReplyTarget, Orchestrator
 from ley_khaa.persistence.candidate_repository import CandidateRepository
 from ley_khaa.persistence.message_repository import MessageRepository
 from ley_khaa.persistence.repository import TaskRepository
@@ -113,6 +113,48 @@ def test_a_reply_to_an_unknown_task_is_rejected(session):
         orchestrator.ingest(
             {"conversation_id": "conv-1", "text": "hello", "reply_to_task_id": "nope"}
         )
+
+
+def test_a_reply_to_an_unknown_task_does_not_pollute_the_window(session):
+    """I1: gateway.accept() already committed this message before the KeyError
+    is raised. Leaving its `relevant` column NULL would make
+    window(exclude_noise=True) — what the crystallizer actually reads — keep it
+    forever, since NULL means "not yet judged" there.
+    """
+    orchestrator = _orchestrator(session)
+    with pytest.raises(KeyError):
+        orchestrator.ingest(
+            {"conversation_id": "conv-1", "text": "hello", "reply_to_task_id": "nope"}
+        )
+    messages = MessageRepository(session)
+    [orphan] = messages.list_for_conversation("conv-1")
+    assert orphan.relevant is False
+    assert orphan not in messages.window("conv-1", exclude_noise=True)
+
+
+def test_a_reply_naming_a_task_from_another_conversation_is_rejected(session):
+    """I2: a reply must only ever extend the task it names with a message from
+    that task's own conversation, or a foreign conversation's message id could
+    join the task's source_message_ids — and from there, the spec the
+    interpreter reads on its next pass.
+    """
+    orchestrator, task = _blocked_task(session)  # task's messages live in conv-1
+    before = TaskRepository(session).get(task.id).source_message_ids
+    with pytest.raises(ForeignReplyTarget):
+        orchestrator.ingest(
+            {
+                "conversation_id": "conv-2",
+                "text": "as a csv please",
+                "reply_to_task_id": task.id,
+            }
+        )
+    after = TaskRepository(session).get(task.id).source_message_ids
+    assert after == before
+
+    messages = MessageRepository(session)
+    [foreign] = messages.list_for_conversation("conv-2")
+    assert foreign.relevant is False
+    assert foreign not in messages.window("conv-2", exclude_noise=True)
 
 
 def test_a_reply_to_a_task_that_is_not_asking_is_attached_but_changes_nothing(session):

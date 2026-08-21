@@ -27,6 +27,13 @@ _WAITING = {
 # validating → done). It exists so that a future bug cannot spin forever.
 _MAX_STEPS = 10
 
+# States in which a human can still act on a task: it hasn't started
+# irreversible work yet, or it's paused asking a question. Approve/reject/
+# override/edit_spec all refuse to touch a task outside this set — rewriting
+# or re-scoring finished (or mid-flight) work is not a "correction," it's data
+# loss.
+_ACTIONABLE = {TaskState.AWAITING_APPROVAL, TaskState.NEEDS_CLARIFICATION}
+
 # A transport failure is retried by the sweeper, not in a tight loop.
 _MAX_INTERPRET_ATTEMPTS = 3
 # After this many rounds, stop asking and let the human decide with the gaps
@@ -81,20 +88,31 @@ class TaskDriver:
         return self.advance(task_id)
 
     def reject(self, task_id: str, reason: str = "rejected by the human") -> TaskRow:
+        row = self.repo.get(task_id)
+        if row is None:
+            raise KeyError(task_id)
+        state = TaskState(row.state)
+        if state not in _ACTIONABLE:
+            raise InvalidTransition(f"task {task_id} cannot be rejected from {row.state}")
         # Claim before recording: writing the reason first left it stamped on tasks
         # whose rejection was then refused, corrupting records of work that succeeded.
-        if not self.repo.claim(
-            task_id, expected=TaskState.AWAITING_APPROVAL, target=TaskState.FAILED
-        ):
-            raise InvalidTransition(f"task {task_id} is not awaiting approval")
+        if not self.repo.claim(task_id, expected=state, target=TaskState.FAILED):
+            raise InvalidTransition(f"task {task_id} cannot be rejected from {row.state}")
         self.repo.record_failure(task_id, reason)
         return self.repo.get(task_id)
 
     def override(self, task_id: str, mode: AutonomyMode | None) -> TaskRow:
         """Pin the mode, or pass None to clear the pin and follow the recommendation."""
+        row = self.repo.get(task_id)
+        if row is None:
+            raise KeyError(task_id)
+        state = TaskState(row.state)
+        if state not in _ACTIONABLE:
+            # Same class of bug c043c46 fixed for reject(): stamping
+            # mode_override on finished (or mid-flight) work is not a
+            # correction, it's silent data loss.
+            raise InvalidTransition(f"task {task_id} cannot change mode from {row.state}")
         self.repo.set_override(task_id, mode.value if mode is not None else None)
-        # set_override() already raises KeyError for a missing id via self._row(),
-        # so no None-check is needed on this read.
         row = self.repo.get(task_id)
         if TaskState(row.state) is TaskState.AWAITING_APPROVAL:
             # Send it back through the gate so the new mode is actually applied.
@@ -110,19 +128,22 @@ class TaskDriver:
             raise KeyError(task_id)
         if not row.spec:
             raise InvalidTransition(f"task {task_id} has no spec to edit yet")
+        state = TaskState(row.state)
+        if state not in _ACTIONABLE:
+            # Same class of bug c043c46 fixed for reject(): rewriting the spec
+            # of work that is already done (or mid-flight) is not a correction.
+            raise InvalidTransition(f"task {task_id} cannot edit spec from {row.state}")
 
         # extra="forbid" on TaskSpec turns a misspelled key into a ValidationError
         # here rather than a silently dropped edit. The API maps it to a 422.
         spec = TaskSpec.model_validate({**row.spec, **patch})
         self.repo.save_spec(task_id, spec)
 
-        state = TaskState(row.state)
-        if state in (TaskState.AWAITING_APPROVAL, TaskState.NEEDS_CLARIFICATION):
-            # Re-enter scoring, NOT interpretation: an edit changes confidence and
-            # risk, so the recommendation must be recomputed — but re-running the
-            # interpreter would overwrite the human's correction with the model's
-            # original reading.
-            self.repo.claim(task_id, expected=state, target=TaskState.INTERPRETED)
+        # Re-enter scoring, NOT interpretation: an edit changes confidence and
+        # risk, so the recommendation must be recomputed — but re-running the
+        # interpreter would overwrite the human's correction with the model's
+        # original reading.
+        self.repo.claim(task_id, expected=state, target=TaskState.INTERPRETED)
         return self.advance(task_id)
 
     # --- automatic steps --------------------------------------------------
@@ -152,12 +173,17 @@ class TaskDriver:
             attempts = self.repo.increment_interpret_attempts(row.id)
             logger.exception("interpreting task %s failed (attempt %d)", row.id, attempts)
             if attempts >= _MAX_INTERPRET_ATTEMPTS:
-                self.repo.record_failure(
-                    row.id, f"interpreter unavailable after {attempts} attempts"
-                )
-                self.repo.claim(
+                # Claim before recording: the same inversion c043c46 fixed in
+                # reject(). Recording first would stamp a failure_reason onto a
+                # task whose transition to FAILED then lost the race (another
+                # caller already moved it), corrupting the record of whatever
+                # that caller's outcome was.
+                if self.repo.claim(
                     row.id, expected=TaskState.CLASSIFIED, target=TaskState.FAILED
-                )
+                ):
+                    self.repo.record_failure(
+                        row.id, f"interpreter unavailable after {attempts} attempts"
+                    )
             return False
 
         self.repo.save_spec(row.id, spec)

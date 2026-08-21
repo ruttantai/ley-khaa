@@ -74,6 +74,55 @@ def test_rejecting_a_finished_task_does_not_corrupt_its_record(session):
     assert result.failure_reason is None
 
 
+def test_reject_from_needs_clarification_fails_the_task(session):
+    """M3: a task stuck asking a question must still be killable — NEEDS_
+    CLARIFICATION -> FAILED is already legal in the state table (states.py);
+    reject() just never tried it."""
+    repo = TaskRepository(session)
+    messages = MessageRepository(session)
+    row = messages.add(Message(source="s", client="c", conversation_id="conv-1",
+                               author="boss", text="compare bloomberg against factset"))
+    task = repo.create(project="default", title="t", source_message_ids=[row.id])
+    driver = TaskDriver(
+        repo,
+        llm=FakeLLM([_spec(recipient=None, missing_fields=["recipient"])]),
+        messages=messages,
+        candidates=CandidateRepository(session),
+    )
+    driver.advance(task.id)
+    assert repo.get(task.id).state == TaskState.NEEDS_CLARIFICATION.value
+
+    result = driver.reject(task.id, "cannot answer this")
+
+    assert result.state == TaskState.FAILED.value
+    assert result.failure_reason == "cannot answer this"
+
+
+def test_editing_a_finished_task_is_a_conflict(session):
+    """I3: PATCH .../spec must not rewrite the spec of completed work — the same
+    class of bug c043c46 fixed for reject()."""
+    repo, driver, task = _parked(session, [_spec(recipient="boss")])
+    driver.approve(task.id)
+    assert repo.get(task.id).state == TaskState.DONE.value
+
+    with pytest.raises(InvalidTransition):
+        driver.edit_spec(task.id, {"output_format": "csv"})
+
+    assert TaskSpec.model_validate(repo.get(task.id).spec).output_format == "xlsx"
+
+
+def test_overriding_the_mode_of_a_finished_task_is_a_conflict(session):
+    """I3: POST .../mode must not stamp mode_override on a finished task."""
+    repo, driver, task = _parked(session, [_spec(recipient="boss")])
+    driver.approve(task.id)
+    assert repo.get(task.id).state == TaskState.DONE.value
+
+    with pytest.raises(InvalidTransition):
+        driver.override(task.id, AutonomyMode.AUTO)
+
+    assert repo.get(task.id).mode_override is None
+
+
 def test_overriding_to_auto_releases_the_task_on_the_spot(session):
     """This is the dial having teeth: one click moves a parked task."""
     repo, driver, task = _parked(session, [_spec(recipient="boss")])

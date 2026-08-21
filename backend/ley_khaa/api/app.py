@@ -16,7 +16,7 @@ from ..db import SessionLocal, run_migrations
 from ..domain.states import InvalidTransition
 from ..intake.simulator import Simulator
 from ..llm.factory import build_llm
-from ..orchestrator.orchestrator import Orchestrator
+from ..orchestrator.orchestrator import ForeignReplyTarget, Orchestrator
 from ..persistence.candidate_repository import CandidateRepository
 from ..persistence.message_repository import MessageRepository
 from ..persistence.repository import TaskRepository
@@ -127,6 +127,21 @@ def _handle_invalid_transition(request, exc: InvalidTransition) -> JSONResponse:
 def _handle_validation_error(request, exc: ValidationError) -> JSONResponse:
     """A bad edit_spec patch is the caller's mistake, so 422 rather than 500."""
     return JSONResponse(status_code=422, content={"detail": exc.errors(include_url=False)})
+
+
+@app.exception_handler(KeyError)
+def _handle_missing_entity(request, exc: KeyError) -> JSONResponse:
+    """A reference to an id that does not exist (e.g. an unknown
+    reply_to_task_id) is the caller's mistake, so 404 rather than 500."""
+    missing = exc.args[0] if exc.args else str(exc)
+    return JSONResponse(status_code=404, content={"detail": f"not found: {missing}"})
+
+
+@app.exception_handler(ForeignReplyTarget)
+def _handle_foreign_reply_target(request, exc: ForeignReplyTarget) -> JSONResponse:
+    """A reply naming a task from a different conversation is a conflict
+    between what the client asked for and what it is allowed to touch."""
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
 def get_session() -> Iterator[Session]:

@@ -262,3 +262,58 @@ def test_a_blank_answer_is_a_422(client):
 def test_actions_on_an_unknown_task_are_404(client):
     assert client.post("/tasks/nope/approve").status_code == 404
     assert client.post("/tasks/nope/mode", json={"mode": "auto"}).status_code == 404
+
+
+def test_a_reply_to_an_unknown_task_is_a_404_not_a_500(client):
+    """I1: reply_to_task_id is on the public MessageIn schema, so any client can
+    trigger a bare KeyError out of the orchestrator. It must surface as 404."""
+    resp = client.post(
+        "/messages", json={"text": "hello", "reply_to_task_id": "nope"}
+    )
+    assert resp.status_code == 404
+
+
+def test_a_reply_naming_a_task_from_another_conversation_is_a_409(client):
+    """I2: replying with a task id from a different conversation must be
+    refused, not silently attached to a task it does not belong to."""
+    task_a = _parked_task(client)  # lives in conv-1
+
+    resp = client.post(
+        "/messages",
+        json={
+            "conversation_id": "conv-2",
+            "text": "actually make it csv",
+            "reply_to_task_id": task_a["id"],
+        },
+    )
+    assert resp.status_code == 409
+    # The foreign message never joined the task it tried to answer.
+    assert client.get(f"/tasks/{task_a['id']}").json()["source_message_ids"] == (
+        task_a["source_message_ids"]
+    )
+
+
+def test_editing_the_spec_of_a_finished_task_is_a_409(client):
+    task = _parked_task(client)
+    client.post(f"/tasks/{task['id']}/approve")
+    resp = client.patch(
+        f"/tasks/{task['id']}/spec", json={"patch": {"output_format": "csv"}}
+    )
+    assert resp.status_code == 409
+
+
+def test_setting_the_mode_of_a_finished_task_is_a_409(client):
+    task = _parked_task(client)
+    client.post(f"/tasks/{task['id']}/approve")
+    resp = client.post(f"/tasks/{task['id']}/mode", json={"mode": "auto"})
+    assert resp.status_code == 409
+
+
+def test_a_task_asking_a_question_can_be_rejected(client):
+    """M3: a task stuck in needs_clarification must be killable, not stuck."""
+    client.post("/simulate/ambiguous_report_request")
+    task = next(t for t in client.get("/tasks").json() if t["state"] == "needs_clarification")
+    resp = client.post(f"/tasks/{task['id']}/reject", json={"reason": "cannot answer"})
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "failed"
+    assert resp.json()["failure_reason"] == "cannot answer"

@@ -102,6 +102,34 @@ def test_repeated_transport_failures_eventually_fail_the_task(session):
     assert "unavailable" in result.failure_reason
 
 
+def test_a_lost_race_on_the_final_transport_failure_does_not_stamp_the_task(session):
+    """M4: _interpret used to record_failure() before claim() validated the
+    transition — the same inversion c043c46 fixed in reject(). Simulate the
+    race: another caller already moved the task to FAILED for an unrelated
+    reason (e.g. rejected it) between when this driver read its stale row and
+    when its own retry-exhausted interpretation attempt lands. The stale
+    caller's final claim must lose, and losing must mean it never touches
+    failure_reason.
+    """
+    repo, driver, task = _setup(session, [ConnectionError("boom")])
+    assert repo.claim(task.id, expected=TaskState.RECEIVED, target=TaskState.CLASSIFIED)
+    repo.increment_interpret_attempts(task.id)
+    repo.increment_interpret_attempts(task.id)
+    stale_row = repo.get(task.id)  # attempts == 2, state == CLASSIFIED (this driver's view)
+
+    # A concurrent caller wins the race first.
+    assert repo.claim(task.id, expected=TaskState.CLASSIFIED, target=TaskState.FAILED)
+    repo.record_failure(task.id, "failed for an unrelated reason")
+
+    # This driver's in-flight interpret attempt (3rd) now fails too, working
+    # off its stale snapshot of the row.
+    driver._interpret(stale_row)
+
+    result = repo.get(task.id)
+    assert result.state == TaskState.FAILED.value
+    assert result.failure_reason == "failed for an unrelated reason"
+
+
 def test_the_candidates_unsettled_details_lower_confidence(session):
     candidates = CandidateRepository(session)
     candidate = candidates.upsert(
