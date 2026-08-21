@@ -5,18 +5,32 @@ from contextlib import asynccontextmanager, suppress
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from ..autonomy.modes import AutonomyMode
 from ..config import settings
 from ..crystallizer.gate import ReadinessGate
 from ..db import SessionLocal, run_migrations
+from ..domain.states import InvalidTransition
 from ..intake.simulator import Simulator
 from ..llm.factory import build_llm
 from ..orchestrator.orchestrator import Orchestrator
 from ..persistence.candidate_repository import CandidateRepository
 from ..persistence.message_repository import MessageRepository
 from ..persistence.repository import TaskRepository
-from .schemas import CandidateOut, IntakeOut, MessageIn, MessageOut, TaskOut
+from .schemas import (
+    AnswerIn,
+    CandidateOut,
+    IntakeOut,
+    MessageIn,
+    MessageOut,
+    ModeIn,
+    RejectIn,
+    SpecPatchIn,
+    TaskOut,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +49,13 @@ def _sweep_once() -> int:
     """One sweep, on its own session. Synchronous: the orchestrator stays sync."""
     session = SessionLocal()
     try:
-        return len(build_orchestrator(session).sweep())
+        orchestrator = build_orchestrator(session)
+        promoted = len(orchestrator.sweep())
+        # Also re-drive tasks that stalled mid-flight. This is what retries an
+        # interpretation that hit a transport failure: the task sits in CLASSIFIED
+        # and nothing else would ever pick it up.
+        orchestrator.advance_stalled()
+        return promoted
     finally:
         session.close()
 
@@ -95,6 +115,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(InvalidTransition)
+def _handle_invalid_transition(request, exc: InvalidTransition) -> JSONResponse:
+    """Acting on a task another tab already moved is a conflict, not a crash."""
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(ValidationError)
+def _handle_validation_error(request, exc: ValidationError) -> JSONResponse:
+    """A bad edit_spec patch is the caller's mistake, so 422 rather than 500."""
+    return JSONResponse(status_code=422, content={"detail": exc.errors(include_url=False)})
 
 
 def get_session() -> Iterator[Session]:
@@ -166,3 +198,72 @@ def get_task(task_id: str, session: Session = Depends(get_session)) -> TaskOut:
     if row is None:
         raise HTTPException(status_code=404, detail="task not found")
     return TaskOut.model_validate(row)
+
+
+def _require_task(session: Session, task_id: str):
+    row = TaskRepository(session).get(task_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    return row
+
+
+@app.post("/tasks/{task_id}/approve", response_model=TaskOut)
+def approve_task(task_id: str, session: Session = Depends(get_session)) -> TaskOut:
+    _require_task(session, task_id)
+    return TaskOut.model_validate(build_orchestrator(session).driver.approve(task_id))
+
+
+@app.post("/tasks/{task_id}/reject", response_model=TaskOut)
+def reject_task(
+    task_id: str, body: RejectIn | None = None, session: Session = Depends(get_session)
+) -> TaskOut:
+    _require_task(session, task_id)
+    reason = (body or RejectIn()).reason
+    return TaskOut.model_validate(build_orchestrator(session).driver.reject(task_id, reason))
+
+
+@app.post("/tasks/{task_id}/mode", response_model=TaskOut)
+def set_task_mode(
+    task_id: str, body: ModeIn, session: Session = Depends(get_session)
+) -> TaskOut:
+    _require_task(session, task_id)
+    mode = AutonomyMode(body.mode) if body.mode is not None else None
+    return TaskOut.model_validate(build_orchestrator(session).driver.override(task_id, mode))
+
+
+@app.patch("/tasks/{task_id}/spec", response_model=TaskOut)
+def patch_task_spec(
+    task_id: str, body: SpecPatchIn, session: Session = Depends(get_session)
+) -> TaskOut:
+    _require_task(session, task_id)
+    return TaskOut.model_validate(
+        build_orchestrator(session).driver.edit_spec(task_id, body.patch)
+    )
+
+
+@app.post("/tasks/{task_id}/answer", response_model=TaskOut)
+def answer_task(
+    task_id: str, body: AnswerIn, session: Session = Depends(get_session)
+) -> TaskOut:
+    """Answer a clarification.
+
+    The answer is posted as a real Message carrying reply_to_task_id, so it takes
+    exactly the route a Slack thread reply will take — not a private dashboard
+    path into the spec.
+    """
+    task = _require_task(session, task_id)
+    sources = MessageRepository(session).get_many(list(task.source_message_ids or []))
+    if not sources:
+        raise HTTPException(status_code=409, detail="task has no conversation to reply into")
+
+    build_orchestrator(session).ingest(
+        {
+            "source": "dashboard",
+            "client": task.project,
+            "conversation_id": sources[0].conversation_id,
+            "author": body.author,
+            "text": body.text,
+            "reply_to_task_id": task_id,
+        }
+    )
+    return TaskOut.model_validate(TaskRepository(session).get(task_id))

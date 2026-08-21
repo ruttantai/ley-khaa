@@ -143,3 +143,122 @@ def test_two_requests_in_one_conversation_yield_two_tasks_over_http(client):
     assert len(first.json()["task_ids"]) == 1
     assert len(second.json()["task_ids"]) == 1
     assert len(client.get("/tasks").json()) == 2
+
+
+def _parked_task(client):
+    """Drive a complete request to a task waiting on a human.
+
+    Deliberately NOT /simulate/messy_universe_check: under this test env's
+    debounce_seconds=0, the offline heuristic marks a candidate "ready" the
+    instant it owns one relevant message, so the readiness gate fires on the
+    FIRST relevant message in that fixture rather than waiting for the second
+    to arrive. The two-message request the fixture spreads across "compare the
+    Bloomberg universe against FactSet" / "...send it as an Excel file" can
+    therefore never assemble into one task here — it always splits into two
+    single-message tasks, one missing output_format and the other missing
+    inputs, and BOTH land in needs_clarification (see
+    test_messy_conversation_yields_tasks_that_exclude_the_chatter in
+    test_simulator.py, which documents and asserts exactly this split as
+    intended Task 5 behaviour). A single message that states the whole
+    request reaches awaiting_approval instead, with the operation/format/mode
+    this suite's assertions expect.
+    """
+    client.post(
+        "/messages",
+        json={
+            "text": (
+                "compare the Bloomberg universe against FactSet and send "
+                "the difference as an Excel file"
+            )
+        },
+    )
+    tasks = client.get("/tasks").json()
+    assert tasks, "the request produced no task"
+    return tasks[0]
+
+
+def test_a_task_exposes_its_spec_and_recommendation(client):
+    task = _parked_task(client)
+    assert task["state"] == "awaiting_approval"
+    assert task["spec"]["operation"] == "set_difference"
+    assert task["recommended_mode"] in {"suggest", "copilot", "auto"}
+    assert task["effective_mode"] == task["recommended_mode"]
+    assert "→" in task["autonomy_reason"]
+
+
+def test_approve_runs_the_task(client):
+    task = _parked_task(client)
+    response = client.post(f"/tasks/{task['id']}/approve")
+    assert response.status_code == 200
+    assert response.json()["state"] == "done"
+
+
+def test_approving_twice_is_a_409(client):
+    task = _parked_task(client)
+    client.post(f"/tasks/{task['id']}/approve")
+    assert client.post(f"/tasks/{task['id']}/approve").status_code == 409
+
+
+def test_reject_records_the_reason(client):
+    task = _parked_task(client)
+    response = client.post(f"/tasks/{task['id']}/reject", json={"reason": "wrong universe"})
+    assert response.json()["state"] == "failed"
+    assert response.json()["failure_reason"] == "wrong universe"
+
+
+def test_overriding_the_mode_to_auto_releases_the_task(client):
+    task = _parked_task(client)
+    response = client.post(f"/tasks/{task['id']}/mode", json={"mode": "auto"})
+    assert response.status_code == 200
+    assert response.json()["state"] == "done"
+    assert response.json()["mode_override"] == "auto"
+
+
+def test_clearing_the_override_is_accepted(client):
+    task = _parked_task(client)
+    client.post(f"/tasks/{task['id']}/mode", json={"mode": "suggest"})
+    response = client.post(f"/tasks/{task['id']}/mode", json={"mode": None})
+    assert response.json()["mode_override"] is None
+
+
+def test_an_unknown_mode_is_a_422(client):
+    task = _parked_task(client)
+    assert client.post(f"/tasks/{task['id']}/mode", json={"mode": "yolo"}).status_code == 422
+
+
+def test_editing_the_spec_rescores(client):
+    task = _parked_task(client)
+    response = client.patch(f"/tasks/{task['id']}/spec", json={"patch": {"output_format": "csv"}})
+    assert response.status_code == 200
+    assert response.json()["spec"]["output_format"] == "csv"
+
+
+def test_a_misspelled_patch_key_is_a_422(client):
+    task = _parked_task(client)
+    response = client.patch(f"/tasks/{task['id']}/spec", json={"patch": {"outupt_format": "csv"}})
+    assert response.status_code == 422
+
+
+def test_answering_posts_a_real_message_and_advances_the_task(client):
+    client.post("/simulate/ambiguous_report_request")
+    task = next(t for t in client.get("/tasks").json() if t["state"] == "needs_clarification")
+    assert task["open_question"]
+
+    response = client.post(f"/tasks/{task['id']}/answer", json={"text": "as a csv please"})
+    assert response.status_code == 200
+    assert response.json()["state"] == "awaiting_approval"
+    assert response.json()["spec"]["output_format"] == "csv"
+
+    texts = [m["text"] for m in client.get("/conversations/conv-report/messages").json()]
+    assert "as a csv please" in texts
+
+
+def test_a_blank_answer_is_a_422(client):
+    client.post("/simulate/ambiguous_report_request")
+    task = next(t for t in client.get("/tasks").json() if t["state"] == "needs_clarification")
+    assert client.post(f"/tasks/{task['id']}/answer", json={"text": "   "}).status_code == 422
+
+
+def test_actions_on_an_unknown_task_are_404(client):
+    assert client.post("/tasks/nope/approve").status_code == 404
+    assert client.post("/tasks/nope/mode", json={"mode": "auto"}).status_code == 404
