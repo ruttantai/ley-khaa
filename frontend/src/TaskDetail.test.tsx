@@ -42,8 +42,8 @@ test("shows the recommendation and its plain-English reason", () => {
 
 test("shows the interpreted spec", () => {
   render(<TaskDetail task={task()} onChanged={() => {}} />);
-  expect(screen.getByText("set_difference")).toBeTruthy();
-  expect(screen.getByText("xlsx")).toBeTruthy();
+  expect(screen.getByDisplayValue("set_difference")).toBeTruthy();
+  expect(screen.getByDisplayValue("xlsx")).toBeTruthy();
 });
 
 test("approving calls the API and reports the change", async () => {
@@ -86,4 +86,8 @@ test("editing a spec field patches it", async () => {
   fireEvent.change(field, { target: { value: "csv" } });
   fireEvent.blur(field);
   await waitFor(() => expect(onChanged).toHaveBeenCalled());
+  const [url, init] = (globalThis.fetch as never as { mock: { calls: [string, RequestInit][] } })
+    .mock.calls[0];
+  expect(String(url)).toContain("/tasks/t1/spec");
+  expect(init.method).toBe("PATCH");
 });

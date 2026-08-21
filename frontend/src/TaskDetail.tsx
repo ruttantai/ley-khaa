@@ -137,34 +137,37 @@ function FieldRow({
   const [value, setValue] = useState(current);
   const editable = task.state === "awaiting_approval" || task.state === "needs_clarification";
 
+  if (!editable) {
+    return (
+      <>
+        <dt className="text-gray-500">{field}</dt>
+        <dd>{current || "—"}</dd>
+      </>
+    );
+  }
   return (
     <>
-      <dt className="text-gray-500">{field}</dt>
-      <dd>{current || "—"}</dd>
-      {editable && (
-        <>
-          {/* Empty dt keeps the input in the value column of the two-column grid. */}
-          <dt />
-          <dd>
-            <input
-              aria-label={field}
-              placeholder={`correct ${field}…`}
-              className="w-full rounded border border-gray-200 px-2 py-0.5 text-xs"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              // Patch on blur, not on every keystroke: each patch re-scores the
-              // task on the server, and doing that per character is both
-              // wasteful and visibly jumpy.
-              onBlur={() => {
-                if (value === current) return;
-                patchTaskSpec(task.id, { [field]: value || null })
-                  .then(onChanged)
-                  .catch((e) => onError(String(e)));
-              }}
-            />
-          </dd>
-        </>
-      )}
+      <dt className="text-gray-500">
+        <label htmlFor={`${task.id}-${field}`}>{field}</label>
+      </dt>
+      <dd>
+        <input
+          id={`${task.id}-${field}`}
+          aria-label={field}
+          className="w-full rounded border border-gray-200 px-2 py-0.5"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          // Patch on blur, not on every keystroke: each patch re-scores the task
+          // on the server, and doing that per character is both wasteful and
+          // visibly jumpy.
+          onBlur={() => {
+            if (value === current) return;
+            patchTaskSpec(task.id, { [field]: value || null })
+              .then(onChanged)
+              .catch((e) => onError(String(e)));
+          }}
+        />
+      </dd>
     </>
   );
 }
