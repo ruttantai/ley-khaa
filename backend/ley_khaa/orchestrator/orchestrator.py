@@ -46,7 +46,7 @@ class Orchestrator:
         self.gate = gate or ReadinessGate()
         self.driver = TaskDriver(repo, llm=llm, messages=messages, candidates=candidates)
 
-    def ingest(self, raw: dict) -> IntakeResult:
+    def ingest(self, raw: dict, *, promote: bool = True) -> IntakeResult:
         row = self.gateway.accept(raw)
         if row.reply_to_task_id:
             return self._route_reply(row)
@@ -64,6 +64,17 @@ class Orchestrator:
             conversation_id=row.conversation_id,
             candidates=candidates,
         )
+
+        if not promote:
+            # A caller that is about to ingest a whole conversation (e.g. the
+            # simulator) wants the gate/crystallizer to see every message before
+            # any candidate is judged "settled." Evaluating the gate here, one
+            # message at a time, made each arriving message look like the newest
+            # thing said long ago (once backdated) — defeating the very debounce
+            # the gate exists to enforce, and splitting one request across two
+            # promoted (terminal) candidates. Skip promotion; the caller decides
+            # when to call sweep() once the whole conversation is in.
+            return result
 
         # The message that triggered this call is always the newest one in the
         # conversation, so this is only ever ~0 seconds quiet. That's fine: it

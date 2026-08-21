@@ -41,7 +41,24 @@ class Simulator:
                         "text": m["text"],
                         "attachments": m.get("attachments", []),
                         "timestamp": (start + timedelta(minutes=i)).isoformat(),
-                    }
+                    },
+                    # Ingesting one message at a time and letting each one run the
+                    # gate would make every message look like the newest thing said
+                    # long ago (all timestamps are backdated up front), which
+                    # defeats the debounce gate that exists precisely to let a
+                    # conversation settle before a candidate promotes. Promotion is
+                    # terminal, so a request torn across two "settled" moments would
+                    # end up as two half-specified tasks instead of one. Replay the
+                    # whole conversation first with promotion skipped, then let a
+                    # single sweep() judge the fully-formed candidates together.
+                    promote=False,
                 )
             )
+        # Now that every message is in, the conversation really has gone quiet:
+        # sweep once so the gate sees the true, final state of each candidate.
+        swept_task_ids = self.orchestrator.sweep()
+        if results:
+            # Attribute the promoted tasks to the last message: the conversation
+            # only settles once the last thing has been said.
+            results[-1].task_ids.extend(swept_task_ids)
         return results
