@@ -36,5 +36,6 @@ class IntakeGateway:
             external_id=raw.get("external_id"),
             attachments=attachments,
             timestamp=timestamp,
+            reply_to_task_id=raw.get("reply_to_task_id"),
         )
         return self.repo.add(message)

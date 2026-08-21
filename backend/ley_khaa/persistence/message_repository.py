@@ -30,6 +30,7 @@ class MessageRepository:
             text=message.text,
             attachments=[a.model_dump(mode="json") for a in message.attachments],
             timestamp=message.timestamp,
+            reply_to_task_id=message.reply_to_task_id,
         )
         self.session.add(row)
         try:

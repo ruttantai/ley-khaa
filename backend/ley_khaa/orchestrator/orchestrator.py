@@ -10,7 +10,7 @@ from ..intake.gateway import IntakeGateway
 from ..llm.client import LLMClient
 from ..persistence.candidate_repository import CandidateRepository
 from ..persistence.message_repository import MessageRepository
-from ..persistence.orm import CandidateRow
+from ..persistence.orm import CandidateRow, MessageRow
 from ..persistence.repository import TaskRepository
 from .driver import TaskDriver
 
@@ -21,6 +21,8 @@ class IntakeResult:
     conversation_id: str
     candidates: list[CandidateRow] = field(default_factory=list)
     task_ids: list[str] = field(default_factory=list)
+    # Set when this message answered an existing task instead of forming a candidate.
+    replied_to_task_id: str | None = None
 
 
 class Orchestrator:
@@ -46,6 +48,8 @@ class Orchestrator:
 
     def ingest(self, raw: dict) -> IntakeResult:
         row = self.gateway.accept(raw)
+        if row.reply_to_task_id:
+            return self._route_reply(row)
         verdict = self.relevance.judge(row)
         self.messages.record_verdict(
             row.id,
@@ -72,6 +76,49 @@ class Orchestrator:
                 task_id = self._promote(candidate)
                 if task_id is not None:
                     result.task_ids.append(task_id)
+        return result
+
+    def _route_reply(self, row: MessageRow) -> IntakeResult:
+        """Attach a reply to the task it answers; never form a candidate from it.
+
+        The task's candidate is PROMOTED, which is terminal. Letting this message
+        reach stage B would leave it uncovered in the window and invite a SECOND
+        candidate — and so a duplicate task — for a request that already has one.
+
+        This is deliberately the route a Slack thread reply takes in Phase 0.5.0:
+        the adapter maps thread_ts to the task owning the thread, sets
+        reply_to_task_id, and this branch fires unchanged.
+        """
+        task = self.repo.get(row.reply_to_task_id)
+        if task is None:
+            raise KeyError(row.reply_to_task_id)
+
+        # Scoped honesty: `relevant` gates whether stage B may consider owning a
+        # message for a NEW candidate. This one belongs to a task that already
+        # exists, so it is genuinely not material to candidate formation.
+        self.messages.record_verdict(
+            row.id, relevant=False, topic="task-reply", confidence=1.0
+        )
+        self.repo.append_source_messages(task.id, [row.id])
+
+        result = IntakeResult(
+            message_id=row.id,
+            conversation_id=row.conversation_id,
+            replied_to_task_id=task.id,
+        )
+        if TaskState(task.state) is TaskState.NEEDS_CLARIFICATION:
+            self.repo.increment_clarification_rounds(task.id)
+            self.repo.set_open_question(task.id, None)
+            self.repo.claim(
+                task.id,
+                expected=TaskState.NEEDS_CLARIFICATION,
+                target=TaskState.CLASSIFIED,
+            )
+            self.driver.advance(task.id)
+            result.task_ids.append(task.id)
+        # A reply to a task that is not currently asking anything is still worth
+        # keeping — it is context for the next interpretation — but it does not
+        # restart a task the human is already reviewing.
         return result
 
     def sweep(self, conversation_id: str | None = None) -> list[str]:
