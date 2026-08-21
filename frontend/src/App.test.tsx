@@ -1,6 +1,7 @@
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "./App";
+import type { Task } from "./api";
 
 const candidate = (state: string, title: string) => ({
   id: `c-${state}`,
@@ -15,15 +16,39 @@ const candidate = (state: string, title: string) => ({
   task_id: null,
 });
 
+const task = (overrides: Partial<Task> = {}): Task => ({
+  id: "t1",
+  project: "default",
+  state: "done",
+  title: "compare universes",
+  spec: {
+    intent: "compare two universes",
+    inputs: ["bloomberg", "factset"],
+    operation: "set_difference",
+    output_format: "xlsx",
+    recipient: "boss",
+    urgency: "normal",
+    missing_fields: [],
+    source_message_ids: ["m1"],
+    certainty: 0.9,
+  },
+  recommended_mode: "copilot",
+  mode_override: null,
+  effective_mode: "copilot",
+  confidence: 0.9,
+  risk: 0.45,
+  autonomy_reason: "90% sure, medium risk — it delivers something to someone → I suggest Co-pilot",
+  open_question: null,
+  failure_reason: null,
+  ...overrides,
+});
+
 function stubApi(candidates: unknown[]) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string) => ({
       ok: true,
-      json: async () =>
-        String(url).includes("/candidates")
-          ? candidates
-          : [{ id: "t1", project: "default", state: "done", title: "compare universes" }],
+      json: async () => (String(url).includes("/candidates") ? candidates : [task()]),
     })),
   );
 }
@@ -47,4 +72,11 @@ test("Forming lists only candidates that are still forming", async () => {
   await waitFor(() => expect(screen.getByText("Universe reconciliation")).toBeTruthy());
   expect(screen.queryByText("Already a task")).toBeNull();
   expect(screen.queryByText("Dropped request")).toBeNull();
+});
+
+test("opening a task shows its recommendation", async () => {
+  render(<App />);
+  await waitFor(() => expect(screen.getByText("compare universes")).toBeTruthy());
+  fireEvent.click(screen.getByText("compare universes"));
+  expect(screen.getByText(/I suggest Co-pilot/)).toBeTruthy();
 });
