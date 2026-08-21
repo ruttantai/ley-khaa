@@ -41,7 +41,12 @@ def test_full_stub_path_is_valid():
 
 def test_interpreter_can_escalate_to_clarification():
     assert can_transition(TaskState.CLASSIFIED, TaskState.NEEDS_CLARIFICATION)
-    assert can_transition(TaskState.INTERPRETED, TaskState.NEEDS_CLARIFICATION)
+
+
+def test_interpreted_cannot_escalate_to_clarification():
+    """_interpret only ever claims out of CLASSIFIED, so this edge is dead and
+    was removed: INTERPRETED never actually reaches NEEDS_CLARIFICATION."""
+    assert not can_transition(TaskState.INTERPRETED, TaskState.NEEDS_CLARIFICATION)
 
 
 def test_an_answered_clarification_goes_back_to_be_re_interpreted():

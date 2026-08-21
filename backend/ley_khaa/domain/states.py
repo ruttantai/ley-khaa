@@ -13,11 +13,14 @@ class TaskState(str, Enum):
     FAILED = "failed"
 
 
-# A task now pauses for a human, so the table gained four edges Phase 1 declared
-# but never wired: the interpreter can discover gaps at CLASSIFIED or INTERPRETED
-# and escalate; an answered clarification goes back to CLASSIFIED to be
-# re-interpreted over the enlarged message set; and editing a parked spec
-# re-enters scoring at INTERPRETED so the recommendation is recomputed.
+# A task now pauses for a human, so the table gained three edges Phase 1
+# declared but never wired: CLASSIFIED -> NEEDS_CLARIFICATION, so the
+# interpreter can escalate a gap it finds; NEEDS_CLARIFICATION -> CLASSIFIED,
+# so an answered clarification is re-interpreted over the enlarged message
+# set; and AWAITING_APPROVAL -> INTERPRETED, so editing a parked spec
+# re-enters scoring rather than re-running the interpreter. (INTERPRETED ->
+# NEEDS_CLARIFICATION was declared alongside them but the interpreter only
+# ever claims out of CLASSIFIED, so it was never reachable; removed.)
 _ALLOWED: dict[TaskState, set[TaskState]] = {
     TaskState.RECEIVED: {TaskState.CLASSIFIED, TaskState.FAILED},
     TaskState.CLASSIFIED: {
@@ -28,7 +31,6 @@ _ALLOWED: dict[TaskState, set[TaskState]] = {
     TaskState.INTERPRETED: {
         TaskState.AWAITING_APPROVAL,
         TaskState.EXECUTING,
-        TaskState.NEEDS_CLARIFICATION,
         TaskState.FAILED,
     },
     TaskState.AWAITING_APPROVAL: {

@@ -21,24 +21,25 @@ def test_get_and_list(session):
     assert {t.id for t in repo.list()} == {a.id, b.id}
 
 
-def test_update_state_valid(session):
+def test_claim_moves_a_task_to_a_valid_target(session):
     repo = TaskRepository(session)
     task = repo.create(project="p", title="a", source_message_ids=[])
-    updated = repo.update_state(task.id, TaskState.CLASSIFIED)
-    assert updated.state == TaskState.CLASSIFIED.value
+    assert repo.claim(task.id, expected=TaskState.RECEIVED, target=TaskState.CLASSIFIED)
+    assert repo.get(task.id).state == TaskState.CLASSIFIED.value
 
 
-def test_update_state_invalid_raises(session):
+def test_claim_to_an_invalid_target_raises(session):
     repo = TaskRepository(session)
     task = repo.create(project="p", title="a", source_message_ids=[])
     with pytest.raises(InvalidTransition):
-        repo.update_state(task.id, TaskState.DONE)
+        repo.claim(task.id, expected=TaskState.RECEIVED, target=TaskState.DONE)
 
 
-def test_update_state_missing_raises(session):
+def test_claim_on_a_missing_task_does_not_raise_and_reports_no_win(session):
+    """claim()'s WHERE guard just matches nothing for an unknown id — unlike the
+    now-deleted update_state(), it never raised KeyError here, it simply lost."""
     repo = TaskRepository(session)
-    with pytest.raises(KeyError):
-        repo.update_state("nope", TaskState.CLASSIFIED)
+    assert repo.claim("nope", expected=TaskState.RECEIVED, target=TaskState.CLASSIFIED) is False
 
 
 # --- Autonomy foundation: claim, spec, recommendation/override, counters ---

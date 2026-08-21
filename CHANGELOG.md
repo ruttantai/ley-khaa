@@ -44,7 +44,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
   that hit a transport failure gets retried.
 - `InvalidTransition` now surfaces as **409** rather than a 500; a malformed spec patch
   as **422**.
-- The task state machine gained the four edges the clarification loop needs.
+- The task state machine gained the three edges the clarification loop needs:
+  `CLASSIFIED -> NEEDS_CLARIFICATION` (the interpreter escalates a gap),
+  `NEEDS_CLARIFICATION -> CLASSIFIED` (an answered clarification is
+  re-interpreted), and `AWAITING_APPROVAL -> INTERPRETED` (editing a parked
+  spec re-enters scoring).
 
 ### Fixed
 - The demo path was tearing a single request in half: replaying the demo conversation
