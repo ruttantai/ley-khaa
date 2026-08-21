@@ -42,13 +42,29 @@ def test_an_answer_unblocks_the_task_it_replies_to(session):
 
 
 def test_an_answer_never_spawns_a_second_candidate(session):
-    """The original candidate is terminal; stage B would happily start a new one."""
+    """The original candidate is terminal; stage B would happily start a new one.
+
+    The reply text is deliberately chosen to contain request words the
+    heuristic's stage A/B would genuinely claim on the normal path ("export",
+    "report", "csv") — unlike plain "as a csv please", which stage A would call
+    irrelevant on its own and so would never form a candidate from regardless
+    of whether routing worked. A test that can't fail on the regression it
+    exists to catch is not a guard.
+    """
     orchestrator, task = _blocked_task(session)
-    before = len(CandidateRepository(session).list_all())
+    before = CandidateRepository(session).list_all()
+    before_keys = {c.candidate_key for c in before}
     orchestrator.ingest(
-        {"conversation_id": "conv-1", "text": "as a csv please", "reply_to_task_id": task.id}
+        {
+            "conversation_id": "conv-1",
+            "text": "export it as a csv report please",
+            "reply_to_task_id": task.id,
+        }
     )
-    assert len(CandidateRepository(session).list_all()) == before
+    after = CandidateRepository(session).list_all()
+    after_keys = {c.candidate_key for c in after}
+    assert len(after) == len(before)
+    assert after_keys == before_keys
 
 
 def test_the_answer_is_attached_to_the_task(session):
