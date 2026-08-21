@@ -24,7 +24,13 @@ build-backend = "setuptools.build_meta"
 include = ["ley_khaa*"]
 
 [tool.setuptools.package-data]
-ley_khaa = ["fixtures/conversations/*.json"]
+ley_khaa = [
+    "fixtures/conversations/*.json",
+    "alembic.ini",
+    "alembic/env.py",
+    "alembic/script.py.mako",
+    "alembic/versions/*.py",
+]
 
 [tool.pytest.ini_options]
 filterwarnings = [

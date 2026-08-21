@@ -7,17 +7,26 @@ from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, inspect
 
-from ley_khaa.db import Base
+from ley_khaa.db import ALEMBIC_DIR, Base
 from ley_khaa.persistence import orm  # noqa: F401 — register models on Base
 
-ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
+ALEMBIC_INI = Path(__file__).resolve().parent.parent / "ley_khaa" / "alembic.ini"
+
+
+def _config(url: str) -> Config:
+    config = Config(str(ALEMBIC_INI))
+    config.set_main_option("sqlalchemy.url", url)
+    # alembic.ini's script_location is relative and alembic resolves that
+    # against the process CWD, not the ini's own directory — see db.py's
+    # run_migrations for the full story. Override it the same way here so
+    # these tests pass regardless of where pytest is invoked from.
+    config.set_main_option("script_location", str(ALEMBIC_DIR))
+    return config
 
 
 def _upgraded_engine(tmp_path):
     url = f"sqlite:///{tmp_path / 'drift.db'}"
-    config = Config(str(ALEMBIC_INI))
-    config.set_main_option("sqlalchemy.url", url)
-    command.upgrade(config, "head")
+    command.upgrade(_config(url), "head")
     return create_engine(url, future=True)
 
 
@@ -47,9 +56,7 @@ def test_a_pre_alembic_database_is_stamped_rather_than_recreated(tmp_path):
     # exist, is no longer the 0.2.0 schema. Running only the baseline migration
     # and then dropping alembic_version reproduces a genuine pre-alembic
     # database: the tables exist, but nothing ever stamped a version.
-    config = Config(str(ALEMBIC_INI))
-    config.set_main_option("sqlalchemy.url", url)
-    command.upgrade(config, "0001_baseline")
+    command.upgrade(_config(url), "0001_baseline")
     with legacy.begin() as connection:
         connection.execute(sa.text("DROP TABLE alembic_version"))
     assert "alembic_version" not in set(inspect(legacy).get_table_names())

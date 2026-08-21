@@ -13,7 +13,12 @@ class Base(DeclarativeBase):
 engine = create_engine(settings.database_url, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
 
-ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
+# Shipped as package data (see pyproject.toml's [tool.setuptools.package-data])
+# so migrations are found under a non-editable `pip install .` too, where
+# ley_khaa lands in site-packages but a source checkout's alembic.ini would
+# not. Both paths live inside the package now, not one level up from it.
+ALEMBIC_INI = Path(__file__).resolve().parent / "alembic.ini"
+ALEMBIC_DIR = Path(__file__).resolve().parent / "alembic"
 
 
 def run_migrations(url: str | None = None) -> None:
@@ -35,6 +40,15 @@ def run_migrations(url: str | None = None) -> None:
     url = url or settings.database_url
     config = Config(str(ALEMBIC_INI))
     config.set_main_option("sqlalchemy.url", url)
+    # alembic.ini's script_location ("alembic") is relative, and alembic
+    # resolves a relative script_location against the process CWD, not against
+    # the ini file's own directory. That is harmless today only because
+    # uvicorn's default --app-dir inserts the CWD on sys.path and the app
+    # happens to be run from /app, the same directory alembic.ini lives in.
+    # Any other CWD (gunicorn, a different WORKDIR, a downstream install)
+    # breaks it. Overriding it here with an absolute path removes the CWD from
+    # the equation entirely.
+    config.set_main_option("script_location", str(ALEMBIC_DIR))
 
     # A database created by 0.2.0's create_all() already has the tables but no
     # alembic_version row, so `upgrade head` would try to create them again and
