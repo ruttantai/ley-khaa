@@ -40,31 +40,28 @@ def test_unknown_fixture_raises(session):
         _sim(session).replay("no_such_conversation")
 
 
-def test_messy_conversation_yields_tasks_that_exclude_the_chatter(session):
-    """The headline integration test: noise in, clean tasks out.
+def test_messy_conversation_yields_one_clean_task(session):
+    """The headline integration test: noise in, one clean task out.
 
-    The offline HeuristicLLM promotes each request as soon as the gate clears, so
-    the fixture's two request messages land as two tasks rather than one assembled
-    task — a real model with a live debounce accumulates them into one candidate.
-    What matters here, and what is asserted, is that no chatter is ever owned.
+    replay() ingests the whole conversation with promotion suppressed (see
+    Simulator.replay) and only lets the gate decide once, via a single sweep()
+    after every message is in. That's what keeps the two halves of the same
+    request — "compare Bloomberg against FactSet" and, three messages later,
+    "month end, as an Excel file" — together as ONE candidate instead of being
+    torn into two half-specified tasks by a gate that fired mid-conversation.
     """
     _sim(session).replay("messy_universe_check")
     tasks = TaskRepository(session).list()
-    assert len(tasks) >= 1
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert task.spec["operation"] == "set_difference"
+    assert task.spec["output_format"] == "xlsx"
+    assert task.spec["missing_fields"] == []
 
     messages = {m.id: m.text for m in MessageRepository(session).list_for_conversation("conv-universe")}
-    owned = [messages[mid] for task in tasks for mid in task.source_message_ids]
+    owned = [messages[mid] for mid in task.source_message_ids]
     assert any("Bloomberg" in t for t in owned)
+    assert any("what's missing as an Excel file" in t for t in owned)
     assert not any("game last night" in t for t in owned)
     assert not any(t.strip().lower() == "thanks!" for t in owned)
     assert not any(t.strip().lower() == "morning all" for t in owned)
-
-
-def test_a_second_request_later_in_the_conversation_is_not_swallowed(session):
-    """Every request after the first used to vanish: one hardcoded candidate key
-    matched the already-promoted candidate and was silently skipped."""
-    _sim(session).replay("messy_universe_check")
-    messages = {m.id: m.text for m in MessageRepository(session).list_for_conversation("conv-universe")}
-    owned = [messages[mid] for task in TaskRepository(session).list() for mid in task.source_message_ids]
-    assert any("Bloomberg" in t for t in owned)
-    assert any("what's missing as an Excel file" in t for t in owned)

@@ -37,3 +37,27 @@ def test_full_stub_path_is_valid():
     ]
     for current, target in zip(path, path[1:]):
         assert can_transition(current, target) is True
+
+
+def test_interpreter_can_escalate_to_clarification():
+    assert can_transition(TaskState.CLASSIFIED, TaskState.NEEDS_CLARIFICATION)
+
+
+def test_interpreted_cannot_escalate_to_clarification():
+    """_interpret only ever claims out of CLASSIFIED, so this edge is dead and
+    was removed: INTERPRETED never actually reaches NEEDS_CLARIFICATION."""
+    assert not can_transition(TaskState.INTERPRETED, TaskState.NEEDS_CLARIFICATION)
+
+
+def test_an_answered_clarification_goes_back_to_be_re_interpreted():
+    assert can_transition(TaskState.NEEDS_CLARIFICATION, TaskState.CLASSIFIED)
+
+
+def test_editing_a_parked_spec_re_enters_scoring():
+    assert can_transition(TaskState.AWAITING_APPROVAL, TaskState.INTERPRETED)
+
+
+def test_terminal_states_stay_terminal():
+    for state in TaskState:
+        assert not can_transition(TaskState.DONE, state)
+        assert not can_transition(TaskState.FAILED, state)

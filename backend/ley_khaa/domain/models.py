@@ -29,3 +29,4 @@ class Message(BaseModel):
     external_id: str | None = None
     attachments: list[Attachment] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    reply_to_task_id: str | None = None

@@ -1,6 +1,6 @@
 [project]
 name = "ley-khaa"
-version = "0.2.0"
+version = "0.3.0"
 description = "AI secretary — turns conversations into validated work"
 requires-python = ">=3.12"
 dependencies = [
@@ -10,6 +10,7 @@ dependencies = [
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.1",
     "pydantic>=2.7",
+    "alembic>=1.13",
 ]
 
 [project.optional-dependencies]
@@ -23,7 +24,13 @@ build-backend = "setuptools.build_meta"
 include = ["ley_khaa*"]
 
 [tool.setuptools.package-data]
-ley_khaa = ["fixtures/conversations/*.json"]
+ley_khaa = [
+    "fixtures/conversations/*.json",
+    "alembic.ini",
+    "alembic/env.py",
+    "alembic/script.py.mako",
+    "alembic/versions/*.py",
+]
 
 [tool.pytest.ini_options]
 filterwarnings = [

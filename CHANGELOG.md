@@ -5,6 +5,72 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-21
+
+> **Upgrading from 0.2.0:** this release introduces Alembic. A database created by
+> 0.2.0 has the tables but no `alembic_version`, so the app stamps it at the
+> baseline automatically on first start and then applies the new columns. No
+> manual drop is needed — and this is the last release that will ever ask.
+
+### Added
+- Interpreter (§5.5): a crystallized request becomes a validated `TaskSpec`
+  (`intent · inputs · operation · output_format · recipient · urgency · missing_fields ·
+  source_message_ids · certainty`), with one re-prompt on malformed output and an
+  escalation to the human after that.
+- Autonomy engine (§5.7): a deterministic policy over confidence (interpreter
+  certainty, missing fields, how settled the conversation was) and risk
+  (irreversibility, money, urgency) recommends Suggest / Co-pilot / Auto with a
+  plain-English reason. No LLM call, identical online and offline.
+- `TaskDriver`: one re-entrant `advance()` owning the whole automatic path, so every
+  entry point into a task shares the same definition of what happens next.
+- Human-in-the-loop (§5.8): approve, reject, override the mode, edit the spec inline,
+  and answer a clarification — `POST /tasks/{id}/approve|reject|mode|answer` and
+  `PATCH /tasks/{id}/spec`.
+- Clarification answers re-enter as real messages carrying `reply_to_task_id`, routed
+  straight to the task they answer. This is the same path a Slack thread reply will
+  take, and it stops an answer spawning a duplicate candidate.
+- Alembic migrations: a database created by 0.2.0's `create_all()` has the tables but
+  no `alembic_version` row, so `run_migrations()` stamps it at the baseline
+  (`0001_baseline`) automatically on first start, then upgrades to head normally — no
+  manual drop, unlike the 0.2.0 upgrade. A test fails if the SQLAlchemy models and the
+  migrations ever disagree.
+- A second golden conversation with a deliberate gap, and end-to-end tests for both
+  the dial and the clarification loop.
+
+### Changed
+- A promoted task no longer races to `done`. It is interpreted, scored, and then either
+  parks at `awaiting_approval` or — when the effective mode is Auto — runs through.
+- The background sweeper also re-drives stalled tasks, which is how an interpretation
+  that hit a transport failure gets retried.
+- `InvalidTransition` now surfaces as **409** rather than a 500; a malformed spec patch
+  as **422**.
+- The task state machine gained the three edges the clarification loop needs:
+  `CLASSIFIED -> NEEDS_CLARIFICATION` (the interpreter escalates a gap),
+  `NEEDS_CLARIFICATION -> CLASSIFIED` (an answered clarification is
+  re-interpreted), and `AWAITING_APPROVAL -> INTERPRETED` (editing a parked
+  spec re-enters scoring).
+
+### Fixed
+- The demo path was tearing a single request in half: replaying the demo conversation
+  produced two half-specified tasks instead of one — one candidate knew the data
+  sources but not the output format, the other knew the format but not the sources.
+  Cause: the simulator replayed messages one at a time, and because it backdates
+  timestamps, each message looked like the last thing said long ago — so the
+  readiness gate promoted the first candidate immediately, making it terminal, and
+  the follow-up message could not join it. Fixed by replaying the whole conversation
+  before letting the gate decide: `Orchestrator.ingest` gained a `promote` flag, and
+  `Simulator.replay` now ingests every message with promotion skipped and sweeps once
+  at the end. This was a latent Phase 1 bug that only became visible once tasks were
+  really interpreted — before, both halves ran silently to `done` through the stub.
+
+### Known limitations
+- **Suggest and Co-pilot behave identically**: both park at the single approval gate.
+  They diverge in 0.4.0, when the executor has mid-run checkpoints.
+- **Execution is still a stub.** `executing → validating → done` does no real work.
+- The offline `HeuristicLLM` reports a deliberately mediocre certainty (0.55, below the
+  0.85 Auto threshold), so a no-API-key clone never reaches Auto on its own — keyword
+  matching must not run tasks unattended.
+
 ## [0.2.0] — 2026-08-19
 
 > **Upgrading from 0.1.0:** this release adds columns to the `messages` table and the project has

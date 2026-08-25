@@ -1,0 +1,10 @@
+{
+  "conversation_id": "conv-report",
+  "client": "demo",
+  "messages": [
+    {"author": "alice", "text": "hey quick one"},
+    {"author": "alice", "text": "can you compare the holdings against the portfolio for me"},
+    {"author": "bob", "text": "haha sure thing"},
+    {"author": "alice", "text": "thanks!"}
+  ]
+}
