@@ -16,6 +16,7 @@ class Stage(str, Enum):
     CRYSTALLIZER = "crystallizer"
     INTERPRETER = "interpreter"
     VISION_EXTRACTION = "vision_extraction"
+    SYNTHESIS = "synthesis"
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,10 @@ _POLICY: dict[Stage, dict[str, str]] = {
     Stage.CRYSTALLIZER: {"routine": HAIKU, "hard": OPUS},
     Stage.INTERPRETER: {"routine": OPUS, "hard": OPUS},
     Stage.VISION_EXTRACTION: {"routine": OPUS, "hard": OPUS},
+    # Writing correct code from an under-specified request is the hardest thing
+    # the system does, and a wrong script costs a sandbox round trip plus a
+    # repair. Opus at both complexities.
+    Stage.SYNTHESIS: {"routine": OPUS, "hard": OPUS},
 }
 
 _MAX_TOKENS: dict[Stage, int] = {
@@ -38,6 +43,8 @@ _MAX_TOKENS: dict[Stage, int] = {
     Stage.CRYSTALLIZER: 8000,
     Stage.INTERPRETER: 8000,
     Stage.VISION_EXTRACTION: 8000,
+    # Emits a whole program, not a small structured object.
+    Stage.SYNTHESIS: 16000,
 }
 
 
