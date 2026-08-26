@@ -84,6 +84,9 @@ class TaskOut(BaseModel):
     autonomy_reason: str | None = None
     open_question: str | None = None
     failure_reason: str | None = None
+    # The Output Bundle root on disk (spec §5.11), and what the run came to.
+    workspace_path: str | None = None
+    execution_verdict: dict[str, Any] | None = None
 
 
 class RejectIn(BaseModel):
@@ -109,3 +112,13 @@ class AnswerIn(BaseModel):
         if not value.strip():
             raise ValueError("text must not be blank")
         return value
+
+
+class BundleOut(BaseModel):
+    task_id: str
+    root: str
+    manifest: dict[str, Any]
+    # Every file in the bundle, as paths relative to the root, so the dashboard
+    # can hand them straight back to the file endpoint.
+    files: list[str]
+    deliverables: list[str]
