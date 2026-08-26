@@ -9,9 +9,24 @@ import time
 
 import pytest
 
-from ley_khaa.executor.sandbox import SubprocessSandbox
+from ley_khaa.executor.sandbox import DockerSandbox, SubprocessSandbox
 
-RUNNERS = [pytest.param(SubprocessSandbox(), id="subprocess")]
+_docker = DockerSandbox(image="ley-khaa-sandbox")
+# Skipped unless a daemon answers AND the image is built. CI builds it, so the
+# real sandbox is genuinely exercised there rather than only in theory.
+_no_docker = not _docker.available()
+
+RUNNERS = [
+    pytest.param(SubprocessSandbox(), id="subprocess"),
+    pytest.param(
+        _docker,
+        id="docker",
+        marks=[
+            pytest.mark.docker,
+            pytest.mark.skipif(_no_docker, reason="no docker daemon or sandbox image"),
+        ],
+    ),
+]
 
 
 @pytest.fixture

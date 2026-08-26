@@ -13,9 +13,12 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+
+from ..config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -161,3 +164,147 @@ class SubprocessSandbox:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except ProcessLookupError:
             pass  # the group already exited on its own
+
+
+class DockerSandbox:
+    """The real thing (spec §5.10): no network, read-only rootfs, capped."""
+
+    name = "docker"
+
+    def __init__(
+        self,
+        *,
+        image: str,
+        memory_mb: int = 512,
+        volume: str | None = None,
+        volume_target: str | None = None,
+    ) -> None:
+        self.image = image
+        self.memory_mb = memory_mb
+        self.volume = volume
+        self.volume_target = volume_target
+
+    def available(self) -> bool:
+        """True only if a daemon answers AND our image exists.
+
+        Checking the image too is what lets "auto" fall back cleanly on a
+        machine that has Docker but has never built the sandbox, instead of
+        failing every task with an obscure `docker run` error.
+        """
+        for command in (["docker", "info"], ["docker", "image", "inspect", self.image]):
+            try:
+                completed = subprocess.run(command, capture_output=True, timeout=15)
+            except (OSError, subprocess.TimeoutExpired):
+                return False
+            if completed.returncode != 0:
+                return False
+        return True
+
+    def _mount_args(self, workspace: str) -> list[str]:
+        if self.volume and self.volume_target:
+            # Under compose the backend is itself a container and spawns SIBLING
+            # containers on the host daemon, so a bind mount of the backend's own
+            # container path would resolve to a host path that does not exist.
+            # The workspace therefore lives on a named volume mounted at the SAME
+            # path on both sides, and paths line up without translation.
+            return [
+                "--mount",
+                f"type=volume,source={self.volume},target={self.volume_target}",
+            ]
+        return ["-v", f"{workspace}:{workspace}"]
+
+    def run(self, *, script: Path, workspace: Path, timeout_s: int) -> SandboxResult:
+        workspace = workspace.resolve()
+        container = f"ley-khaa-{uuid.uuid4().hex[:12]}"
+        command = [
+            "docker", "run", "--rm",
+            "--name", container,
+            # The §5.10 guarantee: synthesized code reaches nothing.
+            "--network", "none",
+            "--read-only",
+            "--tmpfs", "/tmp:size=64m,exec",
+            "--memory", f"{self.memory_mb}m",
+            "--cpus", "1",
+            "--pids-limit", "64",
+            # Run as the caller so the deliverable is owned by us and readable
+            # back out of a bind-mounted workspace.
+            "--user", f"{os.getuid()}:{os.getgid()}",
+            "-e", "HOME=/tmp",
+            "-e", "PYTHONDONTWRITEBYTECODE=1",
+            *self._mount_args(str(workspace)),
+            "-w", str(workspace),
+            self.image,
+            "python", str(script.resolve()),
+        ]
+        started = time.monotonic()
+        try:
+            # No text=True: docker's stdout/stderr are captured as bytes and
+            # decoded through _text(), same as SubprocessSandbox above. A
+            # synthesized script can write arbitrary bytes to stdout, and a
+            # strict decode there must not raise UnicodeDecodeError out of
+            # run() — that would turn a script's output into a sandbox crash.
+            completed = subprocess.run(command, capture_output=True, timeout=timeout_s)
+        except subprocess.TimeoutExpired as exc:
+            # docker run --rm leaves the container going after we stop waiting.
+            subprocess.run(["docker", "kill", container], capture_output=True)
+            return SandboxResult(
+                exit_code=-1,
+                stdout=_text(exc.stdout),
+                stderr=_text(exc.stderr) + f"\nkilled after {timeout_s}s",
+                duration_ms=int((time.monotonic() - started) * 1000),
+                timed_out=True,
+            )
+        except OSError as exc:
+            raise SandboxUnavailable(f"could not invoke docker: {exc}") from exc
+
+        # 125 is docker's own "could not start the container" code. That is our
+        # infrastructure failing, not the script failing, and the two must not be
+        # confused: one is a bug report, the other is a question for a human.
+        if completed.returncode == 125:
+            raise SandboxUnavailable(
+                f"docker could not start the sandbox: {_text(completed.stderr)}"
+            )
+
+        return SandboxResult(
+            exit_code=completed.returncode,
+            stdout=_text(completed.stdout),
+            stderr=_text(completed.stderr),
+            duration_ms=int((time.monotonic() - started) * 1000),
+            timed_out=False,
+        )
+
+
+_warned_about_fallback = False
+
+
+def pick_sandbox() -> SandboxRunner:
+    """Docker unless we cannot, subprocess when we must, never a silent swap."""
+    subprocess_sandbox = SubprocessSandbox(memory_mb=settings.sandbox_memory_mb)
+    if settings.sandbox_backend == "subprocess":
+        return subprocess_sandbox
+
+    docker = DockerSandbox(
+        image=settings.sandbox_image,
+        memory_mb=settings.sandbox_memory_mb,
+        volume=settings.workspace_volume,
+        volume_target=settings.workspace_root if settings.workspace_volume else None,
+    )
+    if settings.sandbox_backend == "docker":
+        # An explicit pin is never downgraded: quietly running somewhere weaker
+        # than the operator asked for is how a reader ends up trusting a bundle
+        # that was never isolated.
+        return docker
+    if docker.available():
+        return docker
+
+    global _warned_about_fallback
+    if not _warned_about_fallback:
+        _warned_about_fallback = True
+        logger.warning(
+            "No usable Docker sandbox (daemon or image %s missing) — falling back to "
+            "SubprocessSandbox. Synthesized scripts will run on this machine's "
+            "interpreter with CPU and memory caps and a scrubbed environment, but "
+            "WITHOUT network isolation. The manifest records this.",
+            settings.sandbox_image,
+        )
+    return subprocess_sandbox
