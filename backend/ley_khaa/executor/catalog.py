@@ -79,8 +79,18 @@ def build_dataset(name: str) -> str:
     return _to_csv(rows[3:63], _POSITION_FIELDS)
 
 
-def _tokens(value: str) -> frozenset[str]:
+def tokens(value: str) -> frozenset[str]:
+    """Extract normalized tokens from a string for matching.
+
+    Exposed for use by other modules (e.g., resolver) that need consistent
+    tokenization. Exported as the public API; internal code may use _tokens alias.
+    """
     return frozenset(_TOKEN.findall(value.lower()))
+
+
+def _tokens(value: str) -> frozenset[str]:
+    """Alias for the public tokens() function."""
+    return tokens(value)
 
 
 def resolve_name(query: str) -> str | None:
@@ -89,12 +99,15 @@ def resolve_name(query: str) -> str | None:
     Ambiguity resolves to None deliberately: "universe" matches two datasets,
     and guessing which one the human meant is exactly the mistake that should
     become a clarification instead of a silently wrong answer.
+
+    Matches only if all query tokens are present in the dataset name tokens;
+    this prevents "holdings screenshot" from matching "holdings".
     """
-    wanted = _tokens(query)
+    wanted = tokens(query)
     if not wanted:
         return None
     matches = [
         name for name in DATASET_NAMES
-        if wanted <= _tokens(name) or _tokens(name) <= wanted
+        if wanted <= tokens(name)
     ]
     return matches[0] if len(matches) == 1 else None

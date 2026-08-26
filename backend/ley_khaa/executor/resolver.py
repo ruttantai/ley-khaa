@@ -7,7 +7,6 @@ turns it into a clarification before a single token is spent on synthesis.
 from __future__ import annotations
 
 import hashlib
-import re
 from dataclasses import dataclass
 
 from ..domain.models import AttachmentKind
@@ -15,8 +14,6 @@ from ..interpreter.spec import TaskSpec
 from ..persistence.message_repository import MessageRepository
 from ..persistence.orm import TaskRow
 from . import catalog
-
-_TOKEN = re.compile(r"[a-z0-9]+")
 
 # Only these carry literal content the executor can compute on. An IMAGE
 # attachment needs vision extraction, which is not built in this phase.
@@ -43,10 +40,6 @@ class UnresolvedInputs(Exception):
         self.names = names
 
 
-def _tokens(value: str) -> frozenset[str]:
-    return frozenset(_TOKEN.findall(value.lower()))
-
-
 def _attachments_for(task: TaskRow, messages: MessageRepository) -> list[dict]:
     rows = messages.get_many(list(task.source_message_ids or []))
     found: list[dict] = []
@@ -58,7 +51,7 @@ def _attachments_for(task: TaskRow, messages: MessageRepository) -> list[dict]:
 
 
 def _from_attachments(name: str, attachments: list[dict], used: set[int]) -> dict | None:
-    wanted = _tokens(name)
+    wanted = catalog.tokens(name)
     if not wanted:
         return None
     for index, attachment in enumerate(attachments):
@@ -66,7 +59,7 @@ def _from_attachments(name: str, attachments: list[dict], used: set[int]) -> dic
             continue
         # Strip the extension before matching: "holdings.csv" should answer to
         # the spoken input name "holdings".
-        stem = _tokens(attachment.get("name", "").rsplit(".", 1)[0])
+        stem = catalog.tokens(attachment.get("name", "").rsplit(".", 1)[0])
         if wanted <= stem or stem <= wanted:
             used.add(index)
             return attachment
@@ -111,23 +104,15 @@ def resolve_inputs(
 
         dataset = catalog.resolve_name(name)
         if dataset is not None:
-            # Verify that all tokens in the input are present in the dataset name.
-            # catalog.resolve_name might match on dataset_tokens <= wanted, but we
-            # only use matches where wanted <= dataset_tokens (i.e., "FactSet"
-            # matches "factset_universe", but "holdings screenshot" must not match
-            # "holdings" because "screenshot" is not a valid dataset token).
-            wanted = _tokens(name)
-            dataset_tokens = _tokens(dataset)
-            if wanted <= dataset_tokens:
-                resolved.append(
-                    ResolvedInput(
-                        name=name,
-                        filename=_unique(f"{dataset}.csv", taken_filenames),
-                        content=catalog.build_dataset(dataset),
-                        source="catalog",
-                    )
+            resolved.append(
+                ResolvedInput(
+                    name=name,
+                    filename=_unique(f"{dataset}.csv", taken_filenames),
+                    content=catalog.build_dataset(dataset),
+                    source="catalog",
                 )
-                continue
+            )
+            continue
 
         missing.append(name)
 
