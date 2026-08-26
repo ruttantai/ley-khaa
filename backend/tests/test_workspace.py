@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from ley_khaa.executor.resolver import ResolvedInput
 from ley_khaa.executor.workspace import Workspace, sha256_file
 
@@ -73,3 +75,39 @@ def test_sha256_file_is_content_addressed(tmp_path):
     assert sha256_file(target) == (
         "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
     )
+
+
+def test_write_inputs_rejects_absolute_paths(tmp_path):
+    """write_inputs must reject absolute paths to prevent arbitrary file write."""
+    ws = Workspace.create(tmp_path, "task-1")
+    with pytest.raises(ValueError, match="cannot be absolute"):
+        ws.write_inputs([ResolvedInput(name="evil", filename="/etc/passwd", content="x", source="test")])
+    # File was not written outside the workspace
+    assert not (tmp_path / "etc" / "passwd").exists()
+
+
+def test_write_inputs_rejects_paths_with_traversal(tmp_path):
+    """write_inputs must reject .. to prevent escaping the inputs directory."""
+    ws = Workspace.create(tmp_path, "task-1")
+    with pytest.raises(ValueError, match="cannot contain path separators"):
+        ws.write_inputs([ResolvedInput(name="evil", filename="../../escape.csv", content="x", source="test")])
+    # File was not written outside the workspace
+    assert not (tmp_path / "escape.csv").exists()
+
+
+def test_write_inputs_rejects_paths_with_forward_slash(tmp_path):
+    """write_inputs must reject forward slash to enforce single-component filenames."""
+    ws = Workspace.create(tmp_path, "task-1")
+    with pytest.raises(ValueError, match="cannot contain path separators"):
+        ws.write_inputs([ResolvedInput(name="evil", filename="subdir/file.csv", content="x", source="test")])
+    # File was not written anywhere in the workspace
+    assert not (ws.inputs_dir / "subdir" / "file.csv").exists()
+
+
+def test_write_inputs_rejects_dot_and_dot_dot(tmp_path):
+    """write_inputs must reject . and .. directory references."""
+    ws = Workspace.create(tmp_path, "task-1")
+    with pytest.raises(ValueError, match="cannot be a directory reference"):
+        ws.write_inputs([ResolvedInput(name="evil", filename="..", content="x", source="test")])
+    with pytest.raises(ValueError, match="cannot be a directory reference"):
+        ws.write_inputs([ResolvedInput(name="evil", filename=".", content="x", source="test")])

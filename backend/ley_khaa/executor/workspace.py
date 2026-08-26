@@ -21,6 +21,22 @@ from .resolver import ResolvedInput
 MANIFEST_NAME = "manifest.json"
 
 
+def _validate_safe_filename(filename: str) -> None:
+    r"""Reject filenames that could escape the workspace via path traversal.
+
+    Raises ValueError if the filename is absolute, contains separators (/ or \),
+    or is . or .. (current/parent directory references).
+    """
+    if not filename:
+        raise ValueError("filename cannot be empty")
+    if Path(filename).is_absolute():
+        raise ValueError(f"filename cannot be absolute: {filename}")
+    if "/" in filename or "\\" in filename:
+        raise ValueError(f"filename cannot contain path separators: {filename}")
+    if filename in (".", ".."):
+        raise ValueError(f"filename cannot be a directory reference: {filename}")
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -59,6 +75,7 @@ class Workspace:
 
     def write_inputs(self, resolved: list[ResolvedInput]) -> None:
         for item in resolved:
+            _validate_safe_filename(item.filename)
             (self.inputs_dir / item.filename).write_text(item.content, encoding="utf-8")
 
     def write_generator(self, attempt: int, source: str) -> Path:

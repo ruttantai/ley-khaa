@@ -99,3 +99,30 @@ def test_sha256_is_content_addressed(session):
     task, messages = _task_with(session, [])
     resolved = resolve_inputs(_spec(["holdings"]), task, messages)
     assert len(resolved[0].sha256) == 64
+
+
+def test_attachment_with_path_traversal_payload_resolves_to_safe_basename(session):
+    """Path traversal attempts in attachment names (../../evil, /etc/passwd) are sanitized."""
+    task, messages = _task_with(
+        session,
+        [
+            Attachment(kind=AttachmentKind.TABLE, name="../../../../etc/passwd", content="root:x:0:0:root:/root:/bin/bash\n"),
+        ],
+    )
+    resolved = resolve_inputs(_spec(["passwd"]), task, messages)
+    # Basename extracted safely; the file ends up in inputs/ not /etc/
+    assert resolved[0].filename == "passwd"
+    assert resolved[0].content == "root:x:0:0:root:/root:/bin/bash\n"
+
+
+def test_attachment_named_with_dot_dot_falls_back_to_default(session):
+    """An attachment named only with '..' is replaced with the default fallback."""
+    task, messages = _task_with(
+        session,
+        [
+            Attachment(kind=AttachmentKind.TABLE, name="..", content="data\n"),
+        ],
+    )
+    resolved = resolve_inputs(_spec(["somefile"]), task, messages)
+    # Falls back to f"{name}.csv" when basename is . or ..
+    assert resolved[0].filename == "somefile.csv"

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from pathlib import Path
 
 from ..domain.models import AttachmentKind
 from ..interpreter.spec import TaskSpec
@@ -18,6 +19,23 @@ from . import catalog
 # Only these carry literal content the executor can compute on. An IMAGE
 # attachment needs vision extraction, which is not built in this phase.
 _TEXTUAL = {AttachmentKind.TABLE.value, AttachmentKind.TEXT.value}
+
+
+def _safe_basename(name: str) -> str:
+    """Extract safe basename from a potentially-malicious path.
+
+    Handles path traversal attempts (../../evil, /etc/passwd) by taking only
+    the last component. Returns empty string if the result is empty, ".", or "..",
+    allowing the caller to fall back to a default.
+    """
+    if not name:
+        return ""
+    # Take the basename (last component after any / or \)
+    basename = Path(name).name
+    # Reject current/parent directory references
+    if basename in (".", ".."):
+        return ""
+    return basename
 
 
 @dataclass(frozen=True)
@@ -95,7 +113,7 @@ def resolve_inputs(
             resolved.append(
                 ResolvedInput(
                     name=name,
-                    filename=_unique(hit.get("name") or f"{name}.csv", taken_filenames),
+                    filename=_unique(_safe_basename(hit.get("name", "")) or f"{name}.csv", taken_filenames),
                     content=hit.get("content", ""),
                     source="attachment",
                 )
