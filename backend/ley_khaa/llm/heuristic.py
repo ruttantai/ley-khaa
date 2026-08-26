@@ -285,11 +285,25 @@ class HeuristicLLM:
             # rejects for having no rows — a clear failure instead of a crash.
             body, approach = _INVENTORY, "a description of each input"
 
-        source = _PREAMBLE + f"INPUTS = {inputs!r}\nTARGET = {target!r}\n" + body
-        return SynthesizedScript(
-            reasoning=f"Offline canned script for {operation or 'an unrecognised operation'}: {approach}.",
-            source=source,
-        )
+        reasoning = f"Offline canned script for {operation or 'an unrecognised operation'}: {approach}."
+        substitution = ""
+        if not target.endswith((".xlsx", ".csv")):
+            # write_rows only genuinely produces .xlsx (openpyxl) or CSV text.
+            # Writing CSV bytes under the requested name (e.g. .docx) would be
+            # a file that lies about what it is, and the validator checks the
+            # deliverable's suffix, not its content — so that lie would pass
+            # silently. Substitute CSV honestly and say so, both in the
+            # printed summary and in reasoning, instead of faking the format.
+            requested = target
+            target = "deliverable/output.csv"
+            substitution = (
+                'print("offline stand-in cannot write %s; wrote CSV to %s instead")\n'
+                % (requested, target)
+            )
+            reasoning += f" Offline mode cannot write {requested}; wrote CSV to {target} instead."
+
+        source = _PREAMBLE + f"INPUTS = {inputs!r}\nTARGET = {target!r}\n" + body + substitution
+        return SynthesizedScript(reasoning=reasoning, source=source)
 
 
 def _handled_message_ids(user: str) -> set[str]:

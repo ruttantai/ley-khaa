@@ -108,6 +108,21 @@ def test_the_canned_script_never_touches_its_inputs(tmp_path):
     assert workspace.input_hashes() == before
 
 
+def test_the_offline_lane_never_mislabels_a_format_it_cannot_write(tmp_path):
+    """The canned scripts only genuinely produce .xlsx or CSV bytes. Writing
+    CSV content under a requested .docx name would be a file that lies about
+    what it is, and Task 8's validator checks the deliverable's suffix, not
+    its content — so that lie would pass validation silently. The offline
+    lane must substitute CSV honestly and say so, not fake the format."""
+    workspace, result = _run(tmp_path, _spec(output_format="docx"), _universes())
+    assert result.ok, result.stderr
+    assert not (workspace.deliverable_dir / "output.docx").exists()
+    deliverables = [p.name for p in workspace.deliverable_dir.iterdir() if p.is_file()]
+    assert deliverables == ["output.csv"]
+    body = (workspace.deliverable_dir / "output.csv").read_text()
+    assert "ticker" in body
+
+
 def test_the_offline_script_is_deterministic(tmp_path):
     first, _ = _run(tmp_path / "a", _spec(output_format="csv"), _universes())
     second, _ = _run(tmp_path / "b", _spec(output_format="csv"), _universes())
