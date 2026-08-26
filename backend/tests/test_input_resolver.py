@@ -126,3 +126,30 @@ def test_attachment_named_with_dot_dot_falls_back_to_default(session):
     resolved = resolve_inputs(_spec(["somefile"]), task, messages)
     # Falls back to f"{name}.csv" when basename is . or ..
     assert resolved[0].filename == "somefile.csv"
+
+
+def test_attachment_named_with_backslash_only_falls_back_to_default(session):
+    r"""An attachment named with only backslash (\) falls back to default filename."""
+    task, messages = _task_with(
+        session,
+        [
+            Attachment(kind=AttachmentKind.TABLE, name="\\", content="data\n"),
+        ],
+    )
+    resolved = resolve_inputs(_spec(["somefile"]), task, messages)
+    # Falls back to f"{name}.csv" when basename contains backslash
+    assert resolved[0].filename == "somefile.csv"
+
+
+def test_attachment_with_backslash_traversal_resolves_to_safe_filename(session):
+    r"""Backslash traversal payload (\..\..\evil.csv) resolves to safe basename."""
+    task, messages = _task_with(
+        session,
+        [
+            Attachment(kind=AttachmentKind.TABLE, name=r"\..\..\evil.csv", content="malicious\n"),
+        ],
+    )
+    resolved = resolve_inputs(_spec(["evil"]), task, messages)
+    # Backslash traversal payload falls back to safe default
+    assert resolved[0].filename == "evil.csv"
+    assert resolved[0].content == "malicious\n"

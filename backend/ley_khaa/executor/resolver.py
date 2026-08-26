@@ -22,18 +22,19 @@ _TEXTUAL = {AttachmentKind.TABLE.value, AttachmentKind.TEXT.value}
 
 
 def _safe_basename(name: str) -> str:
-    """Extract safe basename from a potentially-malicious path.
+    r"""Extract safe basename from a potentially-malicious path.
 
-    Handles path traversal attempts (../../evil, /etc/passwd) by taking only
-    the last component. Returns empty string if the result is empty, ".", or "..",
-    allowing the caller to fall back to a default.
+    Handles path traversal attempts (../../evil, /etc/passwd, \..\..\evil) by taking only
+    the last component. Returns empty string if the result is empty, ".", "..", or contains
+    path separators (/ or \), allowing the caller to fall back to a default.
     """
     if not name:
         return ""
-    # Take the basename (last component after any / or \)
+    # Take the basename (last component after any / separator)
     basename = Path(name).name
-    # Reject current/parent directory references
-    if basename in (".", ".."):
+    # Reject current/parent directory references and anything still containing separators
+    # (handles \..\..\evil on POSIX where \ is literal, not a path separator)
+    if basename in (".", "..") or "/" in basename or "\\" in basename:
         return ""
     return basename
 
