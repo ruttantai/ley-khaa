@@ -3,6 +3,7 @@ import os
 os.environ["LEY_KHAA_DISABLE_STARTUP"] = "1"
 os.environ["LEY_KHAA_LLM"] = "heuristic"
 os.environ["LEY_KHAA_DEBOUNCE_SECONDS"] = "0"
+os.environ["LEY_KHAA_SANDBOX"] = "subprocess"
 
 import pytest
 from fastapi.testclient import TestClient
