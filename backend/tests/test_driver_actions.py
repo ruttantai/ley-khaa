@@ -33,7 +33,7 @@ def _parked(session, responses):
     return repo, driver, task
 
 
-def test_approve_releases_a_parked_task(session):
+def test_approve_releases_a_parked_task(session, stub_execution):
     repo, driver, task = _parked(session, [_spec(recipient="boss")])
     assert repo.get(task.id).state == TaskState.AWAITING_APPROVAL.value
     assert driver.approve(task.id).state == TaskState.DONE.value
@@ -53,7 +53,7 @@ def test_approving_twice_is_a_conflict_not_a_crash(session):
         driver.approve(task.id)
 
 
-def test_rejecting_a_finished_task_does_not_corrupt_its_record(session):
+def test_rejecting_a_finished_task_does_not_corrupt_its_record(session, stub_execution):
     """A refused rejection must be a no-op, not a partial write.
 
     reject() used to call record_failure() before claim() validated the
@@ -98,7 +98,7 @@ def test_reject_from_needs_clarification_fails_the_task(session):
     assert result.failure_reason == "cannot answer this"
 
 
-def test_editing_a_finished_task_is_a_conflict(session):
+def test_editing_a_finished_task_is_a_conflict(session, stub_execution):
     """I3: PATCH .../spec must not rewrite the spec of completed work — the same
     class of bug c043c46 fixed for reject()."""
     repo, driver, task = _parked(session, [_spec(recipient="boss")])
@@ -111,7 +111,7 @@ def test_editing_a_finished_task_is_a_conflict(session):
     assert TaskSpec.model_validate(repo.get(task.id).spec).output_format == "xlsx"
 
 
-def test_overriding_the_mode_of_a_finished_task_is_a_conflict(session):
+def test_overriding_the_mode_of_a_finished_task_is_a_conflict(session, stub_execution):
     """I3: POST .../mode must not stamp mode_override on a finished task."""
     repo, driver, task = _parked(session, [_spec(recipient="boss")])
     driver.approve(task.id)
@@ -123,7 +123,7 @@ def test_overriding_the_mode_of_a_finished_task_is_a_conflict(session):
     assert repo.get(task.id).mode_override is None
 
 
-def test_overriding_to_auto_releases_the_task_on_the_spot(session):
+def test_overriding_to_auto_releases_the_task_on_the_spot(session, stub_execution):
     """This is the dial having teeth: one click moves a parked task."""
     repo, driver, task = _parked(session, [_spec(recipient="boss")])
     result = driver.override(task.id, AutonomyMode.AUTO)

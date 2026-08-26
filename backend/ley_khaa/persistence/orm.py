@@ -34,6 +34,10 @@ class TaskRow(Base):
     failure_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     interpret_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     clarification_rounds: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # The Output Bundle root (spec §5.11), surfaced by the dashboard.
+    workspace_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The serialized Verdict _execute produced and _validate acts on.
+    execution_verdict: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     @property
     def effective_mode(self) -> str | None:

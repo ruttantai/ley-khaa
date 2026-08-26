@@ -1,9 +1,13 @@
 import logging
 from collections.abc import Callable
 
+from pydantic import ValidationError
+
 from ..autonomy.engine import recommend
 from ..autonomy.modes import AutonomyMode
 from ..domain.states import InvalidTransition, TaskState
+from ..executor.runner import ExecutionRunner
+from ..executor.sandbox import SandboxUnavailable
 from ..interpreter.interpreter import Interpreter, MalformedSpec
 from ..interpreter.spec import TaskSpec
 from ..llm.client import LLMClient
@@ -61,6 +65,10 @@ class TaskDriver:
         self.repo = repo
         self.candidates = candidates
         self.interpreter = Interpreter(llm, messages)
+        # Constructing this is cheap: the sandbox itself is resolved on first
+        # use, so a driver built for a request that executes nothing never
+        # probes the Docker daemon.
+        self.executor = ExecutionRunner(llm=llm, messages=messages)
 
     def advance(self, task_id: str) -> TaskRow:
         """Push a task as far as it can go unattended, then return where it landed."""
@@ -228,12 +236,56 @@ class TaskDriver:
         return self.repo.claim(row.id, expected=TaskState.INTERPRETED, target=target)
 
     def _execute(self, row: TaskRow) -> bool:
-        # Still a stub. Phase 0.4.0 replaces this with the synthesis-first
-        # executor and the Docker sandbox (§5.10).
+        try:
+            spec = TaskSpec.model_validate(row.spec or {})
+        except ValidationError:
+            # Nothing to execute, and no question worth asking: a task reaching
+            # EXECUTING without a valid spec is our bug, not the human's.
+            logger.exception("task %s reached execution with no usable spec", row.id)
+            if self.repo.claim(row.id, expected=TaskState.EXECUTING, target=TaskState.FAILED):
+                self.repo.record_failure(row.id, "no valid specification to execute")
+            return False
+
+        try:
+            outcome = self.executor.run(row, spec)
+        except SandboxUnavailable as exc:
+            # Infrastructure, not the request. A dead daemon is not a question a
+            # human can answer (spec §6), so this fails rather than escalating.
+            logger.exception("sandbox unavailable while executing task %s", row.id)
+            if self.repo.claim(row.id, expected=TaskState.EXECUTING, target=TaskState.FAILED):
+                self.repo.record_failure(row.id, f"the sandbox was unavailable: {exc}")
+            return False
+
+        self.repo.save_execution(
+            row.id,
+            workspace_path=outcome.workspace_path,
+            verdict={
+                "ok": outcome.verdict.ok,
+                "reason": outcome.verdict.reason,
+                "checks": outcome.verdict.checks,
+                "attempts": outcome.attempts,
+            },
+        )
         return self.repo.claim(row.id, expected=TaskState.EXECUTING, target=TaskState.VALIDATING)
 
     def _validate(self, row: TaskRow) -> bool:
-        return self.repo.claim(row.id, expected=TaskState.VALIDATING, target=TaskState.DONE)
+        """Act on the verdict _execute just recorded.
+
+        Deliberately thin. The alternative — deciding inside _execute — needs an
+        EXECUTING -> NEEDS_CLARIFICATION edge, and adding one is what makes an
+        execute/validate loop possible in the first place (decision 6).
+        """
+        verdict = row.execution_verdict or {}
+        if verdict.get("ok"):
+            self.repo.set_open_question(row.id, None)
+            return self.repo.claim(row.id, expected=TaskState.VALIDATING, target=TaskState.DONE)
+
+        self.repo.set_open_question(
+            row.id, verdict.get("reason") or "The run did not produce a usable result."
+        )
+        return self.repo.claim(
+            row.id, expected=TaskState.VALIDATING, target=TaskState.NEEDS_CLARIFICATION
+        )
 
 
 _STEPS: dict[TaskState, Callable[[TaskDriver, TaskRow], bool]] = {
