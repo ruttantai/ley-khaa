@@ -5,6 +5,8 @@ Task 5 adds DockerSandbox to RUNNERS rather than writing a second suite: the
 fallback earning a pass the real sandbox would fail is exactly the drift this
 file exists to prevent.
 """
+import time
+
 import pytest
 
 from ley_khaa.executor.sandbox import SubprocessSandbox
@@ -79,3 +81,41 @@ def test_secrets_are_not_visible_to_the_script(runner, workspace, monkeypatch):
     result = runner.run(script=script, workspace=workspace, timeout_s=30)
     assert result.ok, result.stderr
     assert "KEY=None" in result.stdout
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_invalid_utf8_on_stdout_does_not_crash_the_runner(runner, workspace):
+    """An LLM-generated data script can write arbitrary bytes; a decode error
+    in the sandbox itself must come back as a SandboxResult, not an exception
+    that skips the manifest entirely."""
+    script = _script(
+        workspace,
+        "import sys\nsys.stdout.buffer.write(b'\\xff\\xfeinvalid utf-8')\n",
+    )
+    result = runner.run(script=script, workspace=workspace, timeout_s=30)
+    assert result.exit_code == 0
+    assert result.ok
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_killing_a_runaway_script_also_kills_its_children(runner, workspace):
+    """A grandchild that outlives the timeout keeps the network access this
+    fallback sandbox can never take away — the kill has to reach the whole
+    process tree, not just the one pid the runner started."""
+    (workspace / "child.py").write_text(
+        "import time\n"
+        "time.sleep(2)\n"
+        "open('sentinel.txt', 'w').write('leaked')\n"
+    )
+    script = _script(
+        workspace,
+        "import subprocess, sys, time\n"
+        "subprocess.Popen([sys.executable, 'child.py'])\n"
+        "while True:\n"
+        "    time.sleep(0.05)\n",
+    )
+    result = runner.run(script=script, workspace=workspace, timeout_s=1)
+    assert result.timed_out
+
+    time.sleep(1.5)  # past the child's 2s delay, were it still alive
+    assert not (workspace / "sentinel.txt").exists()

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -108,30 +109,55 @@ class SubprocessSandbox:
     def run(self, *, script: Path, workspace: Path, timeout_s: int) -> SandboxResult:
         started = time.monotonic()
         try:
-            completed = subprocess.run(
+            proc = subprocess.Popen(
                 [sys.executable, str(script)],
                 cwd=str(workspace),
                 env=_clean_env(workspace),
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 preexec_fn=self._limits(timeout_s),
-            )
-        except subprocess.TimeoutExpired as exc:
-            return SandboxResult(
-                exit_code=-1,
-                stdout=_text(exc.stdout),
-                stderr=_text(exc.stderr) + f"\nkilled after {timeout_s}s",
-                duration_ms=int((time.monotonic() - started) * 1000),
-                timed_out=True,
+                # A session of its own means its pid is also its process
+                # group id, so killpg on timeout reaches every grandchild the
+                # script spawned too — a lone process.kill() would leave them
+                # running with the network access this fallback can never
+                # take away.
+                start_new_session=True,
             )
         except OSError as exc:  # no interpreter, no permission: our problem
             raise SandboxUnavailable(f"could not start the sandbox: {exc}") from exc
 
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            self._kill_group(proc)
+            # Draining after the kill both reaps the process and collects
+            # whatever it had already written before being killed.
+            stdout, stderr = proc.communicate()
+            return SandboxResult(
+                exit_code=-1,
+                stdout=_text(stdout),
+                stderr=_text(stderr) + f"\nkilled after {timeout_s}s",
+                duration_ms=int((time.monotonic() - started) * 1000),
+                timed_out=True,
+            )
+        except BaseException:
+            # Whatever went wrong mid-run, the process group must not outlive
+            # this call — an orphaned grandchild is the same leak as a missed
+            # timeout kill, just reached by a different door.
+            self._kill_group(proc)
+            raise
+
         return SandboxResult(
-            exit_code=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
+            exit_code=proc.returncode,
+            stdout=_text(stdout),
+            stderr=_text(stderr),
             duration_ms=int((time.monotonic() - started) * 1000),
             timed_out=False,
         )
+
+    @staticmethod
+    def _kill_group(proc: subprocess.Popen) -> None:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # the group already exited on its own
