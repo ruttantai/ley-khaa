@@ -98,6 +98,12 @@ docker compose up
 
 To force the stand-in even with a key set, run with `LEY_KHAA_LLM=heuristic`.
 
+**Offline synthesis is canned, not generated.** With no `ANTHROPIC_API_KEY` the executor still
+produces a real, runnable script and a real deliverable — but that script is looked up by keyword
+from two hand-written templates (`set_difference`, `summary_stats`), not written for the request.
+Anything else gets a script that describes its inputs. The bundle's `manifest.json` records which
+model produced the generator, so a bundle never overstates where its code came from.
+
 ### Local dev (no Docker)
 
 The backend reads `DATABASE_URL`, so it runs on SQLite with no Postgres:

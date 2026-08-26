@@ -102,3 +102,18 @@ def test_heuristic_reads_urgency_and_recipient():
     assert spec.urgency == "high"
     assert spec.recipient == "alice"
     assert spec.output_format == "csv"
+
+
+def test_a_multi_word_source_is_one_input_not_two():
+    """"bloomberg universe" is one dataset. Emitting the bare word "universe"
+    alongside it produces an input that matches two catalog datasets and is
+    therefore unresolvable — a clarification about a gap that isn't real."""
+    spec = _interpret(_UNIVERSE_PROMPT)
+    assert spec.inputs == ["bloomberg universe", "factset"]
+
+
+def test_single_word_sources_still_come_through():
+    spec = _interpret(
+        "## Messages\n[m1] alice: compare the holdings against the portfolio as csv"
+    )
+    assert spec.inputs == ["holdings", "portfolio"]
