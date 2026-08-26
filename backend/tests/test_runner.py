@@ -191,3 +191,32 @@ def test_an_empty_script_is_not_run(tmp_path, task):
     outcome = runner.run(row, _spec())
     assert outcome.verdict.ok
     assert len(runner.sandbox.scripts) == 1
+
+
+def test_unresolvable_inputs_never_probe_for_a_sandbox(tmp_path, task):
+    """Decision 4 taken all the way: zero attempts must also mean zero sandbox
+    resolution. pick_sandbox() shells out to probe the Docker daemon, and the
+    whole point of the lazy `sandbox` property is that a request which executes
+    nothing must not pay for that probe. Construct with no sandbox at all and
+    confirm the backing field is still unset after a parked run."""
+    row, messages = task
+    runner = ExecutionRunner(llm=FakeLLM([]), messages=messages, workspace_root=tmp_path)
+    outcome = runner.run(row, _spec(inputs=["trade blotter"]))
+    assert not outcome.verdict.ok
+    assert runner._sandbox is None
+    manifest = json.loads((tmp_path / f"task-{row.id}" / "manifest.json").read_text())
+    assert manifest["sandbox"] is None
+
+
+def test_a_synthesis_failure_attempt_still_carries_an_ok_flag(tmp_path, task):
+    """Every attempt record has an "ok" key, including a synthesis-failure one —
+    a consumer iterating attempts and reading attempt["ok"] must never KeyError
+    just because that particular attempt never reached the sandbox."""
+    row, runner = _runner(
+        tmp_path, task, responses=[RuntimeError("connection reset"), _script()],
+        steps=[_writes_csv],
+    )
+    runner.run(row, _spec())
+    manifest = json.loads((tmp_path / f"task-{row.id}" / "manifest.json").read_text())
+    assert manifest["attempts"][0]["ok"] is False
+    assert all("ok" in attempt for attempt in manifest["attempts"])

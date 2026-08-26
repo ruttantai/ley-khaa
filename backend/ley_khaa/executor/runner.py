@@ -106,7 +106,9 @@ class ExecutionRunner:
             except _NoScript as exc:
                 # previous/last stay as they were, so the next pass is a plain
                 # retry when nothing has run yet and a repair when something has.
-                attempts.append({"attempt": number, "error": str(exc)})
+                # "ok" is always present, same as a real attempt record — a
+                # consumer reading attempt["ok"] must never KeyError on this.
+                attempts.append({"attempt": number, "ok": False, "error": str(exc)})
                 verdict = Verdict(
                     ok=False, reason=_SYNTHESIS_FAILED, checks={"synthesis_produced_a_script": False}
                 )
@@ -178,8 +180,16 @@ class ExecutionRunner:
                 "task_id": row.id,
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "lane": "synthesis",
-                # The sandbox that ACTUALLY ran, never the one we hoped for.
-                "sandbox": self.sandbox.name,
+                # The sandbox that ACTUALLY ran, never the one we hoped for —
+                # and never resolved just to fill in this field. Reads the
+                # backing field, not the lazy property: the unresolved-inputs
+                # path calls this with attempts == [] and no sandbox touched,
+                # and probing pick_sandbox() here would defeat the property's
+                # whole reason for being lazy. An attempts list that is all
+                # _NoScript entries (synthesis failed every time) also leaves
+                # _sandbox unset, so this must not assume "attempts" implies
+                # "a sandbox ran".
+                "sandbox": self._sandbox.name if self._sandbox is not None else None,
                 "models": {Stage.SYNTHESIS.value: model_for(Stage.SYNTHESIS).model},
                 "catalog_seed": catalog.CATALOG_SEED,
                 "spec": spec.model_dump(mode="json"),
