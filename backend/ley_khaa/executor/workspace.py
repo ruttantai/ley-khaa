@@ -83,6 +83,24 @@ class Workspace:
         path.write_text(source, encoding="utf-8")
         return path
 
+    def write_run_script(self, attempt: int) -> Path:
+        """The human-runnable re-entry point named in spec §5.11.
+
+        Points at the attempt that actually succeeded, not at the last one
+        written — a failed final attempt is kept for the audit trail but is not
+        what re-running the bundle should execute.
+        """
+        path = self.generator_dir / "run.sh"
+        path.write_text(
+            "#!/bin/sh\n"
+            "# Re-run the generator that produced this bundle's deliverable.\n"
+            "# Run this from the bundle root — the directory holding inputs/.\n"
+            f"exec python generator/attempt_{attempt}.py\n",
+            encoding="utf-8",
+        )
+        path.chmod(0o755)
+        return path
+
     def deliverables(self) -> list[Path]:
         return sorted(p for p in self.deliverable_dir.iterdir() if p.is_file())
 

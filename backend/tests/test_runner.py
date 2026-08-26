@@ -1,0 +1,193 @@
+import json
+
+import pytest
+
+from ley_khaa.domain.models import Message
+from ley_khaa.executor.runner import ExecutionRunner
+from ley_khaa.executor.sandbox import SandboxResult, SandboxUnavailable
+from ley_khaa.executor.synthesizer import SynthesizedScript
+from ley_khaa.interpreter.spec import TaskSpec
+from ley_khaa.llm.client import FakeLLM
+from ley_khaa.persistence.message_repository import MessageRepository
+from ley_khaa.persistence.repository import TaskRepository
+
+
+class FakeSandbox:
+    """Runs nothing. Each queued step performs the effect a real run would have.
+
+    Runner tests are about the lane and the repair loop, so paying for a real
+    interpreter start-up per attempt would buy nothing and cost the suite its
+    sub-second runtime.
+    """
+
+    name = "fake"
+
+    def __init__(self, steps):
+        self.steps = list(steps)
+        self.scripts = []
+
+    def run(self, *, script, workspace, timeout_s):
+        self.scripts.append(script)
+        return self.steps.pop(0)(workspace)
+
+
+def _crash(_workspace) -> SandboxResult:
+    return SandboxResult(
+        exit_code=1, stdout="", stderr="KeyError: 'ticker'", duration_ms=4, timed_out=False
+    )
+
+
+def _writes_csv(workspace) -> SandboxResult:
+    (workspace / "deliverable" / "output.csv").write_text("ticker\nSYN0000\n")
+    return SandboxResult(exit_code=0, stdout="ok", stderr="", duration_ms=7, timed_out=False)
+
+
+def _boom(_workspace) -> SandboxResult:
+    raise SandboxUnavailable("the daemon went away")
+
+
+def _spec(inputs=None, output_format="csv") -> TaskSpec:
+    return TaskSpec(
+        intent="compare the universes",
+        inputs=inputs if inputs is not None else ["bloomberg universe", "factset"],
+        operation="set_difference",
+        output_format=output_format,
+        certainty=0.9,
+    )
+
+
+def _script(source="print('ok')") -> SynthesizedScript:
+    return SynthesizedScript(reasoning="because", source=source)
+
+
+@pytest.fixture
+def task(session):
+    messages = MessageRepository(session)
+    row = messages.add(
+        Message(
+            source="slack", client="demo", conversation_id="conv-1",
+            author="boss", text="compare them",
+        )
+    )
+    created = TaskRepository(session).create(
+        project="demo", title="compare", source_message_ids=[row.id]
+    )
+    return created, messages
+
+
+def _runner(tmp_path, task, *, responses, steps):
+    row, messages = task
+    return row, ExecutionRunner(
+        llm=FakeLLM(responses),
+        messages=messages,
+        sandbox=FakeSandbox(steps),
+        workspace_root=tmp_path,
+    )
+
+
+def test_a_clean_first_attempt_is_the_whole_story(tmp_path, task):
+    row, runner = _runner(tmp_path, task, responses=[_script()], steps=[_writes_csv])
+    outcome = runner.run(row, _spec())
+    assert outcome.verdict.ok
+    assert outcome.attempts == 1
+    assert (tmp_path / f"task-{row.id}" / "deliverable" / "output.csv").is_file()
+    assert (tmp_path / f"task-{row.id}" / "generator" / "run.sh").is_file()
+
+
+def test_a_failure_is_repaired_once_and_both_attempts_are_kept(tmp_path, task):
+    """A bundle that hides its first failure is not an audit trail."""
+    row, runner = _runner(
+        tmp_path, task, responses=[_script("broken"), _script("fixed")],
+        steps=[_crash, _writes_csv],
+    )
+    outcome = runner.run(row, _spec())
+    assert outcome.verdict.ok
+    assert outcome.attempts == 2
+    generator = tmp_path / f"task-{row.id}" / "generator"
+    assert (generator / "attempt_1.py").read_text() == "broken"
+    assert (generator / "attempt_2.py").read_text() == "fixed"
+    # run.sh points at the attempt that worked, not at the last one written.
+    assert "attempt_2.py" in (generator / "run.sh").read_text()
+
+
+def test_the_repair_prompt_carries_the_traceback(tmp_path, task):
+    row, runner = _runner(
+        tmp_path, task, responses=[_script("broken"), _script("fixed")],
+        steps=[_crash, _writes_csv],
+    )
+    runner.run(row, _spec())
+    second = runner.synthesizer.llm.calls[1].user
+    assert "broken" in second
+    assert "KeyError: 'ticker'" in second
+
+
+def test_two_failures_escalate_instead_of_looping(tmp_path, task):
+    """Decision 5: repair once, then hand it to a human. Not three times, not
+    until the token budget runs out."""
+    row, runner = _runner(
+        tmp_path, task, responses=[_script(), _script()], steps=[_crash, _crash]
+    )
+    outcome = runner.run(row, _spec())
+    assert not outcome.verdict.ok
+    assert outcome.attempts == 2
+    assert "Traceback" not in outcome.verdict.reason
+
+
+def test_unresolvable_inputs_cost_nothing(tmp_path, task):
+    """§6: a name that resolves to nothing becomes a question BEFORE any model
+    call. Spending Opus tokens on a task we already know we cannot start is the
+    waste this ordering exists to prevent."""
+    row, runner = _runner(tmp_path, task, responses=[], steps=[])
+    outcome = runner.run(row, _spec(inputs=["trade blotter"]))
+    assert not outcome.verdict.ok
+    assert "trade blotter" in outcome.verdict.reason
+    assert outcome.attempts == 0
+    assert runner.synthesizer.llm.calls == []
+
+
+def test_a_dead_sandbox_is_not_a_question_for_a_human(tmp_path, task):
+    """Infrastructure failure propagates; Task 10 turns it into FAILED. Asking
+    a human to answer for a dead daemon is not a question they can answer."""
+    row, runner = _runner(tmp_path, task, responses=[_script()], steps=[_boom])
+    with pytest.raises(SandboxUnavailable):
+        runner.run(row, _spec())
+
+
+def test_the_manifest_records_what_actually_happened(tmp_path, task):
+    row, runner = _runner(
+        tmp_path, task, responses=[_script("broken"), _script("fixed")],
+        steps=[_crash, _writes_csv],
+    )
+    runner.run(row, _spec())
+    manifest = json.loads((tmp_path / f"task-{row.id}" / "manifest.json").read_text())
+    assert manifest["task_id"] == row.id
+    assert manifest["lane"] == "synthesis"
+    # Never "docker" when a fake ran: a bundle must not overstate its isolation.
+    assert manifest["sandbox"] == "fake"
+    assert [a["attempt"] for a in manifest["attempts"]] == [1, 2]
+    assert manifest["attempts"][0]["ok"] is False
+    assert manifest["attempts"][1]["ok"] is True
+    assert len(manifest["deliverables"][0]["sha256"]) == 64
+    assert {i["file"] for i in manifest["inputs"]} == {
+        "bloomberg_universe.csv", "factset_universe.csv"
+    }
+    assert manifest["spec"]["operation"] == "set_difference"
+
+
+def test_synthesis_blowing_up_is_a_failed_attempt_not_a_crash(tmp_path, task):
+    row, runner = _runner(
+        tmp_path, task, responses=[RuntimeError("connection reset"), _script()],
+        steps=[_writes_csv],
+    )
+    outcome = runner.run(row, _spec())
+    assert outcome.verdict.ok
+    assert outcome.attempts == 2
+
+
+def test_an_empty_script_is_not_run(tmp_path, task):
+    row, runner = _runner(
+        tmp_path, task, responses=[_script(""), _script()], steps=[_writes_csv]
+    )
+    outcome = runner.run(row, _spec())
+    assert outcome.verdict.ok
+    assert len(runner.sandbox.scripts) == 1

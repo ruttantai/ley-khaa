@@ -111,3 +111,12 @@ def test_write_inputs_rejects_dot_and_dot_dot(tmp_path):
         ws.write_inputs([ResolvedInput(name="evil", filename="..", content="x", source="test")])
     with pytest.raises(ValueError, match="cannot be a directory reference"):
         ws.write_inputs([ResolvedInput(name="evil", filename=".", content="x", source="test")])
+
+
+def test_the_bundle_carries_a_way_to_re_run_it(tmp_path):
+    """A bundle a human cannot re-run is a claim, not an audit trail."""
+    ws = Workspace.create(tmp_path, "task-1")
+    ws.write_generator(2, "print('two')")
+    path = ws.write_run_script(2)
+    assert path.name == "run.sh"
+    assert "generator/attempt_2.py" in path.read_text()
