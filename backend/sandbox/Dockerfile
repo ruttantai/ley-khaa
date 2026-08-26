@@ -9,5 +9,5 @@
 # The subprocess fallback runs the backend interpreter, so anything installed
 # here and missing there makes the two sandboxes disagree.
 FROM python:3.12-slim
-RUN pip install --no-cache-dir openpyxl==3.1.5 python-docx==1.1.2
+RUN pip install --no-cache-dir openpyxl==3.1.5 python-docx==1.2.0
 WORKDIR /work
