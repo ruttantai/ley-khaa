@@ -306,11 +306,31 @@ def _bundle_root(session: Session, task_id: str) -> Path:
     return root
 
 
+def _contained(root: Path, candidate: Path) -> Path | None:
+    """Resolve `candidate` and return it, but only if it stays inside `root`.
+
+    resolve() follows symlinks, which is the point: the sandboxed generator
+    that fills a bundle is untrusted code, and `os.symlink("/etc/passwd",
+    "deliverable/out.csv")` is one line inside it. A symlink planted anywhere
+    under the bundle — including inside a directory that is itself a
+    symlink — resolves outside root and is rejected here exactly like a
+    "../.." traversal is. Every route that reads bundle contents (the
+    listing, the file viewer, the deliverable download, the zip download)
+    must run every candidate path through this before touching it.
+    """
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(root.resolve()):
+        return None
+    return resolved
+
+
 @app.get("/tasks/{task_id}/bundle", response_model=BundleOut)
 def get_bundle(task_id: str, session: Session = Depends(get_session)) -> BundleOut:
     root = _bundle_root(session, task_id)
     files = sorted(
-        str(path.relative_to(root)) for path in root.rglob("*") if path.is_file()
+        str(path.relative_to(root))
+        for path in root.rglob("*")
+        if path.is_file() and _contained(root, path) is not None
     )
     return BundleOut(
         task_id=task_id,
@@ -326,12 +346,8 @@ def get_bundle_file(
     task_id: str, path: str, session: Session = Depends(get_session)
 ) -> dict[str, str]:
     root = _bundle_root(session, task_id)
-    target = (root / path).resolve()
-    # resolve() first, THEN compare: without it "generator/../../.." is a
-    # perfectly ordinary-looking relative path that lands outside the bundle.
-    # An absolute `path` also lands here, because root / "/etc/passwd" is
-    # "/etc/passwd".
-    if not target.is_relative_to(root.resolve()):
+    target = _contained(root, root / path)
+    if target is None:
         raise HTTPException(status_code=400, detail="path escapes the bundle")
     if not target.is_file():
         raise HTTPException(status_code=404, detail="no such file in the bundle")
@@ -351,7 +367,9 @@ def download_deliverable(task_id: str, session: Session = Depends(get_session)) 
     """The deliverable itself (spec §5.2). Separate from bundle/file because an
     .xlsx is not text and the code viewer's JSON envelope cannot carry it."""
     root = _bundle_root(session, task_id)
-    produced = Workspace(root).deliverables()
+    produced = [
+        path for path in Workspace(root).deliverables() if _contained(root, path) is not None
+    ]
     if not produced:
         raise HTTPException(status_code=404, detail="this bundle has no deliverable")
     primary = produced[0]
@@ -364,7 +382,7 @@ def download_bundle(task_id: str, session: Session = Depends(get_session)) -> St
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(root.rglob("*")):
-            if path.is_file():
+            if path.is_file() and _contained(root, path) is not None:
                 archive.write(path, path.relative_to(root))
     buffer.seek(0)
     return StreamingResponse(

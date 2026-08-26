@@ -8,6 +8,16 @@ from ley_khaa.executor.workspace import Workspace
 from ley_khaa.persistence.repository import TaskRepository
 
 
+def _plant_escaping_symlink(workspace, tmp_path, *, name="escape.csv"):
+    """A symlink inside the bundle pointing at a file outside it — one line
+    of os.symlink() inside the sandboxed (and untrusted) generator script,
+    since the workspace is writable by the code that fills it."""
+    secret = tmp_path / "outside-secret.txt"
+    secret.write_text("SIMULATED HOST SECRET\n")
+    (workspace.deliverable_dir / name).symlink_to(secret)
+    return secret
+
+
 @pytest.fixture
 def bundled(session, tmp_path):
     """A task with a bundle on disk, as Task 10 would have left it."""
@@ -98,3 +108,58 @@ def test_the_task_payload_carries_the_bundle_path_and_verdict(client, bundled):
     body = client.get(f"/tasks/{task.id}").json()
     assert body["workspace_path"] == str(workspace.root)
     assert body["execution_verdict"]["ok"] is True
+
+
+def test_a_symlink_escaping_the_bundle_is_absent_from_the_listing(client, bundled, tmp_path):
+    """The listing must not name a path that resolve() sends outside root —
+    a symlink is exactly such a path, and rglob()'s is_file() follows it."""
+    task, workspace = bundled
+    _plant_escaping_symlink(workspace, tmp_path)
+    body = client.get(f"/tasks/{task.id}/bundle").json()
+    assert "deliverable/escape.csv" not in body["files"]
+    assert "deliverable/escape.csv" not in body["deliverables"]
+    # The legitimate deliverable is unaffected by the symlink sitting next to it.
+    assert "deliverable/output.xlsx" in body["files"]
+
+
+def test_a_symlink_escaping_the_bundle_is_absent_from_the_zip(client, bundled, tmp_path):
+    """zipfile.write() reads through a symlink; the foreign bytes must never
+    reach the archive, whatever they are."""
+    task, workspace = bundled
+    secret = _plant_escaping_symlink(workspace, tmp_path)
+    response = client.get(f"/tasks/{task.id}/bundle/download")
+    assert response.status_code == 200
+    archive = zipfile.ZipFile(io.BytesIO(response.content))
+    assert "deliverable/escape.csv" not in archive.namelist()
+    all_bytes = b"".join(archive.read(name) for name in archive.namelist())
+    assert secret.read_bytes() not in all_bytes
+
+
+def test_the_deliverable_endpoint_never_serves_a_symlink_that_escapes_the_bundle(
+    client, bundled, tmp_path
+):
+    """A symlink that sorts before the real deliverable must not become
+    "the" deliverable just because it is first alphabetically."""
+    task, workspace = bundled
+    secret = _plant_escaping_symlink(workspace, tmp_path)  # "escape.csv" < "output.xlsx"
+    response = client.get(f"/tasks/{task.id}/bundle/deliverable")
+    assert response.status_code == 200
+    assert response.content != secret.read_bytes()
+    assert "output.xlsx" in response.headers["content-disposition"]
+
+
+def test_the_deliverable_endpoint_404s_when_the_only_candidate_escapes(client, bundled, tmp_path):
+    task, workspace = bundled
+    (workspace.deliverable_dir / "output.xlsx").unlink()
+    _plant_escaping_symlink(workspace, tmp_path, name="output.xlsx")
+    response = client.get(f"/tasks/{task.id}/bundle/deliverable")
+    assert response.status_code == 404
+
+
+def test_the_file_endpoint_refuses_a_symlink_that_escapes_the_bundle(client, bundled, tmp_path):
+    task, workspace = bundled
+    _plant_escaping_symlink(workspace, tmp_path)
+    response = client.get(
+        f"/tasks/{task.id}/bundle/file", params={"path": "deliverable/escape.csv"}
+    )
+    assert response.status_code == 400
