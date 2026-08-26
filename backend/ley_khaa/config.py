@@ -14,6 +14,10 @@ class Settings:
     # comfortably shorter than the debounce so a settled candidate promotes soon
     # after its quiet period elapses.
     sweep_interval_seconds: int = int(os.getenv("LEY_KHAA_SWEEP_SECONDS", "15"))
+    # Where Output Bundles live (spec §5.11). Under compose this is a named
+    # volume mounted at the SAME path in the backend and the sandbox container,
+    # so a path is valid on both sides — see docker-compose.yml.
+    workspace_root: str = os.getenv("LEY_KHAA_WORKSPACE_ROOT", "./task-workspaces")
 
 
 settings = Settings()

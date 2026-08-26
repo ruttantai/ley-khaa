@@ -4,3 +4,4 @@
 __pycache__/
 *.pyc
 .worktrees/
+task-workspaces/
