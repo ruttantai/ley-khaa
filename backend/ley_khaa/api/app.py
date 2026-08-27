@@ -24,6 +24,7 @@ from ..orchestrator.orchestrator import ForeignReplyTarget, Orchestrator
 from ..persistence.candidate_repository import CandidateRepository
 from ..persistence.message_repository import MessageRepository
 from ..persistence.repository import TaskRepository
+from ..registry.seeds import ensure_seed_workflows
 from .schemas import (
     AnswerIn,
     BundleOut,
@@ -98,6 +99,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     session = SessionLocal()
     try:
         repo = TaskRepository(session)
+        # The registry ships with two proven workflows so a fresh clone can show
+        # the fast path before anyone has promoted anything.
+        ensure_seed_workflows(session)
         if not repo.list():
             Simulator(build_orchestrator(session)).replay("messy_universe_check")
     finally:

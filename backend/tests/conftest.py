@@ -63,6 +63,21 @@ def stub_execution(monkeypatch, tmp_path):
 
 
 @pytest.fixture
+def seeded_registry(session):
+    """Install the seed workflows for tests that want the registry fast path.
+
+    Not automatic: conftest sets LEY_KHAA_DISABLE_STARTUP=1, so the lifespan
+    seeding never runs under test. Opting in keeps every existing test on the
+    synthesis lane it was written for, and makes a test's lane obvious from its
+    own body rather than from a global.
+    """
+    from ley_khaa.registry.seeds import ensure_seed_workflows
+
+    ensure_seed_workflows(session)
+    return session
+
+
+@pytest.fixture
 def client(session):
     from ley_khaa.api.app import app, get_session
 
