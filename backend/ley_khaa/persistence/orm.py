@@ -38,6 +38,11 @@ class TaskRow(Base):
     workspace_path: Mapped[str | None] = mapped_column(String, nullable=True)
     # The serialized Verdict _execute produced and _validate acts on.
     execution_verdict: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Set when a spec came from memory rather than the interpreter. familiarity
+    # is the remembered times_seen and feeds the autonomy dial; the task id is
+    # what the dashboard links back to.
+    remembered_from_task_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    familiarity: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     @property
     def effective_mode(self) -> str | None:
@@ -88,3 +93,56 @@ class CandidateRow(Base):
     task_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class WorkflowRow(Base):
+    """A promoted, proven workflow — the registry's learned cache (spec §5.6).
+
+    `source` is frozen: it is byte-for-byte the script that passed validation in
+    the bundle named by promoted_from_task_id. Nothing rewrites it, which is why
+    source_sha256 is meaningful.
+    """
+
+    __tablename__ = "workflows"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, unique=True, index=True)
+    description: Mapped[str] = mapped_column(String, default="")
+    # Normalized operation strings that match this workflow. Grows by one every
+    # time the model matcher finds a phrasing that then passes validation.
+    operation_aliases: Mapped[list] = mapped_column(JSON, default=list)
+    output_format: Mapped[str] = mapped_column(String)
+    # [{"role": "left", "suffixes": [".csv"]}], in the order the script expects.
+    inputs: Mapped[list] = mapped_column(JSON, default=list)
+    source: Mapped[str] = mapped_column(String)
+    source_sha256: Mapped[str] = mapped_column(String)
+    origin: Mapped[str] = mapped_column(String, default="promoted")  # seed | promoted
+    promoted_from_task_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    promoted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    runs_ok: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    runs_failed: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set by a failed cached run. Blocks matching until a human clears it: a
+    # workflow that just produced a wrong answer must not be handed the next
+    # matching request as though nothing happened.
+    quarantined: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+
+
+class MemoryRow(Base):
+    """A remembered request → the spec that satisfied it (spec §5.14).
+
+    Written only for tasks that reached DONE with a passing verdict: the same
+    "proven before it is cached" rule promotion follows.
+    """
+
+    __tablename__ = "task_memory"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project: Mapped[str] = mapped_column(String, index=True, default="default")
+    fingerprint: Mapped[str] = mapped_column(String, index=True)
+    intent: Mapped[str] = mapped_column(String, default="")
+    spec: Mapped[dict] = mapped_column(JSON)
+    source_task_id: Mapped[str] = mapped_column(String)
+    times_seen: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
