@@ -14,6 +14,11 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
         working-directory: backend
+      # Without the image, DockerSandbox.available() is False and every
+      # [docker] param in tests/test_sandbox_contract.py skips — so the default
+      # sandbox, and the §5.10 guarantees that are its whole reason to exist,
+      # would have no automated coverage anywhere.
+      - run: docker build -t ley-khaa-sandbox backend/sandbox
       - run: python -m pytest -v
         working-directory: backend
 
@@ -25,6 +30,10 @@ jobs:
         with:
           node-version: "20"
       - run: npm install
+        working-directory: frontend
+      # `npm test` is vitest and `npm run build` is transpile-only, so without
+      # this the frontend is typechecked nowhere.
+      - run: npm run typecheck
         working-directory: frontend
       - run: npm test
         working-directory: frontend

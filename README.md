@@ -106,9 +106,16 @@ model produced the generator, so a bundle never overstates where its code came f
 ### Where synthesized code runs
 
 Docker, by default: `--network none`, read-only rootfs, non-root, 512 MB, 1 CPU, 64 pids, killed on
-a wall-clock timeout. The image (`backend/sandbox/Dockerfile`) carries the standard library,
-`openpyxl` and `python-docx` — deliberately the same set the backend has, so the fallback cannot
-run something the real sandbox couldn't.
+a wall-clock timeout, and only the running task's own bundle mounted — not the other tasks'.
+The image (`backend/sandbox/Dockerfile`) carries the standard library, `openpyxl` and
+`python-docx`, and nothing else. That is a subset of what the backend has, so the real sandbox
+cannot run something the fallback couldn't; the reverse is not true, since the fallback runs the
+backend's own interpreter and can therefore import `anthropic`, `fastapi` and the rest.
+
+The container runs as the backend's own uid, so the backend must not be root. Under compose,
+`backend/docker-entrypoint.py` drops to an unprivileged account before uvicorn starts; if the
+backend is root anyway, the run fails rather than quietly producing a bundle that claims an
+isolation it did not have.
 
 With no daemon reachable, `SubprocessSandbox` takes over so the Docker-free dev loop keeps working.
 It caps CPU and memory and scrubs the environment — your `ANTHROPIC_API_KEY` is not visible to

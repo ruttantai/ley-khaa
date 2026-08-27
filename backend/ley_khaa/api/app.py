@@ -293,6 +293,12 @@ def answer_task(
 # streaming it into a JSON string would be a denial of service on the browser.
 _MAX_INLINE_BYTES = 1_000_000
 
+# The zip is built in memory, and what goes into it was written by synthesized
+# code — a script that fills deliverable/ with gigabytes would otherwise be
+# buffering them inside the backend process. Refused rather than truncated: half
+# a bundle is not a bundle, and the individual-file routes still work.
+_MAX_BUNDLE_BYTES = 100_000_000
+
 
 def _bundle_root(session: Session, task_id: str) -> Path:
     row = _require_task(session, task_id)
@@ -379,11 +385,21 @@ def download_deliverable(task_id: str, session: Session = Depends(get_session)) 
 @app.get("/tasks/{task_id}/bundle/download")
 def download_bundle(task_id: str, session: Session = Depends(get_session)) -> StreamingResponse:
     root = _bundle_root(session, task_id)
+    members = [
+        path
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and _contained(root, path) is not None
+    ]
+    total = sum(path.stat().st_size for path in members)
+    if total > _MAX_BUNDLE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="this bundle is too large to zip; fetch its files individually",
+        )
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        for path in sorted(root.rglob("*")):
-            if path.is_file() and _contained(root, path) is not None:
-                archive.write(path, path.relative_to(root))
+        for path in members:
+            archive.write(path, path.relative_to(root))
     buffer.seek(0)
     return StreamingResponse(
         buffer,

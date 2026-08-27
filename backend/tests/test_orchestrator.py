@@ -6,6 +6,7 @@ from ley_khaa.crystallizer.engine import CandidateDraft, CrystallizerOutput
 from ley_khaa.crystallizer.gate import ReadinessGate
 from ley_khaa.crystallizer.relevance import RelevanceVerdict
 from ley_khaa.domain.states import TaskState
+from ley_khaa.interpreter.spec import TaskSpec
 from ley_khaa.llm.client import FakeLLM
 from ley_khaa.llm.heuristic import HeuristicLLM
 from ley_khaa.orchestrator.orchestrator import Orchestrator
@@ -301,3 +302,69 @@ def test_advance_stalled_costs_exactly_one_attempt_per_sweep(session):
     result = TaskRepository(session).get(task.id)
     assert result.state == TaskState.CLASSIFIED.value
     assert result.interpret_attempts == 1
+
+
+def test_a_sweep_never_re_enters_a_task_that_is_still_executing(session, monkeypatch):
+    """The sweeper runs every 15s. `_execute` is the one step nothing claims on
+    the way IN, and it is now two Opus calls and up to two 60-second sandbox
+    runs — so a task still synthesizing used to get a SECOND full lane on the
+    same workspace, every 15s, uncapped: both lanes writing the same attempt
+    files and the same deliverable/, leaving the persisted verdict describing
+    one run and the bundle on disk the other.
+
+    Invisible to the rest of the suite, which pins the offline HeuristicLLM
+    (finishes in well under a sweep) and disables the sweeper outright.
+    """
+    runs: list[str] = []
+
+    def _never(self, row, spec):
+        runs.append(row.id)
+        raise AssertionError("the sweeper re-entered a task that was already executing")
+
+    monkeypatch.setattr("ley_khaa.executor.runner.ExecutionRunner.run", _never)
+
+    repo = TaskRepository(session)
+    task = repo.create(project="default", title="long run", source_message_ids=[])
+    repo.save_spec(
+        task.id,
+        TaskSpec(
+            intent="compare the universes",
+            inputs=["bloomberg universe"],
+            operation="set_difference",
+            output_format="xlsx",
+            certainty=0.9,
+        ),
+    )
+    repo.claim(task.id, expected=TaskState.RECEIVED, target=TaskState.CLASSIFIED)
+    repo.claim(task.id, expected=TaskState.CLASSIFIED, target=TaskState.INTERPRETED)
+    repo.claim(task.id, expected=TaskState.INTERPRETED, target=TaskState.EXECUTING)
+
+    orch = _orch(session, HeuristicLLM())
+    assert orch.advance_stalled() == []
+    assert orch.advance_stalled() == []
+    assert runs == []
+    assert repo.get(task.id).state == TaskState.EXECUTING.value
+
+
+def test_a_sweep_still_finishes_a_task_stranded_in_validating(session):
+    """VALIDATING stays in the swept set: acting on a verdict already on the row
+    is pure database work, so a duplicate pass is a no-op the state claim
+    absorbs — and a backend that died between saving the verdict and claiming
+    DONE has nothing else to rescue it."""
+    repo = TaskRepository(session)
+    task = repo.create(project="default", title="stranded", source_message_ids=[])
+    for expected, target in (
+        (TaskState.RECEIVED, TaskState.CLASSIFIED),
+        (TaskState.CLASSIFIED, TaskState.INTERPRETED),
+        (TaskState.INTERPRETED, TaskState.EXECUTING),
+        (TaskState.EXECUTING, TaskState.VALIDATING),
+    ):
+        repo.claim(task.id, expected=expected, target=target)
+    repo.save_execution(
+        task.id,
+        workspace_path="/tmp/task-x",
+        verdict={"ok": True, "reason": "produced output.csv", "checks": {}, "attempts": 1},
+    )
+
+    assert _orch(session, HeuristicLLM()).advance_stalled() == [task.id]
+    assert repo.get(task.id).state == TaskState.DONE.value

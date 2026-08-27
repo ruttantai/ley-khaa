@@ -79,6 +79,13 @@ def _from_attachments(name: str, attachments: list[dict], used: set[int]) -> dic
         # Strip the extension before matching: "holdings.csv" should answer to
         # the spoken input name "holdings".
         stem = catalog.tokens(attachment.get("name", "").rsplit(".", 1)[0])
+        # A name with no tokens at all ("", "---", ".csv") yields the empty set,
+        # and the empty set is a subset of everything — so without this it would
+        # match the FIRST spec input, beat the catalog, and have the task compute
+        # on whatever bytes it carried while the manifest recorded a clean
+        # `source: "attachment"`. AttachmentIn.name is public and unconstrained.
+        if not stem:
+            continue
         if wanted <= stem or stem <= wanted:
             used.add(index)
             return attachment

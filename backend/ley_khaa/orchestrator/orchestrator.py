@@ -236,12 +236,24 @@ class Orchestrator:
 
         This is what retries a task whose interpretation hit a transport failure:
         it stays in CLASSIFIED, and the next sweep picks it up.
+
+        EXECUTING is deliberately NOT in this set. Every other step here is cheap
+        and idempotent — the state claim at the end of each one makes a duplicate
+        pass a no-op. `_execute` is neither: nothing claims the task on the way
+        IN, so a task still synthesizing when the sweeper comes round (every 15s,
+        against a lane that can take two Opus calls and two sandbox runs) would
+        get a second full lane on the same workspace, both writing the same
+        attempt files and the same deliverable/. The persisted verdict would then
+        belong to one run and the bundle on disk to the other, and every sweep
+        would add another pair of model calls with no attempt ceiling to stop it.
+        A task whose backend died mid-execution therefore stays in EXECUTING and
+        stays visible, rather than being silently re-run at cost; recovering it
+        automatically needs a lease on the row, not a timer.
         """
         mid_flight = (
             TaskState.RECEIVED,
             TaskState.CLASSIFIED,
             TaskState.INTERPRETED,
-            TaskState.EXECUTING,
             TaskState.VALIDATING,
         )
         # Collect first, then drive. Advancing inline while iterating state by

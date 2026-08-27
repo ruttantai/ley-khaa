@@ -134,3 +134,46 @@ def test_killing_a_runaway_script_also_kills_its_children(runner, workspace):
 
     time.sleep(1.5)  # past the child's 2s delay, were it still alive
     assert not (workspace / "sentinel.txt").exists()
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_a_print_flood_is_truncated_visibly_rather_than_buffered_whole(runner, workspace):
+    """The script decides how much it prints, and the capture happens in the
+    BACKEND process — the container's --memory cap bounds the script's RAM, not
+    ours. The tail is what survives, because the traceback a repair attempt is
+    prompted with is written last, and the truncation says so rather than
+    quietly shortening the bundle's own evidence."""
+    script = _script(
+        workspace,
+        "for _ in range(40_000):\n"
+        "    print('x' * 100)\n"
+        "print('LAST LINE')\n",
+    )
+    result = runner.run(script=script, workspace=workspace, timeout_s=30)
+    assert result.ok, result.stderr
+    # 4 MB written, well under a megabyte kept.
+    assert len(result.stdout) < 1_000_000
+    assert "ley-khaa dropped" in result.stdout
+    assert "LAST LINE" in result.stdout
+
+
+@pytest.mark.docker
+@pytest.mark.skipif(_no_docker, reason="no docker daemon or sandbox image")
+def test_the_docker_sandbox_has_no_network(workspace):
+    """--network none is the §5.10 guarantee and the whole reason DockerSandbox
+    exists. It cannot be a shared contract case: the subprocess fallback would
+    fail it, because it cannot take network access away."""
+    script = _script(
+        workspace,
+        "import socket\n"
+        "try:\n"
+        "    socket.create_connection(('1.1.1.1', 80), timeout=5).close()\n"
+        "except OSError as exc:\n"
+        "    print('NO NETWORK:', exc)\n"
+        "else:\n"
+        "    print('REACHED THE NETWORK')\n",
+    )
+    result = _docker.run(script=script, workspace=workspace, timeout_s=30)
+    assert result.ok, result.stderr
+    assert "NO NETWORK" in result.stdout
+    assert "REACHED THE NETWORK" not in result.stdout

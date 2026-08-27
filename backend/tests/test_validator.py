@@ -146,3 +146,42 @@ def test_a_non_tabular_deliverable_is_not_row_counted(tmp_path):
     (workspace.deliverable_dir / "output.md").write_text("# report\n\nall good\n")
     verdict = validate(_spec("markdown"), workspace, _ok_result(), hashes)
     assert verdict.ok
+
+
+def test_a_symlinked_deliverable_fails_and_says_so(tmp_path):
+    """`os.symlink("/etc/hosts", "deliverable/output.csv")` is one line inside a
+    synthesized script. Following it would give a PASSING verdict, put the task
+    in DONE, and have the manifest attest a sha256 over bytes the run never
+    wrote — while the API refused to serve the file, so the bundle would
+    contradict itself."""
+    workspace = _workspace(tmp_path)
+    hashes = workspace.input_hashes()
+    outside = tmp_path / "outside.csv"
+    outside.write_text("ticker\nSECRET\n")
+    (workspace.deliverable_dir / "output.csv").symlink_to(outside)
+
+    verdict = validate(_spec("csv"), workspace, _ok_result(), hashes)
+
+    assert not verdict.ok
+    assert verdict.checks["deliverable_is_a_real_file"] is False
+    # And the reason names what actually happened, rather than reporting the
+    # empty directory that dropping the link leaves behind.
+    assert "link" in verdict.reason
+    assert "output.csv" in verdict.reason
+    assert workspace.deliverables() == []
+
+
+def test_a_link_alongside_a_real_deliverable_still_fails(tmp_path):
+    """One planted link is enough to make the bundle untrustworthy, even when
+    the run also produced something genuine."""
+    workspace = _workspace(tmp_path)
+    hashes = workspace.input_hashes()
+    _xlsx(workspace)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret")
+    (workspace.deliverable_dir / "aaa-link.xlsx").symlink_to(outside)
+
+    verdict = validate(_spec(), workspace, _ok_result(), hashes)
+
+    assert not verdict.ok
+    assert "aaa-link.xlsx" in verdict.reason

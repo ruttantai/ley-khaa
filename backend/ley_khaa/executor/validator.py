@@ -68,10 +68,16 @@ def validate(
 ) -> Verdict:
     deliverables = workspace.deliverables()
     primary = deliverables[0] if deliverables else None
+    # Links are reported, not followed. workspace.deliverables() already drops
+    # them, so without this the bundle would simply look empty and the human
+    # would be told "no output file" for a run that in fact tried to pass off a
+    # file it never wrote.
+    linked = workspace.linked_deliverables()
 
     checks = {
         "within_time_limit": not result.timed_out,
         "script_ran": result.exit_code == 0 and not result.timed_out,
+        "deliverable_is_a_real_file": not linked,
         "deliverable_exists": primary is not None,
         "deliverable_not_empty": primary is not None and primary.stat().st_size > 0,
         "format_matches": _format_matches(spec, primary),
@@ -86,6 +92,12 @@ def validate(
         return fail("The generated script ran too long and was stopped.")
     if not checks["script_ran"]:
         return fail("The generated script failed while running.")
+    if not checks["deliverable_is_a_real_file"]:
+        return fail(
+            "The script left a link ("
+            + ", ".join(path.name for path in linked)
+            + ") in place of an output file instead of writing one."
+        )
     if not checks["deliverable_exists"]:
         return fail("The script finished but produced no output file.")
     if not checks["deliverable_not_empty"]:

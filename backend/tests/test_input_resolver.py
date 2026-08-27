@@ -106,39 +106,43 @@ def test_attachment_with_path_traversal_payload_resolves_to_safe_basename(sessio
     task, messages = _task_with(
         session,
         [
-            Attachment(kind=AttachmentKind.TABLE, name="../../../../etc/passwd", content="root:x:0:0:root:/root:/bin/bash\n"),
+            Attachment(kind=AttachmentKind.TABLE, name="../../../../etc/passwd.csv", content="root:x:0:0:root:/root:/bin/bash\n"),
         ],
     )
     resolved = resolve_inputs(_spec(["passwd"]), task, messages)
     # Basename extracted safely; the file ends up in inputs/ not /etc/
-    assert resolved[0].filename == "passwd"
+    assert resolved[0].filename == "passwd.csv"
     assert resolved[0].content == "root:x:0:0:root:/root:/bin/bash\n"
 
 
 def test_attachment_named_with_dot_dot_falls_back_to_default(session):
-    """An attachment named only with '..' is replaced with the default fallback."""
+    """An attachment whose basename is '..' is replaced with the default fallback."""
     task, messages = _task_with(
         session,
         [
-            Attachment(kind=AttachmentKind.TABLE, name="..", content="data\n"),
+            Attachment(kind=AttachmentKind.TABLE, name="holdings/..", content="data\n"),
         ],
     )
-    resolved = resolve_inputs(_spec(["somefile"]), task, messages)
+    resolved = resolve_inputs(_spec(["holdings"]), task, messages)
     # Falls back to f"{name}.csv" when basename is . or ..
-    assert resolved[0].filename == "somefile.csv"
+    assert resolved[0].filename == "holdings.csv"
+    # And it is still the ATTACHMENT, not the catalog dataset of the same name.
+    assert resolved[0].source == "attachment"
 
 
 def test_attachment_named_with_backslash_only_falls_back_to_default(session):
-    r"""An attachment named with only backslash (\) falls back to default filename."""
+    r"""An attachment name that is all backslash falls back to the default filename."""
     task, messages = _task_with(
         session,
         [
-            Attachment(kind=AttachmentKind.TABLE, name="\\", content="data\n"),
+            Attachment(kind=AttachmentKind.TABLE, name="holdings\\", content="data\n"),
         ],
     )
-    resolved = resolve_inputs(_spec(["somefile"]), task, messages)
+    resolved = resolve_inputs(_spec(["holdings"]), task, messages)
     # Falls back to f"{name}.csv" when basename contains backslash
-    assert resolved[0].filename == "somefile.csv"
+    assert resolved[0].filename == "holdings.csv"
+    # And it is still the ATTACHMENT, not the catalog dataset of the same name.
+    assert resolved[0].source == "attachment"
 
 
 def test_attachment_with_backslash_traversal_resolves_to_safe_filename(session):
@@ -153,3 +157,18 @@ def test_attachment_with_backslash_traversal_resolves_to_safe_filename(session):
     # Backslash traversal payload falls back to safe default
     assert resolved[0].filename == "evil.csv"
     assert resolved[0].content == "malicious\n"
+
+
+@pytest.mark.parametrize("name", ["", "---", ".csv"])
+def test_an_attachment_with_no_tokens_in_its_name_hijacks_nothing(session, name):
+    """A name that tokenizes to nothing used to match EVERY spec input — the
+    empty set is a subset of anything — so it beat the catalog on the first
+    input and the task computed on the wrong bytes while the manifest recorded a
+    clean `source: "attachment"`. AttachmentIn.name is public and unconstrained."""
+    task, messages = _task_with(
+        session,
+        [Attachment(kind=AttachmentKind.TABLE, name=name, content="ticker\nHIJACK\n")],
+    )
+    resolved = resolve_inputs(_spec(["holdings"]), task, messages)
+    assert [r.source for r in resolved] == ["catalog"]
+    assert "HIJACK" not in resolved[0].content

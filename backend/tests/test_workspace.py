@@ -120,3 +120,45 @@ def test_the_bundle_carries_a_way_to_re_run_it(tmp_path):
     path = ws.write_run_script(2)
     assert path.name == "run.sh"
     assert "generator/attempt_2.py" in path.read_text()
+
+
+def test_a_symlink_in_the_deliverable_directory_is_never_a_deliverable(tmp_path):
+    """`p.is_file()` follows links. Everything downstream reads through this
+    method — the validator's verdict, the manifest's sha256 list, the API's
+    deliverable route — so a link followed here becomes a bundle attesting bytes
+    the run never wrote."""
+    ws = Workspace.create(tmp_path, "task-1")
+    outside = tmp_path / "outside.csv"
+    outside.write_text("ticker\nSECRET\n")
+    (ws.deliverable_dir / "linked.csv").symlink_to(outside)
+    (ws.deliverable_dir / "real.csv").write_text("ticker\nSYN0000\n")
+
+    assert [p.name for p in ws.deliverables()] == ["real.csv"]
+    assert [p.name for p in ws.linked_deliverables()] == ["linked.csv"]
+
+
+def test_clearing_deliverables_leaves_the_rest_of_the_bundle_alone(tmp_path):
+    """A re-executed task writes into the SAME bundle. Only deliverable/ is
+    emptied: generator/ is the audit trail and inputs/ are frozen evidence."""
+    ws = Workspace.create(tmp_path, "task-1")
+    ws.write_generator(1, "print('one')")
+    (ws.inputs_dir / "a.csv").write_text("ticker\n")
+    (ws.deliverable_dir / "output.csv").write_text("stale\n")
+    (ws.deliverable_dir / "linked.csv").symlink_to(tmp_path / "nowhere")
+    (ws.deliverable_dir / "sub").mkdir()
+    (ws.deliverable_dir / "sub" / "nested.txt").write_text("also stale")
+
+    ws.clear_deliverables()
+
+    assert list(ws.deliverable_dir.iterdir()) == []
+    assert (ws.generator_dir / "attempt_1.py").is_file()
+    assert (ws.inputs_dir / "a.csv").is_file()
+
+
+def test_attempt_numbering_continues_past_what_is_already_on_disk(tmp_path):
+    ws = Workspace.create(tmp_path, "task-1")
+    assert ws.next_attempt_number() == 1
+    ws.write_generator(1, "one")
+    ws.write_generator(2, "two")
+    ws.write_run_script(2)  # not an attempt file, and must not be counted as one
+    assert ws.next_attempt_number() == 3

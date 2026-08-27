@@ -82,15 +82,10 @@ def build_dataset(name: str) -> str:
 def tokens(value: str) -> frozenset[str]:
     """Extract normalized tokens from a string for matching.
 
-    Exposed for use by other modules (e.g., resolver) that need consistent
-    tokenization. Exported as the public API; internal code may use _tokens alias.
+    Shared with the resolver so a spec input name and an attachment filename are
+    always tokenized the same way; two tokenizers would drift.
     """
     return frozenset(_TOKEN.findall(value.lower()))
-
-
-def _tokens(value: str) -> frozenset[str]:
-    """Alias for the public tokens() function."""
-    return tokens(value)
 
 
 def resolve_name(query: str) -> str | None:

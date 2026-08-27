@@ -163,3 +163,20 @@ def test_the_file_endpoint_refuses_a_symlink_that_escapes_the_bundle(client, bun
         f"/tasks/{task.id}/bundle/file", params={"path": "deliverable/escape.csv"}
     )
     assert response.status_code == 400
+
+
+def test_an_oversized_bundle_is_refused_rather_than_zipped_in_memory(client, bundled, monkeypatch):
+    """The zip is assembled in a BytesIO, and what goes into it was written by
+    synthesized code — so its size is chosen by untrusted code, unlike
+    /bundle/file which has had a 1 MB cap all along."""
+    from ley_khaa.api import app as app_module
+
+    task, workspace = bundled
+    monkeypatch.setattr(app_module, "_MAX_BUNDLE_BYTES", 32)
+
+    response = client.get(f"/tasks/{task.id}/bundle/download")
+
+    assert response.status_code == 413
+    assert "individually" in response.json()["detail"]
+    # The per-file routes still work, which is what the message points at.
+    assert client.get(f"/tasks/{task.id}/bundle/deliverable").status_code == 200

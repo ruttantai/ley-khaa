@@ -12,15 +12,40 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
+from collections import deque
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from ..config import settings
 
+try:
+    # Imported HERE and not inside preexec_fn. An import between fork() and
+    # exec() runs in a child that inherited this process's locks — including the
+    # import lock — from a process that runs a background sweeper thread, which
+    # is the documented post-fork deadlock. If it ever bit, the child would hang,
+    # subprocess.run would time out, and the manifest would record ley-khaa's own
+    # deadlock as "the generated script ran too long".
+    import resource
+except ImportError:  # not POSIX; _limits() already returns None there
+    resource = None
+
 logger = logging.getLogger(__name__)
+
+# A synthesized script decides how much it prints, and BOTH sandboxes buffer
+# that output in this process — the container's --memory cap bounds the script's
+# RAM, not the backend's. Keep this much of each stream and say so when more
+# arrived.
+_MAX_CAPTURE_BYTES = 256_000
+
+# A grandchild that survived the kill can hold the write end of a pipe open. The
+# run still has to return a result, so the drain threads are waited on, not
+# waited for forever.
+_DRAIN_JOIN_SECONDS = 5
 
 # Everything else is stripped. A synthesized script has no business reading our
 # API key, and an allowlist means a credential added later is excluded by
@@ -62,6 +87,70 @@ def _text(value) -> str:
     return value.decode("utf-8", "replace") if isinstance(value, bytes) else value
 
 
+class _Tail:
+    """The last _MAX_CAPTURE_BYTES of a stream, plus how much was dropped.
+
+    The TAIL and not the head: the traceback a repair attempt is prompted with
+    is written last, so a print-flood must not be allowed to push it out.
+    """
+
+    def __init__(self) -> None:
+        self._chunks: deque[bytes] = deque()
+        self._size = 0
+        self._dropped = 0
+
+    def add(self, chunk: bytes) -> None:
+        self._chunks.append(chunk)
+        self._size += len(chunk)
+        while self._size > _MAX_CAPTURE_BYTES and len(self._chunks) > 1:
+            oldest = self._chunks.popleft()
+            self._size -= len(oldest)
+            self._dropped += len(oldest)
+
+    def text(self) -> str:
+        body = _text(b"".join(self._chunks))
+        if not self._dropped:
+            return body
+        # Truncation is never silent: a bundle that quietly shortened its own
+        # evidence is a bundle overstating what it holds.
+        return f"[ley-khaa dropped the first {self._dropped} bytes of this stream]\n{body}"
+
+
+class _Capture:
+    """Drain a child's stdout and stderr on threads, keeping only the tail.
+
+    Draining does not stop at the cap. Refusing to read would block the script
+    on a full pipe, and the wall-clock timeout would then record ley-khaa's own
+    back-pressure as "the generated script ran too long."
+    """
+
+    def __init__(self, stdout, stderr) -> None:
+        self._streams = (stdout, stderr)
+        self._tails = (_Tail(), _Tail())
+        self._threads = [
+            threading.Thread(target=self._pump, args=(stream, tail), daemon=True)
+            for stream, tail in zip(self._streams, self._tails, strict=True)
+        ]
+        for thread in self._threads:
+            thread.start()
+
+    @staticmethod
+    def _pump(stream, tail: _Tail) -> None:
+        try:
+            while chunk := stream.read(65536):
+                tail.add(chunk)
+        except (OSError, ValueError):
+            return  # the pipe was closed under us; keep what we already have
+
+    def finish(self) -> tuple[str, str]:
+        for thread in self._threads:
+            thread.join(timeout=_DRAIN_JOIN_SECONDS)
+        for stream in self._streams:
+            with suppress(OSError):
+                stream.close()
+        return self._tails[0].text(), self._tails[1].text()
+
+
 def _clean_env(workspace: Path) -> dict[str, str]:
     env = {key: os.environ[key] for key in _ALLOWED_ENV if key in os.environ}
     env["HOME"] = str(workspace)
@@ -82,13 +171,14 @@ class SubprocessSandbox:
         self.memory_mb = memory_mb
 
     def _limits(self, timeout_s: int):
-        if os.name != "posix":
+        if os.name != "posix" or resource is None:
             return None
         memory_mb = self.memory_mb
 
         def apply() -> None:
-            import resource
-
+            # Nothing is imported in here — see the module-level `import
+            # resource` and why it lives there.
+            #
             # A generous headroom over the wall-clock timeout: RLIMIT_CPU is a
             # backstop for a script that burns CPU while blocked on something
             # subprocess.run's own timeout won't catch as fast (e.g. heavy
@@ -129,17 +219,20 @@ class SubprocessSandbox:
         except OSError as exc:  # no interpreter, no permission: our problem
             raise SandboxUnavailable(f"could not start the sandbox: {exc}") from exc
 
+        # Threads, not communicate(): communicate() keeps every byte the script
+        # writes. wait() alone would deadlock on a full pipe, so the capture
+        # drains continuously and throws away all but the tail.
+        capture = _Capture(proc.stdout, proc.stderr)
         try:
-            stdout, stderr = proc.communicate(timeout=timeout_s)
+            proc.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired:
             self._kill_group(proc)
-            # Draining after the kill both reaps the process and collects
-            # whatever it had already written before being killed.
-            stdout, stderr = proc.communicate()
+            proc.wait()  # reap, and let the capture threads see EOF
+            stdout, stderr = capture.finish()
             return SandboxResult(
                 exit_code=-1,
-                stdout=_text(stdout),
-                stderr=_text(stderr) + f"\nkilled after {timeout_s}s",
+                stdout=stdout,
+                stderr=stderr + f"\nkilled after {timeout_s}s",
                 duration_ms=int((time.monotonic() - started) * 1000),
                 timed_out=True,
             )
@@ -148,12 +241,14 @@ class SubprocessSandbox:
             # this call — an orphaned grandchild is the same leak as a missed
             # timeout kill, just reached by a different door.
             self._kill_group(proc)
+            capture.finish()
             raise
 
+        stdout, stderr = capture.finish()
         return SandboxResult(
             exit_code=proc.returncode,
-            stdout=_text(stdout),
-            stderr=_text(stderr),
+            stdout=stdout,
+            stderr=stderr,
             duration_ms=int((time.monotonic() - started) * 1000),
             timed_out=False,
         )
@@ -201,19 +296,58 @@ class DockerSandbox:
         return True
 
     def _mount_args(self, workspace: str) -> list[str]:
-        if self.volume and self.volume_target:
-            # Under compose the backend is itself a container and spawns SIBLING
-            # containers on the host daemon, so a bind mount of the backend's own
-            # container path would resolve to a host path that does not exist.
-            # The workspace therefore lives on a named volume mounted at the SAME
-            # path on both sides, and paths line up without translation.
-            return [
-                "--mount",
-                f"type=volume,source={self.volume},target={self.volume_target}",
-            ]
-        return ["-v", f"{workspace}:{workspace}"]
+        if not (self.volume and self.volume_target):
+            return ["-v", f"{workspace}:{workspace}"]
+
+        # Under compose the backend is itself a container and spawns SIBLING
+        # containers on the host daemon, so a bind mount of the backend's own
+        # container path would resolve to a host path that does not exist. The
+        # workspace therefore lives on a named volume mounted at the SAME path
+        # on both sides, and paths line up without translation.
+        #
+        # volume-subpath narrows that to this ONE task's bundle. Mounting the
+        # whole volume put every other task's manifest.json, generator/ and
+        # deliverable/ inside a script's reach, writable — and the synthesis
+        # prompt quotes attachment content verbatim, so what that script does is
+        # partly steered by whoever sent the attachment.
+        try:
+            subpath = Path(workspace).relative_to(self.volume_target)
+        except ValueError:
+            subpath = None
+        if subpath is None or subpath == Path("."):
+            # Not a fall back to the whole volume: that is exactly the exposure
+            # this replaced, and quietly widening a run's reach is how a bundle
+            # ends up claiming isolation it never had.
+            raise SandboxUnavailable(
+                f"{workspace} is not a task directory inside the volume mounted "
+                f"at {self.volume_target}, so this run cannot be given a view of "
+                f"its own bundle alone"
+            )
+        return [
+            "--mount",
+            f"type=volume,source={self.volume},target={workspace},volume-subpath={subpath}",
+        ]
+
+    @staticmethod
+    def _refuse_root() -> None:
+        """The sandbox container inherits OUR uid, so a root backend means a root
+        sandbox — which is not the thing the README and the manifest describe.
+
+        Refused rather than substituted: running the container as some other uid
+        would leave it unable to write into a workspace root created, and owned,
+        by root. Under compose backend/docker-entrypoint.py drops privileges
+        before uvicorn starts, so this fires only when someone has arranged for
+        the backend to be root some other way — and it fails the task loudly
+        instead of quietly producing a bundle that overstates its isolation.
+        """
+        if os.getuid() == 0:
+            raise SandboxUnavailable(
+                "the backend is running as root, so the sandbox container would "
+                "run as root too; start it as an unprivileged user"
+            )
 
     def run(self, *, script: Path, workspace: Path, timeout_s: int) -> SandboxResult:
+        self._refuse_root()
         workspace = workspace.resolve()
         container = f"ley-khaa-{uuid.uuid4().hex[:12]}"
         command = [
@@ -227,7 +361,8 @@ class DockerSandbox:
             "--cpus", "1",
             "--pids-limit", "64",
             # Run as the caller so the deliverable is owned by us and readable
-            # back out of a bind-mounted workspace.
+            # back out of the workspace. _refuse_root() above is what keeps this
+            # from silently becoming `--user 0:0` (spec §4.1).
             "--user", f"{os.getuid()}:{os.getgid()}",
             "-e", "HOME=/tmp",
             "-e", "PYTHONDONTWRITEBYTECODE=1",
@@ -243,32 +378,42 @@ class DockerSandbox:
             # synthesized script can write arbitrary bytes to stdout, and a
             # strict decode there must not raise UnicodeDecodeError out of
             # run() — that would turn a script's output into a sandbox crash.
-            completed = subprocess.run(command, capture_output=True, timeout=timeout_s)
-        except subprocess.TimeoutExpired as exc:
-            # docker run --rm leaves the container going after we stop waiting.
-            subprocess.run(["docker", "kill", container], capture_output=True)
-            return SandboxResult(
-                exit_code=-1,
-                stdout=_text(exc.stdout),
-                stderr=_text(exc.stderr) + f"\nkilled after {timeout_s}s",
-                duration_ms=int((time.monotonic() - started) * 1000),
-                timed_out=True,
-            )
+            proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except OSError as exc:
             raise SandboxUnavailable(f"could not invoke docker: {exc}") from exc
 
+        capture = _Capture(proc.stdout, proc.stderr)
+        try:
+            proc.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            # docker run --rm leaves the container going after we stop waiting;
+            # killing it is also what makes the CLI we are waiting on return.
+            subprocess.run(["docker", "kill", container], capture_output=True)
+            try:
+                proc.wait(timeout=_DRAIN_JOIN_SECONDS)
+            except subprocess.TimeoutExpired:
+                proc.kill()  # the kill did not take; do not wait on it forever
+                proc.wait()
+            stdout, stderr = capture.finish()
+            return SandboxResult(
+                exit_code=-1,
+                stdout=stdout,
+                stderr=stderr + f"\nkilled after {timeout_s}s",
+                duration_ms=int((time.monotonic() - started) * 1000),
+                timed_out=True,
+            )
+
+        stdout, stderr = capture.finish()
         # 125 is docker's own "could not start the container" code. That is our
         # infrastructure failing, not the script failing, and the two must not be
         # confused: one is a bug report, the other is a question for a human.
-        if completed.returncode == 125:
-            raise SandboxUnavailable(
-                f"docker could not start the sandbox: {_text(completed.stderr)}"
-            )
+        if proc.returncode == 125:
+            raise SandboxUnavailable(f"docker could not start the sandbox: {stderr}")
 
         return SandboxResult(
-            exit_code=completed.returncode,
-            stdout=_text(completed.stdout),
-            stderr=_text(completed.stderr),
+            exit_code=proc.returncode,
+            stdout=stdout,
+            stderr=stderr,
             duration_ms=int((time.monotonic() - started) * 1000),
             timed_out=False,
         )

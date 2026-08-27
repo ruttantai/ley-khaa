@@ -74,6 +74,16 @@ class ExecutionRunner:
 
     def run(self, row: TaskRow, spec: TaskSpec) -> ExecutionOutcome:
         workspace = Workspace.create(self.workspace_root, row.id)
+        # A task can reach here more than once: a failed validation escalates,
+        # the human answers, and the task is driven back through CLASSIFIED into
+        # this SAME bundle. Anything the previous round left in deliverable/ is
+        # not this run's output, and the validator judges the alphabetically
+        # first file it finds — so an old output.csv would be measured against a
+        # spec that now asks for excel and reject a run that got it right.
+        # Generator attempts are NOT cleared: they are the audit trail, and
+        # next_attempt_number() keeps this round from overwriting the last one's.
+        workspace.clear_deliverables()
+        first_attempt = workspace.next_attempt_number()
 
         try:
             resolved = resolve_inputs(spec, row, self.messages)
@@ -89,7 +99,15 @@ class ExecutionRunner:
                 ),
                 checks={"inputs_resolved": False},
             )
-            self._write_manifest(workspace, row, spec, resolved=[], attempts=[], verdict=verdict)
+            self._write_manifest(
+                workspace,
+                row,
+                spec,
+                resolved=[],
+                attempts=[],
+                verdict=verdict,
+                earlier_attempts=first_attempt - 1,
+            )
             return ExecutionOutcome(verdict, str(workspace.root), 0)
 
         workspace.write_inputs(resolved)
@@ -100,7 +118,7 @@ class ExecutionRunner:
         last: SandboxResult | None = None
         verdict = Verdict(ok=False, reason=_SYNTHESIS_FAILED, checks={})
 
-        for number in range(1, _MAX_ATTEMPTS + 1):
+        for number in range(first_attempt, first_attempt + _MAX_ATTEMPTS):
             try:
                 script = self._write_attempt(spec, resolved, previous, last, verdict)
             except _NoScript as exc:
@@ -138,7 +156,13 @@ class ExecutionRunner:
                 break
 
         self._write_manifest(
-            workspace, row, spec, resolved=resolved, attempts=attempts, verdict=verdict
+            workspace,
+            row,
+            spec,
+            resolved=resolved,
+            attempts=attempts,
+            verdict=verdict,
+            earlier_attempts=first_attempt - 1,
         )
         return ExecutionOutcome(verdict, str(workspace.root), len(attempts))
 
@@ -174,6 +198,7 @@ class ExecutionRunner:
         resolved: list[ResolvedInput],
         attempts: list[dict],
         verdict: Verdict,
+        earlier_attempts: int = 0,
     ) -> None:
         workspace.write_manifest(
             {
@@ -198,6 +223,11 @@ class ExecutionRunner:
                     for i in resolved
                 ],
                 "attempts": attempts,
+                # Only THIS round's attempts are listed above, and their numbers
+                # continue from where the last round stopped. This says how many
+                # generator/attempt_*.py files belong to earlier rounds, so a
+                # reader is not left wondering why the list starts at 3.
+                "earlier_attempts": earlier_attempts,
                 "verdict": {
                     "ok": verdict.ok,
                     "reason": verdict.reason,

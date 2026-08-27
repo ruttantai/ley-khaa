@@ -220,3 +220,54 @@ def test_a_synthesis_failure_attempt_still_carries_an_ok_flag(tmp_path, task):
     manifest = json.loads((tmp_path / f"task-{row.id}" / "manifest.json").read_text())
     assert manifest["attempts"][0]["ok"] is False
     assert all("ok" in attempt for attempt in manifest["attempts"])
+
+
+def _writes_xlsx(workspace):
+    from openpyxl import Workbook
+
+    book = Workbook()
+    book.active.append(["ticker"])
+    book.active.append(["SYN0000"])
+    book.save(workspace / "deliverable" / "output.xlsx")
+    return SandboxResult(exit_code=0, stdout="ok", stderr="", duration_ms=7, timed_out=False)
+
+
+def test_a_second_round_is_not_judged_on_the_first_round_s_deliverable(tmp_path, task):
+    """The escalate → answer → re-run loop re-executes into the SAME bundle.
+
+    A csv from round one still sorts first in deliverable/, so without clearing
+    it the validator measures a spec that now says "excel" against a file this
+    run never wrote — and rejects a run that got it right, with a reason naming
+    a filename the human's answer already superseded.
+    """
+    row, runner = _runner(tmp_path, task, responses=[_script()], steps=[_writes_csv])
+    assert runner.run(row, _spec(output_format="csv")).verdict.ok
+
+    row, second = _runner(tmp_path, task, responses=[_script()], steps=[_writes_xlsx])
+    outcome = second.run(row, _spec(output_format="excel"))
+
+    assert outcome.verdict.ok, outcome.verdict.reason
+    deliverable = tmp_path / f"task-{row.id}" / "deliverable"
+    assert [p.name for p in sorted(deliverable.iterdir())] == ["output.xlsx"]
+
+
+def test_a_second_round_does_not_overwrite_the_first_round_s_attempts(tmp_path, task):
+    """Spec §5 says every failed attempt stays in generator/. That has to hold
+    across rounds, not only within one, or the audit trail loses the round the
+    human was actually shown."""
+    row, runner = _runner(tmp_path, task, responses=[_script("round one")], steps=[_writes_csv])
+    runner.run(row, _spec(output_format="csv"))
+
+    row, second = _runner(tmp_path, task, responses=[_script("round two")], steps=[_writes_xlsx])
+    second.run(row, _spec(output_format="excel"))
+
+    generator = tmp_path / f"task-{row.id}" / "generator"
+    assert (generator / "attempt_1.py").read_text() == "round one"
+    assert (generator / "attempt_2.py").read_text() == "round two"
+    assert "attempt_2.py" in (generator / "run.sh").read_text()
+
+    manifest = json.loads((tmp_path / f"task-{row.id}" / "manifest.json").read_text())
+    # The manifest lists only this round's attempts, and says how many belong to
+    # earlier ones, so a reader is not left wondering why the list starts at 2.
+    assert [a["attempt"] for a in manifest["attempts"]] == [2]
+    assert manifest["earlier_attempts"] == 1

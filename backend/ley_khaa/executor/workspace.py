@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -78,6 +80,21 @@ class Workspace:
             _validate_safe_filename(item.filename)
             (self.inputs_dir / item.filename).write_text(item.content, encoding="utf-8")
 
+    def next_attempt_number(self) -> int:
+        """The number a fresh attempt should take, continuing across rounds.
+
+        Attempt files are never reused. A task re-executed after a clarification
+        writes attempt_3.py and attempt_4.py rather than overwriting the first
+        round's two — spec §5 says every failed attempt stays in generator/, and
+        that has to hold across rounds, not just within one.
+        """
+        used = [
+            int(match.group(1))
+            for path in self.generator_dir.glob("attempt_*.py")
+            if (match := re.fullmatch(r"attempt_(\d+)\.py", path.name))
+        ]
+        return max(used, default=0) + 1
+
     def write_generator(self, attempt: int, source: str) -> Path:
         path = self.generator_dir / f"attempt_{attempt}.py"
         path.write_text(source, encoding="utf-8")
@@ -102,7 +119,38 @@ class Workspace:
         return path
 
     def deliverables(self) -> list[Path]:
-        return sorted(p for p in self.deliverable_dir.iterdir() if p.is_file())
+        """Real files only — a symlink is excluded, never followed.
+
+        `p.is_file()` alone follows links, and `os.symlink("/etc/hosts",
+        "deliverable/output.csv")` is one line inside a synthesized script. Every
+        consumer here reads through this: the validator would pass it, the
+        manifest would stamp a sha256 over bytes the run never produced, and the
+        bundle would attest a file it did not create.
+        """
+        return sorted(
+            p for p in self.deliverable_dir.iterdir() if p.is_file() and not p.is_symlink()
+        )
+
+    def linked_deliverables(self) -> list[Path]:
+        """Symlinks planted in deliverable/, so the validator can say what
+        actually happened instead of reporting an empty directory."""
+        return sorted(p for p in self.deliverable_dir.iterdir() if p.is_symlink())
+
+    def clear_deliverables(self) -> None:
+        """Empty deliverable/ before a fresh execution round.
+
+        The workspace is idempotent and a task can be executed more than once —
+        the escalate/answer/re-run loop sends it back through CLASSIFIED into the
+        SAME bundle. Without this, a file from the previous round is still the
+        alphabetically first deliverable, so the validator judges (and the
+        manifest attests) a file this run never wrote. Called per RUN, not per
+        attempt: attempt 2 legitimately supersedes attempt 1 inside one run.
+        """
+        for path in self.deliverable_dir.iterdir():
+            if path.is_symlink() or path.is_file():
+                path.unlink()
+            else:
+                shutil.rmtree(path)
 
     def input_hashes(self) -> dict[str, str]:
         """filename -> sha256, so a script that rewrote its inputs is caught."""

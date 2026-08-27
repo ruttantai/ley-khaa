@@ -26,6 +26,12 @@ RUN set -eux; \
     chmod +x /usr/local/bin/docker; \
     docker --version
 
+# The account uvicorn actually runs as. docker-entrypoint.py drops to it at
+# start-up rather than a `USER` line doing it at build time — see the module
+# docstring there for the two things that only root can arrange first.
+RUN useradd --create-home --uid 10001 app
+
 COPY . .
 RUN pip install --no-cache-dir .
+ENTRYPOINT ["python3", "/app/docker-entrypoint.py"]
 CMD ["uvicorn", "ley_khaa.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
