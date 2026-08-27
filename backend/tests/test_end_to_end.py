@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from ley_khaa.domain.states import TaskState
 
 
@@ -20,6 +22,8 @@ def test_a_messy_conversation_parks_for_a_human_and_the_dial_releases_it(client)
     released = client.post(f"/tasks/{task['id']}/mode", json={"mode": "auto"}).json()
     assert released["state"] == TaskState.DONE.value
     assert released["mode_override"] == "auto"
+    # Phase 3: "done" now means a file exists, not that a stub walked the states.
+    assert Path(released["workspace_path"], "deliverable", "output.xlsx").is_file()
 
 
 def test_a_gap_is_asked_about_answered_in_the_conversation_and_closed(client):
@@ -46,4 +50,6 @@ def test_a_gap_is_asked_about_answered_in_the_conversation_and_closed(client):
     keys = {c["candidate_key"] for c in client.get("/candidates").json()}
     assert len(keys) == len(client.get("/candidates").json())
 
-    assert client.post(f"/tasks/{task['id']}/approve").json()["state"] == TaskState.DONE.value
+    approved = client.post(f"/tasks/{task['id']}/approve").json()
+    assert approved["state"] == TaskState.DONE.value
+    assert Path(approved["workspace_path"], "deliverable", "output.csv").is_file()

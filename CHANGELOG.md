@@ -5,6 +5,39 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-27
+
+### Added
+- Synthesis-first executor (§5.10): `TaskSpec` → resolved inputs → a synthesized Python script →
+  a sandboxed run → a validated deliverable, all behind one `ExecutionRunner.run()`.
+- Input resolution: message attachments first, then a Faker-seeded catalog of synthetic securities
+  datasets. A name that matches neither becomes a clarification **before** any model call.
+- Sandboxes: `DockerSandbox` (no network, read-only rootfs, non-root, capped, killed on timeout) and
+  `SubprocessSandbox` (capped and environment-scrubbed, but *not* network-isolated). One contract
+  test both must pass. The manifest records which one ran.
+- Reproducible Output Bundle (§5.11): `task-workspaces/task-<id>/` with the deliverable, every
+  generator attempt, the frozen inputs, `run.sh`, and a `manifest.json` carrying the sandbox, the
+  model, the catalog seed, per-attempt verdicts, and sha256 for every file.
+- Validator: time limit, clean exit, deliverable present, non-empty, format matching the request,
+  inputs unmodified, and at least one row. Failures escalate in plain English; the traceback stays
+  in the bundle.
+- Repair once, then escalate (§6): a crash or a failed validation is re-synthesized from the
+  traceback exactly once. Both attempts are kept.
+- `Stage.SYNTHESIS` routes to Opus at 16,000 max tokens.
+- Bundle API: `GET /tasks/{id}/bundle`, `.../bundle/file?path=` (path-traversal guarded),
+  `.../bundle/deliverable`, `.../bundle/download`.
+- Dashboard bundle panel: how the deliverable was produced, the code that produced it, and
+  downloads.
+- Offline synthesis: `HeuristicLLM` returns real, runnable canned scripts, so a fresh clone with no
+  `ANTHROPIC_API_KEY` still produces a genuine `.xlsx`. Canned, not generated — the README says so.
+
+### Changed
+- `TaskDriver._execute` and `_validate` are no longer stubs. `_execute` runs the lane and persists
+  a verdict; `_validate` acts on it. The state machine is unchanged.
+- The offline interpreter matches multi-word source names ("bloomberg universe") as one input
+  rather than emitting an ambiguous bare "universe" that resolves to nothing.
+- `tasks` gains `workspace_path` and `execution_verdict` (Alembic `0003_executor`).
+
 ## [0.3.0] — 2026-08-21
 
 > **Upgrading from 0.2.0:** this release introduces Alembic. A database created by
