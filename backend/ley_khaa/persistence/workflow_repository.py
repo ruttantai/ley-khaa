@@ -57,6 +57,7 @@ class WorkflowRepository:
         )
         self.session.add(row)
         self.session.commit()
+        self.session.refresh(row)
         return row
 
     def get(self, name: str) -> WorkflowRow | None:
@@ -87,6 +88,7 @@ class WorkflowRepository:
             # commit — the learning loop failing silently.
             row.operation_aliases = list(row.operation_aliases or []) + [learned_alias]
         self.session.commit()
+        self.session.refresh(row)
         return row
 
     def record_failure(self, name: str) -> WorkflowRow:
@@ -94,12 +96,14 @@ class WorkflowRepository:
         row.runs_failed += 1
         row.quarantined = True
         self.session.commit()
+        self.session.refresh(row)
         return row
 
     def unquarantine(self, name: str) -> WorkflowRow:
         row = self._row(name)
         row.quarantined = False
         self.session.commit()
+        self.session.refresh(row)
         return row
 
     def delete(self, name: str) -> None:

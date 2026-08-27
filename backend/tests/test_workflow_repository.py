@@ -55,14 +55,23 @@ def test_a_failure_quarantines_immediately(session):
 
 def test_success_records_use_and_learns_an_alias(session):
     """The learning loop: a phrasing the model matched, that then passed, is a
-    free deterministic hit forever after."""
+    free deterministic hit forever after.
+
+    expire_all() forces the assertions below to hit the database rather than
+    the in-memory object that record_success already mutated: this is what
+    catches a regression from reassigning operation_aliases back to an
+    in-place `.append()`, which SQLAlchemy never flushes for a JSON column.
+    """
     repo = WorkflowRepository(session)
     _create(repo)
     row = repo.record_success("set_difference", learned_alias="compare_lists")
 
     assert row.runs_ok == 1
     assert row.last_used_at is not None
-    assert set(row.operation_aliases) == {"set_difference", "compare_lists"}
+
+    session.expire_all()
+    persisted = repo.get("set_difference")
+    assert set(persisted.operation_aliases) == {"set_difference", "compare_lists"}
 
 
 def test_a_known_alias_is_not_added_twice(session):
@@ -70,6 +79,7 @@ def test_a_known_alias_is_not_added_twice(session):
     _create(repo)
     repo.record_success("set_difference", learned_alias="set_difference")
 
+    session.expire_all()
     assert repo.get("set_difference").operation_aliases == ["set_difference"]
 
 
@@ -82,3 +92,31 @@ def test_unquarantine_lets_a_workflow_match_again(session):
     assert repo.get("set_difference").quarantined is False
     # The failure itself stays on the record.
     assert repo.get("set_difference").runs_failed == 1
+
+
+def test_deleting_a_workflow_removes_it(session):
+    repo = WorkflowRepository(session)
+    _create(repo)
+    repo.delete("set_difference")
+
+    assert repo.get("set_difference") is None
+    assert repo.list() == []
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda repo: repo.record_success("no_such_workflow"),
+        lambda repo: repo.record_failure("no_such_workflow"),
+        lambda repo: repo.unquarantine("no_such_workflow"),
+        lambda repo: repo.delete("no_such_workflow"),
+    ],
+    ids=["record_success", "record_failure", "unquarantine", "delete"],
+)
+def test_an_unknown_name_raises_key_error(session, call):
+    """Every name-taking method routes through _row, and api/app.py's
+    KeyError handler is what turns that into a 404 for the registry routes a
+    later task wires up — a typo in any one call site must not go unnoticed."""
+    repo = WorkflowRepository(session)
+    with pytest.raises(KeyError):
+        call(repo)
