@@ -153,6 +153,29 @@ def test_a_dead_sandbox_is_not_a_question_for_a_human(tmp_path, task):
         runner.run(row, _spec())
 
 
+def test_a_dead_sandbox_does_not_leave_the_previous_round_s_manifest_standing(tmp_path, task):
+    """A second round clears deliverable/ before it knows the sandbox is dead.
+
+    Without a manifest written on the way out, the bundle would still list the
+    first round's output.csv — with its sha256 — for a file that is no longer
+    on disk.
+    """
+    row, runner = _runner(tmp_path, task, responses=[_script()], steps=[_writes_csv])
+    runner.run(row, _spec())
+    manifest_path = tmp_path / f"task-{row.id}" / "manifest.json"
+    assert json.loads(manifest_path.read_text())["deliverables"], "round 1 should have one"
+
+    # Round 2 on the same bundle, with the daemon gone.
+    _, dead = _runner(tmp_path, task, responses=[_script()], steps=[_boom])
+    with pytest.raises(SandboxUnavailable):
+        dead.run(row, _spec())
+
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["deliverables"] == []
+    assert manifest["verdict"]["ok"] is False
+    assert "unavailable" in manifest["verdict"]["reason"]
+
+
 def test_the_manifest_records_what_actually_happened(tmp_path, task):
     row, runner = _runner(
         tmp_path, task, responses=[_script("broken"), _script("fixed")],
@@ -172,6 +195,22 @@ def test_the_manifest_records_what_actually_happened(tmp_path, task):
         "bloomberg_universe.csv", "factset_universe.csv"
     }
     assert manifest["spec"]["operation"] == "set_difference"
+
+
+def test_the_manifest_never_credits_a_model_that_did_not_write_the_script(tmp_path, task):
+    """The same rule as "sandbox", one field over.
+
+    With no ANTHROPIC_API_KEY the offline stand-in writes the script, but the
+    router would still have chosen Opus for this stage. Naming that model here
+    would tell a reader they are looking at model output, and would contradict
+    the generator file's own docstring saying it was written offline.
+    """
+    row, runner = _runner(tmp_path, task, responses=[_script()], steps=[_writes_csv])
+    runner.run(row, _spec())
+    manifest = json.loads((tmp_path / f"task-{row.id}" / "manifest.json").read_text())
+
+    assert manifest["models"]["synthesis"] == "fake (no model ran)"
+    assert "claude" not in manifest["models"]["synthesis"]
 
 
 def test_synthesis_blowing_up_is_a_failed_attempt_not_a_crash(tmp_path, task):

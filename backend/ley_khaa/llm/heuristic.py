@@ -157,6 +157,8 @@ class HeuristicLLM:
     intentionally dumb: real quality comes from AnthropicLLM.
     """
 
+    name = "heuristic"
+
     def parse(self, *, choice: ModelChoice, system: str, user: str, output_format: type[T]) -> T:
         if output_format is RelevanceVerdict:
             return self._relevance(user)

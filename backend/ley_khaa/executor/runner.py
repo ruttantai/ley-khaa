@@ -22,7 +22,7 @@ from ..persistence.message_repository import MessageRepository
 from ..persistence.orm import TaskRow
 from . import catalog
 from .resolver import ResolvedInput, UnresolvedInputs, resolve_inputs
-from .sandbox import SandboxRunner, SandboxResult, pick_sandbox
+from .sandbox import SandboxRunner, SandboxResult, SandboxUnavailable, pick_sandbox
 from .synthesizer import SynthesizedScript, Synthesizer
 from .validator import Verdict, validate
 from .workspace import Workspace, sha256_file
@@ -44,6 +44,21 @@ class ExecutionOutcome:
     verdict: Verdict
     workspace_path: str
     attempts: int
+
+
+def _synthesis_author(llm: LLMClient) -> str:
+    """Who actually wrote the script, for the manifest.
+
+    The router's model id is the truth only when a real model ran. With no
+    ANTHROPIC_API_KEY the offline stand-in writes a canned script, and stamping
+    "claude-opus-5" on that tells a reader they are looking at model output —
+    the exact confusion llm/factory.py logs a warning about when it falls back.
+    The generator's own docstring says it was written offline, so a manifest
+    naming a model would also contradict the very file it describes.
+    """
+    if llm.name == "anthropic":
+        return model_for(Stage.SYNTHESIS).model
+    return f"{llm.name} (no model ran)"
 
 
 class ExecutionRunner:
@@ -133,9 +148,32 @@ class ExecutionRunner:
                 continue
 
             path = workspace.write_generator(number, script.source)
-            result = self.sandbox.run(
-                script=path, workspace=workspace.root, timeout_s=settings.sandbox_timeout_seconds
-            )
+            try:
+                result = self.sandbox.run(
+                    script=path,
+                    workspace=workspace.root,
+                    timeout_s=settings.sandbox_timeout_seconds,
+                )
+            except SandboxUnavailable as exc:
+                # clear_deliverables() already ran, so an earlier round's
+                # manifest is now describing a deliverable that is no longer on
+                # disk. Record the infrastructure failure before letting this
+                # propagate, or the bundle keeps attesting bytes it no longer
+                # holds — the one thing a manifest may never do.
+                self._write_manifest(
+                    workspace,
+                    row,
+                    spec,
+                    resolved=resolved,
+                    attempts=attempts,
+                    verdict=Verdict(
+                        ok=False,
+                        reason=f"The sandbox was unavailable: {exc}",
+                        checks={"sandbox_available": False},
+                    ),
+                    earlier_attempts=first_attempt - 1,
+                )
+                raise
             verdict = validate(spec, workspace, result, input_hashes)
             attempts.append(
                 {
@@ -215,7 +253,10 @@ class ExecutionRunner:
                 # _sandbox unset, so this must not assume "attempts" implies
                 # "a sandbox ran".
                 "sandbox": self._sandbox.name if self._sandbox is not None else None,
-                "models": {Stage.SYNTHESIS.value: model_for(Stage.SYNTHESIS).model},
+                # Same rule as "sandbox" above, for the same reason: what
+                # actually wrote the script, never what the router would have
+                # picked. See _synthesis_author.
+                "models": {Stage.SYNTHESIS.value: _synthesis_author(self.synthesizer.llm)},
                 "catalog_seed": catalog.CATALOG_SEED,
                 "spec": spec.model_dump(mode="json"),
                 "inputs": [

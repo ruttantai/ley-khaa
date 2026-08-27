@@ -15,6 +15,12 @@ class LLMClient(Protocol):
     regex stand-in used when no API key is set) and FakeLLM (tests).
     """
 
+    # Which implementation this is, for the bundle manifest. Same contract as
+    # SandboxRunner.name: the manifest must record what ACTUALLY produced the
+    # script, never the model the router would have picked, because those two
+    # differ every time the offline fallback stands in for a missing API key.
+    name: str
+
     def parse(self, *, choice: ModelChoice, system: str, user: str, output_format: type[T]) -> T:
         ...
 
@@ -30,6 +36,8 @@ class RecordedCall:
 @dataclass
 class FakeLLM:
     """Deterministic stand-in. Returns queued responses in order and records calls."""
+
+    name = "fake"
 
     responses: list[Any]
     calls: list[RecordedCall] = field(default_factory=list)
@@ -47,6 +55,8 @@ class FakeLLM:
 
 class AnthropicLLM:
     """Production client. Never instantiated from tests."""
+
+    name = "anthropic"
 
     def __init__(self, client: Any | None = None) -> None:
         if client is None:
