@@ -3,6 +3,7 @@ import {
   answerTask, approveTask, patchTaskSpec, rejectTask, setTaskMode,
   type Task,
 } from "./api";
+import BundlePanel from "./BundlePanel";
 
 const MODES = [
   { value: "suggest", label: "Suggest" },
@@ -141,6 +142,8 @@ export default function TaskDetail({
           </button>
         </div>
       )}
+
+      {task.workspace_path && <BundlePanel taskId={task.id} />}
     </div>
   );
 }

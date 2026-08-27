@@ -24,6 +24,8 @@ export type Task = {
   autonomy_reason: string | null;
   open_question: string | null;
   failure_reason: string | null;
+  workspace_path: string | null;
+  execution_verdict: Record<string, unknown> | null;
 };
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
@@ -53,6 +55,31 @@ export const answerTask = (id: string, text: string) =>
   send(`/tasks/${id}/answer`, "POST", { text });
 export const patchTaskSpec = (id: string, patch: Record<string, unknown>) =>
   send(`/tasks/${id}/spec`, "PATCH", { patch });
+
+export type Bundle = {
+  task_id: string;
+  root: string;
+  manifest: Record<string, any>;
+  files: string[];
+  deliverables: string[];
+};
+
+export async function fetchBundle(id: string): Promise<Bundle> {
+  const res = await fetch(`${BASE}/tasks/${id}/bundle`);
+  if (!res.ok) throw new Error(`fetchBundle failed: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchBundleFile(id: string, path: string): Promise<string> {
+  const res = await fetch(`${BASE}/tasks/${id}/bundle/file?path=${encodeURIComponent(path)}`);
+  if (!res.ok) throw new Error(`fetchBundleFile failed: ${res.status}`);
+  return (await res.json()).content;
+}
+
+// Plain hrefs, not fetches: the browser's own download handling is what should
+// deal with a binary body, and an anchor keeps that out of our hands.
+export const deliverableUrl = (id: string) => `${BASE}/tasks/${id}/bundle/deliverable`;
+export const bundleDownloadUrl = (id: string) => `${BASE}/tasks/${id}/bundle/download`;
 
 export type Candidate = {
   id: string;

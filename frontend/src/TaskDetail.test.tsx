@@ -27,6 +27,8 @@ const task = (overrides: Partial<Task> = {}): Task => ({
   autonomy_reason: "90% sure, medium risk — it delivers something to someone → I suggest Co-pilot",
   open_question: null,
   failure_reason: null,
+  workspace_path: null,
+  execution_verdict: null,
   ...overrides,
 });
 
