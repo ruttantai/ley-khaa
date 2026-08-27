@@ -67,6 +67,12 @@ real, runnable program: it reads the frozen inputs and writes the deliverable,
 so a fresh clone with no ANTHROPIC_API_KEY still produces a genuine bundle.
 """
 import csv
+import json
+
+_params = json.load(open("inputs/params.json", encoding="utf-8"))
+# Ordered: params.json is written in spec-input order, and dicts preserve it.
+INPUTS = list(_params["inputs"].values())
+TARGET = _params["output"]
 
 
 def read_rows(name):
@@ -289,6 +295,7 @@ class HeuristicLLM:
 
         reasoning = f"Offline canned script for {operation or 'an unrecognised operation'}: {approach}."
         substitution = ""
+        substitution_target = ""
         if not target.endswith((".xlsx", ".csv")):
             # write_rows only genuinely produces .xlsx (openpyxl) or CSV text.
             # Writing CSV bytes under the requested name (e.g. .docx) would be
@@ -298,13 +305,17 @@ class HeuristicLLM:
             # printed summary and in reasoning, instead of faking the format.
             requested = target
             target = "deliverable/output.csv"
+            substitution_target = f"TARGET = {target!r}\n"
             substitution = (
                 'print("offline stand-in cannot write %s; wrote CSV to %s instead")\n'
                 % (requested, target)
             )
             reasoning += f" Offline mode cannot write {requested}; wrote CSV to {target} instead."
 
-        source = _PREAMBLE + f"INPUTS = {inputs!r}\nTARGET = {target!r}\n" + body + substitution
+        # INPUTS and TARGET now come from inputs/params.json, set in _PREAMBLE.
+        # The substitution below still overrides TARGET when the requested
+        # format is one the offline stand-in cannot honestly write.
+        source = _PREAMBLE + substitution_target + body + substitution
         return SynthesizedScript(reasoning=reasoning, source=source)
 
 

@@ -5,11 +5,14 @@ task that gets this far is solved by a program written for it.
 """
 from __future__ import annotations
 
+import json
+
 from pydantic import BaseModel
 
 from ..interpreter.spec import TaskSpec
 from ..llm.client import LLMClient
 from ..llm.router import Stage, model_for
+from . import catalog
 from .formats import deliverable_filename
 from .resolver import ResolvedInput
 from .sandbox import SandboxResult
@@ -35,6 +38,11 @@ SYSTEM = """You write a single, self-contained Python script that solves one dat
 
 The script runs in a locked-down sandbox:
 - Working directory contains inputs/ (read these) and deliverable/ (write here).
+- Read every input path and the output path from inputs/params.json. It looks like
+  {"inputs": {"<role>": "<filename in inputs/>"}, "output": "deliverable/<name>", "seed": <int>}.
+  Open inputs/ + the filename you find there. NEVER hardcode a filename or an output path:
+  a script that hardcodes them cannot be re-run against next week's data.
+- Use params["seed"] for anything that would otherwise be random.
 - Available libraries: the Python 3.12 standard library, openpyxl, and python-docx.
   pandas and numpy are NOT installed. Use the csv module.
 - There is no network. Do not import requests, urllib, or anything that dials out.
@@ -58,12 +66,22 @@ def _preview(item: ResolvedInput) -> str:
 def _task_block(spec: TaskSpec, resolved: list[ResolvedInput]) -> str:
     target = f"deliverable/{deliverable_filename(spec.output_format)}"
     previews = "\n\n".join(_preview(item) for item in resolved)
+    params = json.dumps(
+        {
+            "inputs": {item.name: item.filename for item in resolved},
+            "output": target,
+            "seed": catalog.CATALOG_SEED,
+        },
+        indent=2,
+        sort_keys=True,
+    )
     return (
         f"## Task\n"
         f"intent: {spec.intent}\n"
         f"operation: {spec.operation}\n"
         f"output_format: {spec.output_format}\n"
         f"write the result to: {target}\n"
+        f"\n## inputs/params.json (read your paths from this file)\n{params}\n"
         f"\n## Inputs (first {_PREVIEW_LINES} lines of each)\n{previews}\n"
     )
 

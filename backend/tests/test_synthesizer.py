@@ -1,6 +1,6 @@
 from ley_khaa.executor.resolver import ResolvedInput
 from ley_khaa.executor.sandbox import SandboxResult
-from ley_khaa.executor.synthesizer import SynthesizedScript, Synthesizer
+from ley_khaa.executor.synthesizer import SYSTEM, SynthesizedScript, Synthesizer
 from ley_khaa.executor.validator import Verdict
 from ley_khaa.interpreter.spec import TaskSpec
 from ley_khaa.llm.client import FakeLLM
@@ -59,6 +59,28 @@ def test_the_system_prompt_states_the_sandbox_rules():
     system = llm.calls[0].system
     assert "no network" in system.lower()
     assert "openpyxl" in system
+
+
+def test_the_prompt_forbids_hardcoded_filenames():
+    """A script that hardcodes a filename cannot be promoted.
+
+    Promotion is a pure copy of proven source, so the contract that makes a
+    script reusable has to be in the prompt that writes it, not bolted on
+    afterwards.
+    """
+    assert "params.json" in SYSTEM
+    assert "hardcode" in SYSTEM.lower()
+
+    llm = FakeLLM(responses=[_script()])
+    spec = TaskSpec(
+        intent="i", inputs=["bloomberg"], operation="set_difference", output_format="csv", certainty=0.9
+    )
+    resolved = [ResolvedInput(name="bloomberg", filename="b.csv", content="ticker\nAAA\n", source="catalog")]
+    Synthesizer(llm).synthesize(spec, resolved)
+    user = llm.calls[0].user
+
+    assert "inputs/params.json" in user
+    assert '"bloomberg"' in user
 
 
 def test_repair_is_given_the_previous_source_and_the_failure():

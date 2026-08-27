@@ -21,6 +21,7 @@ from ..llm.router import Stage, model_for
 from ..persistence.message_repository import MessageRepository
 from ..persistence.orm import TaskRow
 from . import catalog
+from .formats import deliverable_filename
 from .resolver import ResolvedInput, UnresolvedInputs, resolve_inputs
 from .sandbox import SandboxRunner, SandboxResult, SandboxUnavailable, pick_sandbox
 from .synthesizer import SynthesizedScript, Synthesizer
@@ -126,6 +127,11 @@ class ExecutionRunner:
             return ExecutionOutcome(verdict, str(workspace.root), 0)
 
         workspace.write_inputs(resolved)
+        workspace.write_params(
+            inputs={item.name: item.filename for item in resolved},
+            output=f"deliverable/{deliverable_filename(spec.output_format)}",
+            seed=catalog.CATALOG_SEED,
+        )
         input_hashes = workspace.input_hashes()
 
         attempts: list[dict] = []
