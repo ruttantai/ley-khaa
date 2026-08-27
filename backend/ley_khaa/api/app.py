@@ -24,7 +24,8 @@ from ..orchestrator.orchestrator import ForeignReplyTarget, Orchestrator
 from ..persistence.candidate_repository import CandidateRepository
 from ..persistence.message_repository import MessageRepository
 from ..persistence.repository import TaskRepository
-from ..persistence.workflow_repository import WorkflowRepository
+from ..persistence.workflow_repository import DuplicateWorkflow, WorkflowRepository
+from ..registry.promote import NotPromotable, promote
 from ..registry.seeds import ensure_seed_workflows
 from .schemas import (
     AnswerIn,
@@ -34,9 +35,11 @@ from .schemas import (
     MessageIn,
     MessageOut,
     ModeIn,
+    PromoteIn,
     RejectIn,
     SpecPatchIn,
     TaskOut,
+    WorkflowOut,
 )
 
 logger = logging.getLogger(__name__)
@@ -412,3 +415,24 @@ def download_bundle(task_id: str, session: Session = Depends(get_session)) -> St
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="task-{task_id}-bundle.zip"'},
     )
+
+
+@app.post("/tasks/{task_id}/promote", response_model=WorkflowOut)
+def promote_task_workflow(
+    task_id: str, body: PromoteIn, session: Session = Depends(get_session)
+) -> WorkflowOut:
+    root = _bundle_root(session, task_id)
+    try:
+        row = promote(
+            session,
+            task_id=task_id,
+            name=body.name,
+            description=body.description,
+            root=root,
+            contained=_contained,
+        )
+    except DuplicateWorkflow:
+        raise HTTPException(status_code=409, detail=f"a workflow named {body.name!r} already exists")
+    except NotPromotable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return WorkflowOut.model_validate(row)

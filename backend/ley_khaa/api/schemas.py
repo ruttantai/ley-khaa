@@ -122,3 +122,24 @@ class BundleOut(BaseModel):
     # can hand them straight back to the file endpoint.
     files: list[str]
     deliverables: list[str]
+
+
+class PromoteIn(BaseModel):
+    name: str
+    description: str = ""
+
+
+class WorkflowOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str
+    description: str
+    operation_aliases: list[str]
+    output_format: str
+    inputs: list[dict[str, Any]]
+    origin: str
+    promoted_from_task_id: str | None = None
+    runs_ok: int
+    runs_failed: int
+    quarantined: bool
+    source_sha256: str
