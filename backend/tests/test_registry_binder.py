@@ -1,3 +1,5 @@
+import pytest
+
 from ley_khaa.executor.resolver import ResolvedInput
 from ley_khaa.persistence.orm import WorkflowRow
 from ley_khaa.registry.binder import bind
@@ -63,3 +65,57 @@ def test_a_malformed_role_declaration_is_a_refusal_not_a_crash():
     """A row can be hand-edited in the database. The matcher must survive it."""
     workflow = _workflow([{"suffixes": [".csv"]}])
     assert bind(workflow, [_resolved("a", "a.csv")]) is None
+
+
+@pytest.mark.parametrize("malformed_entry,description", [
+    ("left", "non-dict entry (string)"),
+    (123, "non-dict entry (int)"),
+    (["left"], "non-dict entry (list)"),
+    (None, "non-dict entry (None)"),
+])
+def test_a_non_dict_entry_is_a_refusal_not_a_crash(malformed_entry, description):
+    """A row can be hand-edited. Non-dict entries in the roles array must not raise."""
+    workflow = _workflow([malformed_entry])
+    assert bind(workflow, [_resolved("a", "a.csv")]) is None
+
+
+@pytest.mark.parametrize("malformed_role,description", [
+    (["left"], "role is a list"),
+    (123, "role is an int"),
+    (True, "role is a bool"),
+    (None, "role is None"),
+])
+def test_a_non_string_role_is_a_refusal_not_a_crash(malformed_role, description):
+    """Role must be a string. A non-string role must not raise on membership check."""
+    workflow = _workflow([{"role": malformed_role, "suffixes": [".csv"]}])
+    assert bind(workflow, [_resolved("a", "a.csv")]) is None
+
+
+@pytest.mark.parametrize("malformed_suffixes,description", [
+    (5, "suffixes is an int"),
+    (True, "suffixes is a bool"),
+    ("csv", "suffixes is a string"),
+    ({"csv"}, "suffixes is a set"),
+])
+def test_a_non_list_suffixes_is_a_refusal_not_a_crash(malformed_suffixes, description):
+    """Suffixes must be a list. A non-list suffixes must not raise when iterating."""
+    workflow = _workflow([{"role": "left", "suffixes": malformed_suffixes}])
+    assert bind(workflow, [_resolved("a", "a.csv")]) is None
+
+
+def test_a_suffixes_list_with_non_string_entries_is_a_refusal_not_a_crash():
+    """Suffixes entries must be strings. A non-string entry must not raise."""
+    workflow = _workflow([{"role": "left", "suffixes": [".csv", 123, True]}])
+    assert bind(workflow, [_resolved("a", "a.csv")]) is None
+
+
+def test_suffix_matching_is_case_insensitive_declared_uppercase():
+    """Declared suffix uppercase (.CSV) should match lowercase filename (.csv)."""
+    workflow = _workflow([{"role": "left", "suffixes": [".CSV"]}])
+    assert bind(workflow, [_resolved("a", "a.csv")]) == {"left": "a.csv"}
+
+
+def test_suffix_matching_is_case_insensitive_declared_mixed():
+    """Declared suffix mixed case (.Csv) should match any case filename."""
+    workflow = _workflow([{"role": "left", "suffixes": [".Csv"]}])
+    assert bind(workflow, [_resolved("a", "a.CSV")]) == {"left": "a.CSV"}

@@ -33,12 +33,28 @@ def bind(workflow: WorkflowRow, resolved: list[ResolvedInput]) -> dict[str, str]
     for declared, item in zip(roles, resolved):
         if not isinstance(declared, dict):
             return None
+
+        # role must be a string
         role = declared.get("role")
-        if not role or role in binding:
+        if not isinstance(role, str) or role in binding:
             # A duplicate role silently collapses in params.json, leaving the
             # frozen script reading a file it was never bound.
             return None
-        suffixes = declared.get("suffixes") or []
+
+        # suffixes must be a list of strings, or absent (treated as "no opinion")
+        suffixes_raw = declared.get("suffixes")
+        if suffixes_raw is None:
+            suffixes = []
+        elif isinstance(suffixes_raw, list):
+            # All entries must be strings
+            if not all(isinstance(s, str) for s in suffixes_raw):
+                return None
+            suffixes = suffixes_raw
+        else:
+            # suffixes is present but not a list
+            return None
+
+        # Check suffix match if suffixes is non-empty
         if suffixes and Path(item.filename).suffix.lower() not in {s.lower() for s in suffixes}:
             return None
         binding[role] = item.filename
