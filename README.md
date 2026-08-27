@@ -115,7 +115,16 @@ backend's own interpreter and can therefore import `anthropic`, `fastapi` and th
 The container runs as the backend's own uid, so the backend must not be root. Under compose,
 `backend/docker-entrypoint.py` drops to an unprivileged account before uvicorn starts; if the
 backend is root anyway, the run fails rather than quietly producing a bundle that claims an
-isolation it did not have.
+isolation it did not have. To be precise about what "unprivileged" buys you: that account is
+deliberately joined to the group owning the Docker socket, because it has to be able to launch
+sandbox containers at all. Membership of that group is root-equivalent *against the host daemon*.
+So the drop protects the container's own filesystem and makes the sandbox's `--user` non-root; it
+is not a claim that a compromised backend cannot reach Docker.
+
+Scoping the mount to a single task uses the `volume-subpath` mount option, which needs
+**Docker Engine 26.1 or newer** on the host. On anything older the run fails with
+`SandboxUnavailable` and the task is marked failed — it never silently widens back to mounting
+every task's bundle.
 
 With no daemon reachable, `SubprocessSandbox` takes over so the Docker-free dev loop keeps working.
 It caps CPU and memory and scrubs the environment — your `ANTHROPIC_API_KEY` is not visible to
@@ -139,8 +148,22 @@ cd frontend && npm install && npm run dev
 ## Develop
 
 ```bash
-cd backend  && python -m pytest -q   # 244 tests
-cd frontend && npm test              # 13 tests (vitest)
+cd backend  && python -m pytest -q   # 394 tests
+cd frontend && npm test              # 22 tests (vitest)
+cd frontend && npm run typecheck     # `npm run build` is transpile-only; this is the real check
+```
+
+The sandbox contract tests run against a real container, so build the image once
+(`docker build -t ley-khaa-sandbox backend/sandbox`) or every `[docker]` parameter skips.
+
+**On Docker Desktop alternatives (Colima, Rancher, Lima):** the VM usually mounts only `$HOME`,
+while pytest's `tmp_path` lives under `/private/var/folders/...` on macOS. A bundle created there
+is invisible inside the VM, so the docker-parametrized tests fail with a misleading
+`No such file or directory` naming a path that plainly exists on the host. Point `TMPDIR`
+somewhere under `$HOME` for the run:
+
+```bash
+TMPDIR="$HOME/.leykhaa-tmp" python -m pytest -q
 ```
 
 ## Stack
