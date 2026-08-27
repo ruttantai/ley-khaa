@@ -13,6 +13,29 @@ def test_seeding_is_idempotent(session):
     assert len(WorkflowRepository(session).list()) == 2
 
 
+def test_seeding_never_overwrites_a_row_a_human_has_already_touched(session):
+    """A row that exists is left alone, even on the next boot.
+
+    That row might be a seed a human edited, or a promoted workflow that
+    happens to share a name — either way, a re-seed must not silently reset
+    it. A count-only assertion would pass just as well if the second call
+    updated the row in place instead of skipping it, so this pins the fields
+    themselves.
+    """
+    ensure_seed_workflows(session)
+    repo = WorkflowRepository(session)
+    row = repo.get("set_difference")
+    row.description = "a human's edit, not the seed's"
+    row.source = "# a human's edit, not the seed's"
+    session.commit()
+
+    assert ensure_seed_workflows(session) == 0
+
+    row = repo.get("set_difference")
+    assert row.description == "a human's edit, not the seed's"
+    assert row.source == "# a human's edit, not the seed's"
+
+
 def test_seeds_are_marked_as_seeds_not_promotions(session):
     ensure_seed_workflows(session)
     for row in WorkflowRepository(session).list():
