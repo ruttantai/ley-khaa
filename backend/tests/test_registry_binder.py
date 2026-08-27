@@ -67,6 +67,13 @@ def test_a_malformed_role_declaration_is_a_refusal_not_a_crash():
     assert bind(workflow, [_resolved("a", "a.csv")]) is None
 
 
+def test_an_empty_string_role_is_a_refusal():
+    """An empty string role is a valid string but unusable: the frozen script
+    reads params["inputs"]["<role>"], and no script reads the empty key."""
+    workflow = _workflow([{"role": "", "suffixes": [".csv"]}])
+    assert bind(workflow, [_resolved("a", "a.csv")]) is None
+
+
 @pytest.mark.parametrize("malformed_entry,description", [
     ("left", "non-dict entry (string)"),
     (123, "non-dict entry (int)"),

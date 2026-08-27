@@ -34,11 +34,12 @@ def bind(workflow: WorkflowRow, resolved: list[ResolvedInput]) -> dict[str, str]
         if not isinstance(declared, dict):
             return None
 
-        # role must be a string
+        # role must be a non-empty string
         role = declared.get("role")
-        if not isinstance(role, str) or role in binding:
+        if not isinstance(role, str) or not role or role in binding:
             # A duplicate role silently collapses in params.json, leaving the
-            # frozen script reading a file it was never bound.
+            # frozen script reading a file it was never bound. An empty string
+            # is also unusable: the frozen script reads params["inputs"]["<role>"].
             return None
 
         # suffixes must be a list of strings, or absent (treated as "no opinion")
