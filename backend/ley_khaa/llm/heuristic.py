@@ -7,6 +7,7 @@ from ..crystallizer.engine import HANDLED_HEADER, CandidateDraft, CrystallizerOu
 from ..crystallizer.relevance import RelevanceVerdict
 from ..executor.synthesizer import SynthesizedScript
 from ..interpreter.spec import TaskSpec
+from ..registry.models import RegistryDecision
 from .router import ModelChoice
 
 T = TypeVar("T", bound=BaseModel)
@@ -176,6 +177,11 @@ class HeuristicLLM:
             return self._interpret(user)
         if output_format is SynthesizedScript:
             return self._synthesize(user)
+        if output_format is RegistryDecision:
+            # Offline matching is fingerprint-only by design: a regex cannot
+            # judge whether two phrasings mean the same operation, and guessing
+            # here would hand a request to code proven for a different job.
+            return RegistryDecision(workflow=None, confidence=0.0, reason="offline: no model match")
         raise NotImplementedError(f"HeuristicLLM has no rule for {output_format.__name__}")
 
     def _relevance(self, user: str) -> RelevanceVerdict:

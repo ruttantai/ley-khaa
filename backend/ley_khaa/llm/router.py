@@ -17,6 +17,8 @@ class Stage(str, Enum):
     INTERPRETER = "interpreter"
     VISION_EXTRACTION = "vision_extraction"
     SYNTHESIS = "synthesis"
+    REGISTRY_MATCH = "registry_match"
+    MEMORY_MATCH = "memory_match"
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,10 @@ _POLICY: dict[Stage, dict[str, str]] = {
     # the system does, and a wrong script costs a sandbox round trip plus a
     # repair. Opus at both complexities.
     Stage.SYNTHESIS: {"routine": OPUS, "hard": OPUS},
+    # Both exist to avoid an Opus call. Routing them to Opus would make
+    # consulting the cache cost more than the work it saves.
+    Stage.REGISTRY_MATCH: {"routine": HAIKU, "hard": HAIKU},
+    Stage.MEMORY_MATCH: {"routine": HAIKU, "hard": HAIKU},
 }
 
 _MAX_TOKENS: dict[Stage, int] = {
@@ -45,6 +51,9 @@ _MAX_TOKENS: dict[Stage, int] = {
     Stage.VISION_EXTRACTION: 8000,
     # Emits a whole program, not a small structured object.
     Stage.SYNTHESIS: 16000,
+    # A name, a float and one sentence.
+    Stage.REGISTRY_MATCH: 1024,
+    Stage.MEMORY_MATCH: 1024,
 }
 
 
