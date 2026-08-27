@@ -1,11 +1,14 @@
 import asyncio
+import io
 import logging
+import zipfile
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -14,6 +17,7 @@ from ..config import settings
 from ..crystallizer.gate import ReadinessGate
 from ..db import SessionLocal, run_migrations
 from ..domain.states import InvalidTransition
+from ..executor.workspace import Workspace
 from ..intake.simulator import Simulator
 from ..llm.factory import build_llm
 from ..orchestrator.orchestrator import ForeignReplyTarget, Orchestrator
@@ -22,6 +26,7 @@ from ..persistence.message_repository import MessageRepository
 from ..persistence.repository import TaskRepository
 from .schemas import (
     AnswerIn,
+    BundleOut,
     CandidateOut,
     IntakeOut,
     MessageIn,
@@ -282,3 +287,122 @@ def answer_task(
         }
     )
     return TaskOut.model_validate(TaskRepository(session).get(task_id))
+
+
+# A generator script is a few KB. Anything this size is not source code, and
+# streaming it into a JSON string would be a denial of service on the browser.
+_MAX_INLINE_BYTES = 1_000_000
+
+# The zip is built in memory, and what goes into it was written by synthesized
+# code — a script that fills deliverable/ with gigabytes would otherwise be
+# buffering them inside the backend process. Refused rather than truncated: half
+# a bundle is not a bundle, and the individual-file routes still work.
+_MAX_BUNDLE_BYTES = 100_000_000
+
+
+def _bundle_root(session: Session, task_id: str) -> Path:
+    row = _require_task(session, task_id)
+    if not row.workspace_path:
+        raise HTTPException(status_code=404, detail="this task has no bundle yet")
+    root = Path(row.workspace_path)
+    if not root.is_dir():
+        # The row points at a bundle that is no longer on disk — a wiped volume,
+        # or a database restored beside a different workspace root.
+        raise HTTPException(status_code=404, detail="the bundle is no longer on disk")
+    return root
+
+
+def _contained(root: Path, candidate: Path) -> Path | None:
+    """Resolve `candidate` and return it, but only if it stays inside `root`.
+
+    resolve() follows symlinks, which is the point: the sandboxed generator
+    that fills a bundle is untrusted code, and `os.symlink("/etc/passwd",
+    "deliverable/out.csv")` is one line inside it. A symlink planted anywhere
+    under the bundle — including inside a directory that is itself a
+    symlink — resolves outside root and is rejected here exactly like a
+    "../.." traversal is. Every route that reads bundle contents (the
+    listing, the file viewer, the deliverable download, the zip download)
+    must run every candidate path through this before touching it.
+    """
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(root.resolve()):
+        return None
+    return resolved
+
+
+@app.get("/tasks/{task_id}/bundle", response_model=BundleOut)
+def get_bundle(task_id: str, session: Session = Depends(get_session)) -> BundleOut:
+    root = _bundle_root(session, task_id)
+    files = sorted(
+        str(path.relative_to(root))
+        for path in root.rglob("*")
+        if path.is_file() and _contained(root, path) is not None
+    )
+    return BundleOut(
+        task_id=task_id,
+        root=str(root),
+        manifest=Workspace(root).read_manifest(),
+        files=files,
+        deliverables=[name for name in files if name.startswith("deliverable/")],
+    )
+
+
+@app.get("/tasks/{task_id}/bundle/file")
+def get_bundle_file(
+    task_id: str, path: str, session: Session = Depends(get_session)
+) -> dict[str, str]:
+    root = _bundle_root(session, task_id)
+    target = _contained(root, root / path)
+    if target is None:
+        raise HTTPException(status_code=400, detail="path escapes the bundle")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="no such file in the bundle")
+    if target.stat().st_size > _MAX_INLINE_BYTES:
+        raise HTTPException(status_code=413, detail="file too large to view; download it instead")
+    try:
+        content = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=415, detail="not a text file; use the download endpoints"
+        )
+    return {"path": path, "content": content}
+
+
+@app.get("/tasks/{task_id}/bundle/deliverable")
+def download_deliverable(task_id: str, session: Session = Depends(get_session)) -> FileResponse:
+    """The deliverable itself (spec §5.2). Separate from bundle/file because an
+    .xlsx is not text and the code viewer's JSON envelope cannot carry it."""
+    root = _bundle_root(session, task_id)
+    produced = [
+        path for path in Workspace(root).deliverables() if _contained(root, path) is not None
+    ]
+    if not produced:
+        raise HTTPException(status_code=404, detail="this bundle has no deliverable")
+    primary = produced[0]
+    return FileResponse(primary, filename=primary.name)
+
+
+@app.get("/tasks/{task_id}/bundle/download")
+def download_bundle(task_id: str, session: Session = Depends(get_session)) -> StreamingResponse:
+    root = _bundle_root(session, task_id)
+    members = [
+        path
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and _contained(root, path) is not None
+    ]
+    total = sum(path.stat().st_size for path in members)
+    if total > _MAX_BUNDLE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="this bundle is too large to zip; fetch its files individually",
+        )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in members:
+            archive.write(path, path.relative_to(root))
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="task-{task_id}-bundle.zip"'},
+    )

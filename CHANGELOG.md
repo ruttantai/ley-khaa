@@ -5,6 +5,57 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-27
+
+### Added
+- Synthesis-first executor (§5.10): `TaskSpec` → resolved inputs → a synthesized Python script →
+  a sandboxed run → a validated deliverable, all behind one `ExecutionRunner.run()`.
+- Input resolution: message attachments first, then a Faker-seeded catalog of synthetic securities
+  datasets. A name that matches neither becomes a clarification **before** any model call.
+- Sandboxes: `DockerSandbox` (no network, read-only rootfs, non-root, capped, killed on timeout, and
+  only the running task's own bundle mounted) and `SubprocessSandbox` (capped and
+  environment-scrubbed, but *not* network-isolated). One contract test both must pass, and CI builds
+  the sandbox image so the docker cases actually run there. The manifest records which one ran.
+- `backend/docker-entrypoint.py`: under compose the backend drops to an unprivileged account before
+  uvicorn starts. Each sandbox container inherits that uid, so "non-root" is true on the compose
+  path and not only on a developer's machine; a root backend now fails the run rather than
+  producing a bundle that overstates its isolation.
+- Reproducible Output Bundle (§5.11): `task-workspaces/task-<id>/` with the deliverable, every
+  generator attempt, the frozen inputs, `run.sh`, and a `manifest.json` carrying the sandbox, the
+  model, the catalog seed, per-attempt verdicts, and sha256 for every file.
+- Validator: time limit, clean exit, deliverable present, non-empty, format matching the request,
+  inputs unmodified, and at least one row. Failures escalate in plain English; the traceback stays
+  in the bundle.
+- Repair once, then escalate (§6): a crash or a failed validation is re-synthesized from the
+  traceback exactly once. Both attempts are kept.
+- `Stage.SYNTHESIS` routes to Opus at 16,000 max tokens.
+- Bundle API: `GET /tasks/{id}/bundle`, `.../bundle/file?path=` (path-traversal guarded),
+  `.../bundle/deliverable`, `.../bundle/download`.
+- Dashboard bundle panel: how the deliverable was produced, the code that produced it, and
+  downloads.
+- Offline synthesis: `HeuristicLLM` returns real, runnable canned scripts, so a fresh clone with no
+  `ANTHROPIC_API_KEY` still produces a genuine `.xlsx`. Canned, not generated — the README says so.
+
+### Changed
+- A re-executed task (escalate → answer → re-run) clears `deliverable/` first and continues its
+  generator numbering, so the verdict describes the run that just happened and the earlier round's
+  attempts are still in the bundle. The manifest gains `earlier_attempts`.
+- A symlink in `deliverable/` is never treated as a deliverable. Validation fails and says a link
+  was left in place of an output file, instead of the manifest attesting bytes the run never wrote.
+- The background sweeper no longer re-drives tasks in `EXECUTING`. Every other mid-flight step is
+  idempotent; re-entering execution started a second synthesis-and-sandbox lane on the same bundle
+  every 15 seconds.
+- Sandbox stdout/stderr and `GET /tasks/{id}/bundle/download` are size-capped. A truncated capture
+  says how much it dropped; an oversized bundle is a 413 pointing at the per-file routes.
+- An attachment whose name carries no matchable tokens (`""`, `"---"`, `".csv"`) now matches no spec
+  input at all. It used to match every one of them, taking the first and beating the catalog to it.
+- `npm run typecheck` exists and runs in CI; `tsc --noEmit` was previously run nowhere.
+- `TaskDriver._execute` and `_validate` are no longer stubs. `_execute` runs the lane and persists
+  a verdict; `_validate` acts on it. The state machine is unchanged.
+- The offline interpreter matches multi-word source names ("bloomberg universe") as one input
+  rather than emitting an ambiguous bare "universe" that resolves to nothing.
+- `tasks` gains `workspace_path` and `execution_verdict` (Alembic `0003_executor`).
+
 ## [0.3.0] — 2026-08-21
 
 > **Upgrading from 0.2.0:** this release introduces Alembic. A database created by

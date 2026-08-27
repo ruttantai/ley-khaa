@@ -25,23 +25,22 @@ generator code, exact inputs, seeded manifest — so any result can be audited a
 
 ## Status
 
-**v0.3.0 — Interpreter, Autonomy engine, and human-in-the-loop.** A crystallized request is
-interpreted into a validated `TaskSpec` — intent, inputs, operation, output format, recipient,
-urgency, and what's still missing. The autonomy engine scores that spec's confidence and risk and
-recommends *Suggest* / *Co-pilot* / *Auto* with a plain-English reason. A task parks at
-`awaiting_approval` unless the effective mode is Auto. From there a human can approve, reject,
-re-dial the mode, edit the spec inline, or answer a clarifying question — and that answer re-enters
-the pipeline as a real message, the same route a Slack thread reply will take. **The executor is
-still a stub**: an approved or auto-run task walks `executing → validating → done` without doing any
-real work — real execution is v0.4.0. The offline `HeuristicLLM` stand-in deliberately never scores
-high enough to earn Auto on its own, so a no-API-key clone can never run a task unattended.
+**v0.4.0 — the synthesis-first executor.** An approved task now does real work: its `TaskSpec`
+becomes resolved inputs (attachments first, a seeded synthetic catalog second), a Python script
+synthesized for the request, a run inside a locked-down Docker sandbox with no network, and a
+validated deliverable. Everything lands in a reproducible **Output Bundle** —
+`task-workspaces/task-<id>/` holding the deliverable, every generator attempt including the failed
+ones, the exact inputs, and a `manifest.json` recording which sandbox actually ran, which model
+wrote the code, and the sha256 of every file. A crash or a failed validation is repaired once from
+the traceback and then handed to a human. No Docker daemon? The executor falls back to a
+capped, environment-scrubbed subprocess, says so loudly, and stamps it into the manifest.
 
 | Phase | Tag | Scope | State |
 |-------|-----|-------|-------|
 | 0 | `v0.1.0` | Walking skeleton: state machine, task API, dashboard, CI | ✅ shipped |
 | 1 | `v0.2.0` | Intake + **Task Crystallizer** | ✅ shipped |
 | 2 | `v0.3.0` | Interpreter + **Autonomy engine** + human-in-the-loop | ✅ shipped |
-| 3 | `v0.4.0` | Synthesis-first executor, validator, Output Bundle | 📋 planned |
+| 3 | `v0.4.0` | Synthesis-first executor, validator, Output Bundle | ✅ shipped |
 | 4 | `v0.5.0` | Multi-channel adapters, project routing, task memory | 📋 planned |
 | — | `v1.0.0` | Definition of done (spec §11) | 🎯 target |
 
@@ -97,6 +96,32 @@ docker compose up
 ```
 
 To force the stand-in even with a key set, run with `LEY_KHAA_LLM=heuristic`.
+
+**Offline synthesis is canned, not generated.** With no `ANTHROPIC_API_KEY` the executor still
+produces a real, runnable script and a real deliverable — but that script is looked up by keyword
+from two hand-written templates (`set_difference`, `summary_stats`), not written for the request.
+Anything else gets a script that describes its inputs. The bundle's `manifest.json` records which
+model produced the generator, so a bundle never overstates where its code came from.
+
+### Where synthesized code runs
+
+Docker, by default: `--network none`, read-only rootfs, non-root, 512 MB, 1 CPU, 64 pids, killed on
+a wall-clock timeout, and only the running task's own bundle mounted — not the other tasks'.
+The image (`backend/sandbox/Dockerfile`) carries the standard library, `openpyxl` and
+`python-docx`, and nothing else. That is a subset of what the backend has, so the real sandbox
+cannot run something the fallback couldn't; the reverse is not true, since the fallback runs the
+backend's own interpreter and can therefore import `anthropic`, `fastapi` and the rest.
+
+The container runs as the backend's own uid, so the backend must not be root. Under compose,
+`backend/docker-entrypoint.py` drops to an unprivileged account before uvicorn starts; if the
+backend is root anyway, the run fails rather than quietly producing a bundle that claims an
+isolation it did not have.
+
+With no daemon reachable, `SubprocessSandbox` takes over so the Docker-free dev loop keeps working.
+It caps CPU and memory and scrubs the environment — your `ANTHROPIC_API_KEY` is not visible to
+synthesized code — but it **cannot remove network access**. It warns once per process, and the
+bundle's manifest records `"sandbox": "subprocess"`. Set `LEY_KHAA_SANDBOX=docker` to refuse the
+fallback entirely.
 
 ### Local dev (no Docker)
 

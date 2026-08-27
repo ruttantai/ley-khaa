@@ -186,7 +186,7 @@ def test_a_task_exposes_its_spec_and_recommendation(client):
     assert "→" in task["autonomy_reason"]
 
 
-def test_approve_runs_the_task(client):
+def test_approve_runs_the_task(client, stub_execution):
     task = _parked_task(client)
     response = client.post(f"/tasks/{task['id']}/approve")
     assert response.status_code == 200
@@ -206,7 +206,7 @@ def test_reject_records_the_reason(client):
     assert response.json()["failure_reason"] == "wrong universe"
 
 
-def test_overriding_the_mode_to_auto_releases_the_task(client):
+def test_overriding_the_mode_to_auto_releases_the_task(client, stub_execution):
     task = _parked_task(client)
     response = client.post(f"/tasks/{task['id']}/mode", json={"mode": "auto"})
     assert response.status_code == 200

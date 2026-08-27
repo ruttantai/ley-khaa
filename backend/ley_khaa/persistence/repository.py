@@ -117,6 +117,20 @@ class TaskRepository:
         self.session.refresh(row)
         return row
 
+    def save_execution(self, task_id: str, *, workspace_path: str, verdict: dict) -> TaskRow:
+        """Persist where the bundle is and what the run came to.
+
+        One write for both, because a workspace_path without its verdict is a
+        bundle nobody can interpret and a verdict without its path is a claim
+        with no evidence behind it.
+        """
+        row = self._row(task_id)
+        row.workspace_path = workspace_path
+        row.execution_verdict = verdict
+        self.session.commit()
+        self.session.refresh(row)
+        return row
+
     def increment_interpret_attempts(self, task_id: str) -> int:
         row = self._row(task_id)
         row.interpret_attempts = (row.interpret_attempts or 0) + 1

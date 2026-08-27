@@ -22,11 +22,29 @@ services:
       # falls back and says so in the log.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       LEY_KHAA_LLM: ${LEY_KHAA_LLM:-anthropic}
+      # Bundles live on a named volume mounted at this same path in the sandbox
+      # container, so a path written here is valid there too.
+      LEY_KHAA_WORKSPACE_ROOT: /work/task-workspaces
+      LEY_KHAA_WORKSPACE_VOLUME: ley-khaa-task-workspaces
+    volumes:
+      # The backend spawns sibling sandbox containers on the host daemon.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - task-workspaces:/work/task-workspaces
     ports:
       - "8000:8000"
     depends_on:
       db:
         condition: service_healthy
+      sandbox-image:
+        condition: service_completed_successfully
+
+  sandbox-image:
+    build: ./backend/sandbox
+    image: ley-khaa-sandbox
+    # Exists only so `docker compose up` builds the sandbox image on the host
+    # daemon before the backend needs it. It runs once and exits.
+    command: ["python", "-c", "print('sandbox image ready')"]
+    restart: "no"
 
   frontend:
     build: ./frontend
@@ -36,3 +54,9 @@ services:
       - "5173:5173"
     depends_on:
       - backend
+
+volumes:
+  task-workspaces:
+    # Named explicitly: DockerSandbox mounts it by name, and the compose default
+    # (<project>_task-workspaces) would change if the directory were renamed.
+    name: ley-khaa-task-workspaces

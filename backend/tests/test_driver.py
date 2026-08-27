@@ -41,7 +41,7 @@ def _setup(session, responses, *, candidate_id=None):
     return repo, driver, task
 
 
-def test_a_low_risk_confident_task_runs_straight_through(session):
+def test_a_low_risk_confident_task_runs_straight_through(session, stub_execution):
     """Auto skips the gate — this is the dial actually changing behaviour."""
     repo, driver, task = _setup(session, [_spec()])
     result = driver.advance(task.id)
@@ -57,7 +57,7 @@ def test_a_risky_task_parks_for_a_human(session):
     assert "delivers" in result.autonomy_reason
 
 
-def test_a_human_pinned_mode_beats_the_recommendation(session):
+def test_a_human_pinned_mode_beats_the_recommendation(session, stub_execution):
     repo, driver, task = _setup(session, [_spec(recipient="boss")])
     repo.set_override(task.id, AutonomyMode.AUTO.value)
     assert driver.advance(task.id).state == TaskState.DONE.value
@@ -142,7 +142,7 @@ def test_the_candidates_unsettled_details_lower_confidence(session):
     assert result.confidence < 0.95
 
 
-def test_advance_on_a_finished_task_is_a_no_op(session):
+def test_advance_on_a_finished_task_is_a_no_op(session, stub_execution):
     repo, driver, task = _setup(session, [_spec()])
     driver.advance(task.id)
     # No responses left: a second advance must not call the LLM again.

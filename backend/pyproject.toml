@@ -1,6 +1,6 @@
 [project]
 name = "ley-khaa"
-version = "0.3.0"
+version = "0.4.0"
 description = "AI secretary — turns conversations into validated work"
 requires-python = ">=3.12"
 dependencies = [
@@ -11,6 +11,9 @@ dependencies = [
     "psycopg[binary]>=3.1",
     "pydantic>=2.7",
     "alembic>=1.13",
+    "faker>=25",
+    "openpyxl==3.1.5",
+    "python-docx==1.2.0",
 ]
 
 [project.optional-dependencies]
@@ -35,4 +38,7 @@ ley_khaa = [
 [tool.pytest.ini_options]
 filterwarnings = [
     "ignore:Using `httpx` with `starlette.testclient` is deprecated.*:starlette.exceptions.StarletteDeprecationWarning",
+]
+markers = [
+    "docker: requires a Docker daemon and the ley-khaa-sandbox image",
 ]
