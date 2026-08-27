@@ -12,6 +12,7 @@ from ley_khaa.executor.runner import ExecutionRunner
 from ley_khaa.executor.sandbox import SandboxUnavailable, SubprocessSandbox
 from ley_khaa.llm.client import FakeLLM
 from ley_khaa.persistence.workflow_repository import WorkflowRepository
+from ley_khaa.registry.models import RegistryDecision
 from ley_khaa.registry.seeds import ensure_seed_workflows
 
 from .test_runner import (  # noqa: F401
@@ -176,6 +177,43 @@ def test_a_dead_sandbox_on_the_cached_lane_propagates_and_updates_the_manifest(
     assert manifest["deliverables"] == []
     assert manifest["verdict"]["ok"] is False
     assert "unavailable" in manifest["verdict"]["reason"]
+    # The bug this handler was added to close: a dead daemon on the cached
+    # lane must not be reported as a synthesis run that credits a model no
+    # one called. lane="registry" and workflow=... on this write are what
+    # keep _write_manifest's synthesis-shaped defaults from leaking in.
+    assert manifest["lane"] == "registry"
+    assert manifest["models"]["synthesis"] is None
+    assert manifest["workflow"]["name"] == "summary_stats"
+    assert manifest["workflow"]["quarantined"] is False
+
+
+def test_a_model_matched_success_learns_the_alias_it_found(tmp_path, task, session):
+    """The model-matched branch of the learning loop, exercised through the
+    runner rather than just at the matcher level: a phrasing the model found,
+    once it passes, becomes a free deterministic hit next time.
+
+    "stats_summary" is a paraphrase of the seed's own alias ("summary_stats"),
+    so the fingerprint stage (an exact, normalized string match) cannot find
+    it — only the model call can, which is what makes this a matched_by ==
+    "model" case rather than "fingerprint".
+    """
+    ensure_seed_workflows(session)
+    llm = FakeLLM(responses=[RegistryDecision(workflow="summary_stats", confidence=0.95, reason="same job")])
+    row, runner = _registry_runner(tmp_path, task, session, llm)
+
+    outcome = runner.run(row, _spec(operation="stats_summary", output_format="csv", inputs=["holdings"]))
+
+    assert outcome.verdict.ok, outcome.verdict.reason
+    assert len(llm.calls) == 1
+    manifest = json.loads((tmp_path / f"task-{row.id}" / "manifest.json").read_text())
+    assert manifest["workflow"]["matched_by"] == "model"
+
+    # expire_all() forces this to hit the database rather than the in-memory
+    # object record_success already mutated — the same reason test_workflow_
+    # repository.py does it for record_success directly.
+    session.expire_all()
+    persisted = WorkflowRepository(session).get("summary_stats")
+    assert "stats_summary" in persisted.operation_aliases
 
 
 def test_with_no_registry_the_runner_behaves_exactly_as_before(tmp_path, task):

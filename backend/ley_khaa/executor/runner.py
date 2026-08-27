@@ -66,6 +66,25 @@ def _synthesis_author(llm: LLMClient) -> str:
     return f"{llm.name} (no model ran)"
 
 
+def _attempt_record(number: int, result: SandboxResult, verdict: Verdict, reasoning: str) -> dict:
+    """One attempt's manifest entry. Shared by the cached lane and the synthesis
+    loop so the two cannot drift apart on which keys a consumer can rely on —
+    that drift is exactly how the cached lane's SandboxUnavailable handler once
+    ended up crediting a model that was never called (it copied a dict literal
+    instead of this)."""
+    return {
+        "attempt": number,
+        "exit_code": result.exit_code,
+        "duration_ms": result.duration_ms,
+        "timed_out": result.timed_out,
+        "ok": verdict.ok,
+        "reason": verdict.reason,
+        "checks": verdict.checks,
+        "reasoning": reasoning,
+        "stderr_tail": result.stderr[-_STDERR_IN_MANIFEST:],
+    }
+
+
 class ExecutionRunner:
     def __init__(
         self,
@@ -152,21 +171,40 @@ class ExecutionRunner:
         input_hashes = self._bind(workspace, spec, resolved, match, target)
 
         attempts: list[dict] = []
-        lane = "synthesis"
         workflow_record: dict | None = None
         verdict = Verdict(ok=False, reason=_SYNTHESIS_FAILED, checks={})
 
         if match is not None:
             number = first_attempt
+            # Built before the sandbox even runs, and with quarantined=False:
+            # if SandboxUnavailable strikes below, that is ley-khaa's daemon
+            # dying, not the workflow's fault, and the handler needs a real
+            # workflow_record (not the None a KeyError-shaped omission would
+            # leave it with) to report lane="registry" honestly rather than
+            # falling back to _write_manifest's synthesis-shaped defaults.
+            workflow_record = {
+                "name": match.workflow.name,
+                "sha256": match.workflow.source_sha256,
+                "matched_by": match.matched_by,
+                "binding": dict(match.binding),
+                "quarantined": False,
+            }
             try:
                 verdict, result = self._run_workflow(
                     workspace, match, number, spec, input_hashes
                 )
             except SandboxUnavailable as exc:
-                # Same reasoning as the identical handler in the synthesis loop
-                # below: clear_deliverables() already ran, so without this an
-                # earlier round's manifest would keep attesting deliverables
-                # that are no longer on disk.
+                # Caught HERE, at the call site, rather than inside
+                # _run_workflow: this is what lets _run_workflow stay a pure
+                # "run and validate" helper with no manifest-writing concerns
+                # of its own, while still writing one before the exception
+                # continues up to the driver. Same reasoning as the synthesis
+                # loop's identical handler below: clear_deliverables() already
+                # ran, so without this an earlier round's manifest would keep
+                # attesting deliverables that are no longer on disk. lane and
+                # workflow are passed explicitly — the defaults on
+                # _write_manifest describe the SYNTHESIS lane, and this failure
+                # never reached synthesis at all.
                 self._write_manifest(
                     workspace,
                     row,
@@ -179,28 +217,17 @@ class ExecutionRunner:
                         checks={"sandbox_available": False},
                     ),
                     earlier_attempts=earlier,
+                    lane="registry",
+                    workflow=workflow_record,
                 )
                 raise
             attempts.append(
-                {
-                    "attempt": number,
-                    "exit_code": result.exit_code,
-                    "duration_ms": result.duration_ms,
-                    "timed_out": result.timed_out,
-                    "ok": verdict.ok,
-                    "reason": verdict.reason,
-                    "checks": verdict.checks,
-                    "reasoning": f"cached workflow {match.workflow.name}, no model call",
-                    "stderr_tail": result.stderr[-_STDERR_IN_MANIFEST:],
-                }
+                _attempt_record(
+                    number, result, verdict,
+                    f"cached workflow {match.workflow.name}, no model call",
+                )
             )
-            workflow_record = {
-                "name": match.workflow.name,
-                "sha256": match.workflow.source_sha256,
-                "matched_by": match.matched_by,
-                "binding": dict(match.binding),
-                "quarantined": not verdict.ok,
-            }
+            workflow_record["quarantined"] = not verdict.ok
             if verdict.ok:
                 self.workflows.record_success(
                     match.workflow.name,
@@ -226,6 +253,12 @@ class ExecutionRunner:
             self.workflows.record_failure(match.workflow.name)
             first_attempt = number + 1
             input_hashes = self._bind(workspace, spec, resolved, None, target)
+            # Discards the cached lane's verdict so the synthesis loop below
+            # starts from the same "nothing has run yet" state it would if the
+            # registry had never matched at all — the loop's own repair logic
+            # reads `verdict` to decide synthesize-vs-repair, and the cached
+            # script's failure has nothing to do with what synthesis is about
+            # to write.
             verdict = Verdict(ok=False, reason=_SYNTHESIS_FAILED, checks={})
 
         previous: SynthesizedScript | None = None
@@ -273,19 +306,7 @@ class ExecutionRunner:
                 )
                 raise
             verdict = validate(spec, workspace, result, input_hashes)
-            attempts.append(
-                {
-                    "attempt": number,
-                    "exit_code": result.exit_code,
-                    "duration_ms": result.duration_ms,
-                    "timed_out": result.timed_out,
-                    "ok": verdict.ok,
-                    "reason": verdict.reason,
-                    "checks": verdict.checks,
-                    "reasoning": script.reasoning,
-                    "stderr_tail": result.stderr[-_STDERR_IN_MANIFEST:],
-                }
-            )
+            attempts.append(_attempt_record(number, result, verdict, script.reasoning))
             previous, last = script, result
             if verdict.ok:
                 workspace.write_run_script(number)
@@ -299,7 +320,12 @@ class ExecutionRunner:
             attempts=attempts,
             verdict=verdict,
             earlier_attempts=earlier,
-            lane=lane,
+            # Always "synthesis": the only way to reach this line is either no
+            # match at all, or a match that already returned above on success.
+            # A quarantined match still ends up here having fallen all the way
+            # through the synthesis loop, so the lane that produced whatever
+            # verdict is being written really is synthesis.
+            lane="synthesis",
             workflow=workflow_record,
         )
         return ExecutionOutcome(verdict, str(workspace.root), len(attempts))
@@ -367,9 +393,11 @@ class ExecutionRunner:
         unchanged would fail identically. Repairing it would also mean the
         registry's source no longer matches what ran.
 
-        SandboxUnavailable is deliberately NOT caught here: it propagates to the
-        same handler the synthesis lane already has, which writes the manifest
-        before re-raising.
+        SandboxUnavailable is deliberately NOT caught here: the call site (in
+        run()) catches it instead, because writing the manifest before
+        re-raising needs the lane and the workflow record, and this helper has
+        neither — keeping both concerns split is what lets this stay a plain
+        "run and validate" function.
         """
         path = workspace.write_generator(number, match.workflow.source)
         result = self.sandbox.run(
