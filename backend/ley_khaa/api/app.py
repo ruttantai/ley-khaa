@@ -24,6 +24,7 @@ from ..orchestrator.orchestrator import ForeignReplyTarget, Orchestrator
 from ..persistence.candidate_repository import CandidateRepository
 from ..persistence.message_repository import MessageRepository
 from ..persistence.repository import TaskRepository
+from ..persistence.workflow_repository import WorkflowRepository
 from ..registry.seeds import ensure_seed_workflows
 from .schemas import (
     AnswerIn,
@@ -48,6 +49,7 @@ def build_orchestrator(session: Session) -> Orchestrator:
         messages=MessageRepository(session),
         candidates=CandidateRepository(session),
         gate=ReadinessGate(settings.crystallizer_debounce_seconds),
+        workflows=WorkflowRepository(session),
     )
 
 

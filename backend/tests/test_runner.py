@@ -46,11 +46,11 @@ def _boom(_workspace) -> SandboxResult:
     raise SandboxUnavailable("the daemon went away")
 
 
-def _spec(inputs=None, output_format="csv") -> TaskSpec:
+def _spec(inputs=None, output_format="csv", operation="set_difference") -> TaskSpec:
     return TaskSpec(
         intent="compare the universes",
         inputs=inputs if inputs is not None else ["bloomberg universe", "factset"],
-        operation="set_difference",
+        operation=operation,
         output_format=output_format,
         certainty=0.9,
     )

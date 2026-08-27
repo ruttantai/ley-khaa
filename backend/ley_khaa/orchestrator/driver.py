@@ -15,6 +15,7 @@ from ..persistence.candidate_repository import CandidateRepository
 from ..persistence.message_repository import MessageRepository
 from ..persistence.orm import TaskRow
 from ..persistence.repository import TaskRepository
+from ..persistence.workflow_repository import WorkflowRepository
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ class TaskDriver:
         llm: LLMClient,
         messages: MessageRepository,
         candidates: CandidateRepository,
+        workflows: WorkflowRepository | None = None,
     ) -> None:
         self.repo = repo
         self.candidates = candidates
@@ -68,7 +70,7 @@ class TaskDriver:
         # Constructing this is cheap: the sandbox itself is resolved on first
         # use, so a driver built for a request that executes nothing never
         # probes the Docker daemon.
-        self.executor = ExecutionRunner(llm=llm, messages=messages)
+        self.executor = ExecutionRunner(llm=llm, messages=messages, workflows=workflows)
 
     def advance(self, task_id: str) -> TaskRow:
         """Push a task as far as it can go unattended, then return where it landed."""

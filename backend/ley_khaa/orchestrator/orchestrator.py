@@ -12,6 +12,7 @@ from ..persistence.candidate_repository import CandidateRepository
 from ..persistence.message_repository import MessageRepository
 from ..persistence.orm import CandidateRow, MessageRow
 from ..persistence.repository import TaskRepository
+from ..persistence.workflow_repository import WorkflowRepository
 from .driver import TaskDriver
 
 
@@ -48,6 +49,7 @@ class Orchestrator:
         messages: MessageRepository,
         candidates: CandidateRepository,
         gate: ReadinessGate | None = None,
+        workflows: WorkflowRepository | None = None,
     ) -> None:
         self.repo = repo
         self.messages = messages
@@ -56,7 +58,9 @@ class Orchestrator:
         self.relevance = RelevanceFilter(llm)
         self.crystallizer = Crystallizer(llm, messages, candidates)
         self.gate = gate or ReadinessGate()
-        self.driver = TaskDriver(repo, llm=llm, messages=messages, candidates=candidates)
+        self.driver = TaskDriver(
+            repo, llm=llm, messages=messages, candidates=candidates, workflows=workflows
+        )
 
     def ingest(self, raw: dict, *, promote: bool = True) -> IntakeResult:
         row = self.gateway.accept(raw)
