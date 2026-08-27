@@ -95,9 +95,15 @@ class Workspace:
         re-running generator/run.sh reproduces the binding too, and the existing
         input_hashes() tamper check covers it for free.
         """
+        # No sort_keys: it recurses into "inputs" too, and the offline stand-in's
+        # set_difference reads INPUTS[0]/INPUTS[1] as left/right operands — an
+        # alphabetical resort would silently swap them for any pair not already
+        # in alphabetical order. Insertion order is already deterministic here
+        # (the caller builds `inputs` from spec.inputs order once per run), so
+        # sorting buys nothing and breaks operand order.
         path = self.inputs_dir / "params.json"
         path.write_text(
-            json.dumps({"inputs": inputs, "output": output, "seed": seed}, indent=2, sort_keys=True),
+            json.dumps({"inputs": inputs, "output": output, "seed": seed}, indent=2),
             encoding="utf-8",
         )
         return path

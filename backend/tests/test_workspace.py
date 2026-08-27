@@ -185,3 +185,22 @@ def test_params_json_lands_in_inputs_so_the_tamper_check_covers_it(tmp_path):
         "seed": 20260825,
     }
     assert "params.json" in workspace.input_hashes()
+
+
+def test_write_params_preserves_input_order_rather_than_sorting_it(tmp_path):
+    """json.dumps(..., sort_keys=True) recurses into nested dicts too.
+
+    The offline stand-in's set_difference reads INPUTS[0]/INPUTS[1] as its
+    left/right operands, so if "inputs" came back alphabetized, a spec whose
+    input names are not already alphabetical in the intended order would have
+    its operands silently swapped. Roles below are given in reverse-alphabetical
+    order specifically so an accidental sort_keys=True would be caught here.
+    """
+    workspace = Workspace.create(tmp_path, "t1")
+    path = workspace.write_params(
+        inputs={"right": "r.csv", "left": "l.csv"},
+        output="deliverable/output.csv",
+        seed=20260825,
+    )
+
+    assert list(json.loads(path.read_text(encoding="utf-8"))["inputs"].keys()) == ["right", "left"]

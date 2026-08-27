@@ -66,6 +66,9 @@ def _preview(item: ResolvedInput) -> str:
 def _task_block(spec: TaskSpec, resolved: list[ResolvedInput]) -> str:
     target = f"deliverable/{deliverable_filename(spec.output_format)}"
     previews = "\n\n".join(_preview(item) for item in resolved)
+    # No sort_keys: shown to the model exactly as write_params will emit it,
+    # in spec-input order — see the comment on write_params for why sorting
+    # this dict is unsafe.
     params = json.dumps(
         {
             "inputs": {item.name: item.filename for item in resolved},
@@ -73,7 +76,6 @@ def _task_block(spec: TaskSpec, resolved: list[ResolvedInput]) -> str:
             "seed": catalog.CATALOG_SEED,
         },
         indent=2,
-        sort_keys=True,
     )
     return (
         f"## Task\n"

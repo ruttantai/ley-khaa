@@ -70,7 +70,9 @@ import csv
 import json
 
 _params = json.load(open("inputs/params.json", encoding="utf-8"))
-# Ordered: params.json is written in spec-input order, and dicts preserve it.
+# Ordered: params.json is written in spec-input order (never sorted — see
+# write_params), and dicts preserve insertion order, so INPUTS[0]/[1] land as
+# the same left/right operands _SET_DIFFERENCE was given.
 INPUTS = list(_params["inputs"].values())
 TARGET = _params["output"]
 
