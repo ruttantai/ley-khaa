@@ -55,8 +55,11 @@ class Workspace:
     def create(cls, root: Path | str, task_id: str) -> Workspace:
         """Lay out (or re-open) the bundle for a task.
 
-        Idempotent: the sweeper can re-enter a task, and re-creating the
-        workspace must never wipe evidence from an earlier attempt.
+        Idempotent: a task can be executed more than once — the
+        escalate/answer/re-run loop sends it back through CLASSIFIED into the
+        SAME bundle — and re-creating the workspace must never wipe evidence
+        from an earlier round. (Not the sweeper: `advance_stalled` deliberately
+        excludes EXECUTING, so it never re-enters a run in flight.)
         """
         workspace = cls(Path(root) / f"task-{task_id}")
         for directory in (workspace.inputs_dir, workspace.generator_dir, workspace.deliverable_dir):

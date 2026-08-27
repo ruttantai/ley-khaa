@@ -32,6 +32,13 @@ _DOCKER_SOCKET = "/var/run/docker.sock"
 # Same default as ley_khaa.config.Settings, which this cannot import: the
 # entrypoint runs before the app and must not depend on it being importable.
 _WORKSPACE_ROOT = os.getenv("LEY_KHAA_WORKSPACE_ROOT", "./task-workspaces")
+# Paths a recursive chown must never be pointed at. The workspace root is
+# operator-supplied, and this chown runs as root before the drop, so a typo
+# here would rewrite ownership across the container instead of over a bundle.
+_NEVER_CHOWN = frozenset(
+    ["/", "/app", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/opt",
+     "/proc", "/root", "/run", "/sbin", "/srv", "/sys", "/usr", "/var"]
+)
 
 
 def _chown_tree(path: str, uid: int, gid: int) -> None:
@@ -65,8 +72,18 @@ def main(command: list[str]) -> None:
     if socket_gid is not None and socket_gid not in groups:
         groups.append(socket_gid)
 
-    os.makedirs(_WORKSPACE_ROOT, exist_ok=True)
-    _chown_tree(_WORKSPACE_ROOT, account.pw_uid, account.pw_gid)
+    # A recursive chown as root is only ever safe against a path that is
+    # actually a workspace. LEY_KHAA_WORKSPACE_ROOT is operator-supplied, and
+    # "/" or "/usr" would rewrite ownership across the container rather than
+    # over a bundle directory. Refuse instead of guessing.
+    workspace = os.path.abspath(_WORKSPACE_ROOT)
+    if workspace in _NEVER_CHOWN:
+        raise SystemExit(
+            f"refusing to take ownership of {workspace!r}: LEY_KHAA_WORKSPACE_ROOT must be a "
+            "dedicated directory, not a filesystem root or a system path"
+        )
+    os.makedirs(workspace, exist_ok=True)
+    _chown_tree(workspace, account.pw_uid, account.pw_gid)
 
     os.setgroups(groups)
     os.setgid(account.pw_gid)
