@@ -7,6 +7,7 @@ from ..crystallizer.engine import HANDLED_HEADER, CandidateDraft, CrystallizerOu
 from ..crystallizer.relevance import RelevanceVerdict
 from ..executor.synthesizer import SynthesizedScript
 from ..interpreter.spec import TaskSpec
+from ..memory.models import MemoryDecision
 from ..registry.models import RegistryDecision
 from .router import ModelChoice
 
@@ -182,6 +183,9 @@ class HeuristicLLM:
             # judge whether two phrasings mean the same operation, and guessing
             # here would hand a request to code proven for a different job.
             return RegistryDecision(workflow=None, confidence=0.0, reason="offline: no model match")
+        if output_format is MemoryDecision:
+            # Fingerprint-only offline, for the same reason as RegistryDecision.
+            return MemoryDecision(memory_id=None, confidence=0.0, reason="offline: no model match")
         raise NotImplementedError(f"HeuristicLLM has no rule for {output_format.__name__}")
 
     def _relevance(self, user: str) -> RelevanceVerdict:
