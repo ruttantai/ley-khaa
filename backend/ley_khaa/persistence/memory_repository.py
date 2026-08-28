@@ -11,6 +11,16 @@ from sqlalchemy.orm import Session
 from ..interpreter.spec import TaskSpec
 from .orm import MemoryRow
 
+# memory/matcher.py renders every row for_project() returns into the Haiku
+# prompt on every fingerprint miss, and nothing prunes task_memory — there is
+# no delete API, so growth is monotonic. Left unbounded, the rendered prompt
+# eventually exceeds Haiku's context window, the call raises, and
+# MemoryMatcher.recall's blanket except turns that into a permanent, silent
+# "always a miss": the exact-fingerprint path still works, so nothing looks
+# broken except a repeating stack trace in the logs. Capping here, ordered by
+# last_seen_at desc, keeps the 50 memories most likely to be a repeat.
+RECALL_CANDIDATE_LIMIT = 50
+
 
 class MemoryRepository:
     def __init__(self, session: Session) -> None:
@@ -92,6 +102,7 @@ class MemoryRepository:
                 select(MemoryRow)
                 .where(MemoryRow.project == project)
                 .order_by(MemoryRow.last_seen_at.desc())
+                .limit(RECALL_CANDIDATE_LIMIT)
             )
         )
 

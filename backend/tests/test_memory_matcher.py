@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from ley_khaa.interpreter.spec import TaskSpec
@@ -114,6 +116,46 @@ def test_the_offline_stand_in_answers_no_match(session):
         output_format=MemoryDecision,
     )
     assert decision.memory_id is None
+
+
+def test_only_the_50_most_recently_seen_memories_are_offered_to_the_model(session):
+    """Finding 1: for_project() had no LIMIT, and matcher._prompt() renders
+    every returned row into the Haiku prompt on every fingerprint miss. Once
+    that rendered list is large enough the call raises, and recall()'s
+    blanket except turns it into a permanent, silent "always a miss" - the
+    exact-fingerprint path still works, so nothing looks broken.
+
+    This pins the rendered PROMPT, not the repository query: a test that only
+    checked len(for_project(...)) == 50 would still pass if the cap were
+    applied somewhere that never reaches the model call, which is the actual
+    defect here.
+    """
+    repo = MemoryRepository(session)
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    rows = []
+    for i in range(60):
+        row = MemoryRow(
+            id=f"mem-{i}", project="acme", fingerprint=f"fp-{i}", intent=f"intent {i}",
+            spec=_spec().model_dump(mode="json"), source_task_id="t0",
+            last_seen_at=base + timedelta(seconds=i),
+        )
+        session.add(row)
+        rows.append(row)
+    session.commit()
+    most_recently_seen = rows[-1]
+
+    llm = FakeLLM(responses=[
+        MemoryDecision(memory_id=most_recently_seen.id, confidence=0.9, reason="same request")
+    ])
+
+    match = MemoryMatcher(repo, llm).recall("acme", ["a request that matches no fingerprint"])
+
+    # Recall still works: the most recently seen memory is still reachable.
+    assert match is not None
+    assert match.id == most_recently_seen.id
+    prompt = llm.calls[0].user
+    rendered = [line for line in prompt.splitlines() if line.startswith("- [")]
+    assert len(rendered) <= 50
 
 
 def test_an_empty_request_never_recalls(session):
