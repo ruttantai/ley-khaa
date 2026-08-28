@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import logging
 import zipfile
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -17,7 +18,7 @@ from ..config import settings
 from ..crystallizer.gate import ReadinessGate
 from ..db import SessionLocal, run_migrations
 from ..domain.states import InvalidTransition
-from ..executor.workspace import Workspace
+from ..executor.workspace import MANIFEST_NAME, Workspace
 from ..intake.simulator import Simulator
 from ..llm.factory import build_llm
 from ..orchestrator.orchestrator import ForeignReplyTarget, Orchestrator
@@ -339,6 +340,23 @@ def _contained(root: Path, candidate: Path) -> Path | None:
     return resolved
 
 
+def _bundle_manifest(root: Path) -> dict:
+    """Read manifest.json the way every other bundle route reads a path:
+    resolve and containment-check the candidate BEFORE opening it, then read
+    the RESOLVED path — never the unresolved one after only checking the
+    resolved one, which is the classic bypass. Workspace.read_manifest()
+    does the same exists()+read_text() unguarded, and both follow symlinks;
+    manifest.json lives inside a workspace filled by untrusted generator
+    code, so `os.symlink("/etc/passwd", "manifest.json")` must not be
+    followed. A symlink that escapes is treated exactly like a missing
+    manifest — {} — rather than inventing a new refusal shape.
+    """
+    manifest_path = _contained(root, root / MANIFEST_NAME)
+    if manifest_path is None or not manifest_path.is_file():
+        return {}
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+
 @app.get("/tasks/{task_id}/bundle", response_model=BundleOut)
 def get_bundle(task_id: str, session: Session = Depends(get_session)) -> BundleOut:
     root = _bundle_root(session, task_id)
@@ -350,7 +368,7 @@ def get_bundle(task_id: str, session: Session = Depends(get_session)) -> BundleO
     return BundleOut(
         task_id=task_id,
         root=str(root),
-        manifest=Workspace(root).read_manifest(),
+        manifest=_bundle_manifest(root),
         files=files,
         deliverables=[name for name in files if name.startswith("deliverable/")],
     )
