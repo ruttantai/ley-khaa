@@ -137,11 +137,13 @@ class MemoryRow(Base):
 
     __tablename__ = "task_memory"
     __table_args__ = (
-        # Orchestrator queues run per-project but concurrently across
-        # projects, and record() is check-then-insert: without this, two
-        # identical requests finishing at once insert two rows, and every
-        # later lookup for that (project, fingerprint) raises
-        # MultipleResultsFound instead of returning the memory.
+        # record() is check-then-insert, and real concurrency exists today
+        # even with a single project: FastAPI runs sync endpoints in a
+        # threadpool, and the periodic sweeper runs alongside it — either
+        # pairing can finish two identical requests' recordings at once.
+        # Without this, that races two rows into existence, and every later
+        # lookup for that (project, fingerprint) raises MultipleResultsFound
+        # instead of returning the memory.
         UniqueConstraint("project", "fingerprint", name="uq_memory_per_project_fingerprint"),
     )
 
