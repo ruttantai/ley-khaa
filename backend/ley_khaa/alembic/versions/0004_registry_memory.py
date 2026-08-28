@@ -49,6 +49,9 @@ def upgrade() -> None:
         sa.Column("times_seen", sa.Integer(), nullable=False, server_default="1"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("last_seen_at", sa.DateTime(timezone=True), nullable=False),
+        sa.UniqueConstraint(
+            "project", "fingerprint", name="uq_memory_per_project_fingerprint"
+        ),
     )
     op.create_index("ix_task_memory_project", "task_memory", ["project"])
     op.create_index("ix_task_memory_fingerprint", "task_memory", ["fingerprint"])

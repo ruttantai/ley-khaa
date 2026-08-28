@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..interpreter.spec import TaskSpec
@@ -24,15 +25,17 @@ class MemoryRepository:
         and a second row for the same request would keep every repeat at 1 —
         familiarity would never accumulate and the feature would do nothing
         while appearing to work.
+
+        Check-then-insert, so it races: the orchestrator runs concurrent
+        per-project queues, and two identical requests can finish at once. A
+        `(project, fingerprint)` unique constraint on the table means the
+        loser's insert raises IntegrityError instead of creating a second row
+        — caught here and turned into the same increment the winner's request
+        would have produced on a later, non-racing repeat.
         """
         existing = self.by_fingerprint(project, fingerprint)
         if existing is not None:
-            existing.times_seen += 1
-            existing.last_seen_at = datetime.now(timezone.utc)
-            # source_task_id is NOT updated: it points at the run that first
-            # proved this spec, which is what the dashboard links to.
-            self.session.commit()
-            return existing
+            return self._touch(existing)
 
         row = MemoryRow(
             id=str(uuid.uuid4()),
@@ -43,6 +46,23 @@ class MemoryRepository:
             source_task_id=task_id,
         )
         self.session.add(row)
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            existing = self.by_fingerprint(project, fingerprint)
+            if existing is None:
+                # The IntegrityError was not the duplicate key — should not
+                # happen in normal operation.
+                raise
+            return self._touch(existing)
+        return row
+
+    def _touch(self, row: MemoryRow) -> MemoryRow:
+        row.times_seen += 1
+        row.last_seen_at = datetime.now(timezone.utc)
+        # source_task_id is NOT updated: it points at the run that first
+        # proved this spec, which is what the dashboard links to.
         self.session.commit()
         return row
 

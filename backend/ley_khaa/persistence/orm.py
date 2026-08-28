@@ -136,6 +136,14 @@ class MemoryRow(Base):
     """
 
     __tablename__ = "task_memory"
+    __table_args__ = (
+        # Orchestrator queues run per-project but concurrently across
+        # projects, and record() is check-then-insert: without this, two
+        # identical requests finishing at once insert two rows, and every
+        # later lookup for that (project, fingerprint) raises
+        # MultipleResultsFound instead of returning the memory.
+        UniqueConstraint("project", "fingerprint", name="uq_memory_per_project_fingerprint"),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     project: Mapped[str] = mapped_column(String, index=True, default="default")

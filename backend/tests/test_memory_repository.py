@@ -40,3 +40,32 @@ def test_the_spec_round_trips(session):
     row = repo.record(project="default", fingerprint="abc", intent="i", spec=_spec(), task_id="t1")
 
     assert TaskSpec.model_validate(row.spec).operation == _spec().operation
+
+
+def test_a_race_between_two_recordings_counts_as_a_repeat_not_an_error(session, monkeypatch):
+    """The orchestrator runs concurrent per-project queues: two identical
+    requests can finish at once. The loser's check-then-insert must not throw
+    once the winner's row lands first — it must fall back to incrementing the
+    row the winner created, the same as any other repeat."""
+    repo = MemoryRepository(session)
+    winner = repo.record(project="default", fingerprint="abc", intent="i", spec=_spec(), task_id="t1")
+
+    real_by_fingerprint = repo.by_fingerprint
+    calls = {"n": 0}
+
+    def stale_then_real(project, fingerprint):
+        # The loser's own pre-insert check ran before the winner's row
+        # existed. Reproduce that stale read once, then behave normally.
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        return real_by_fingerprint(project, fingerprint)
+
+    monkeypatch.setattr(repo, "by_fingerprint", stale_then_real)
+
+    loser = repo.record(project="default", fingerprint="abc", intent="i", spec=_spec(), task_id="t2")
+
+    assert loser.id == winner.id
+    assert loser.times_seen == 2
+    assert loser.source_task_id == "t1"
+    assert len(repo.for_project("default")) == 1
