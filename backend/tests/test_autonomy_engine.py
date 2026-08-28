@@ -111,3 +111,44 @@ def test_the_unsettled_conversation_penalty_is_pinned():
     settled = recommend(_spec()).confidence
     unsettled = recommend(_spec(), candidate_missing_fields=["deadline"]).confidence
     assert round(settled - unsettled, 4) == 0.1
+
+
+def test_familiarity_raises_confidence_and_says_so():
+    spec = _spec(certainty=0.75)
+    fresh = recommend(spec)
+    seen = recommend(spec, familiarity=2)
+
+    assert seen.confidence == round(fresh.confidence + 0.10, 4)
+    assert "done this 2 times before" in seen.reason
+
+
+def test_the_familiarity_bonus_is_capped():
+    """A request repeated a hundred times is not more certain than one repeated
+    three times — repetition is weak evidence and must stay weak."""
+    spec = _spec(certainty=0.5)
+    assert recommend(spec, familiarity=3).confidence == recommend(spec, familiarity=99).confidence
+    assert recommend(spec, familiarity=99).confidence == round(recommend(spec).confidence + 0.15, 4)
+
+
+def test_familiarity_cannot_carry_an_incomplete_spec_to_auto():
+    """The whole bonus is smaller than one missing field's penalty. Repetition
+    must never be able to push a spec with known gaps into acting alone."""
+    spec = _spec(certainty=1.0, missing_fields=["output_format"])
+    assert recommend(spec, familiarity=99).mode is not AutonomyMode.AUTO
+
+
+def test_zero_familiarity_changes_nothing():
+    spec = _spec(certainty=0.9)
+    assert recommend(spec, familiarity=0).reason == recommend(spec).reason
+
+
+def test_the_familiarity_numbers_are_pinned():
+    """These two numbers are the policy, like the four already pinned here."""
+    from ley_khaa.autonomy.engine import (
+        _FAMILIARITY_BONUS,
+        _MAX_FAMILIARITY_BONUS,
+        _MISSING_FIELD_PENALTY,
+    )
+
+    assert (_FAMILIARITY_BONUS, _MAX_FAMILIARITY_BONUS) == (0.05, 0.15)
+    assert _MAX_FAMILIARITY_BONUS < _MISSING_FIELD_PENALTY

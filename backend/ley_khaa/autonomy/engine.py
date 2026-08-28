@@ -7,6 +7,13 @@ from .modes import AutonomyMode
 _MISSING_FIELD_PENALTY = 0.2
 _UNSETTLED_CONVERSATION_PENALTY = 0.1
 
+# --- confidence bonuses ----------------------------------------------------
+# Repetition is weak evidence, and it is capped so it stays weak: the whole
+# bonus is smaller than one missing field's penalty, so a request that has been
+# run twenty times still cannot act alone while it has a known gap.
+_FAMILIARITY_BONUS = 0.05
+_MAX_FAMILIARITY_BONUS = 0.15
+
 # --- risk contributions ---------------------------------------------------
 # Everything carries some risk; a request that only reads data carries little.
 _BASELINE_RISK = 0.1
@@ -42,7 +49,10 @@ class Recommendation:
 
 
 def recommend(
-    spec: TaskSpec, *, candidate_missing_fields: list[str] | None = None
+    spec: TaskSpec,
+    *,
+    candidate_missing_fields: list[str] | None = None,
+    familiarity: int = 0,
 ) -> Recommendation:
     """Score a spec and recommend a mode, with a reason a human can argue with.
 
@@ -50,7 +60,9 @@ def recommend(
     will poke at hardest, so its behaviour must be reproducible and its rules
     readable in one screen — not hidden inside a model call.
     """
-    confidence, confidence_clauses = _confidence(spec, candidate_missing_fields or [])
+    confidence, confidence_clauses = _confidence(
+        spec, candidate_missing_fields or [], familiarity
+    )
     risk, risk_clauses = _risk(spec)
     mode = _mode(confidence, risk)
     return Recommendation(
@@ -61,7 +73,9 @@ def recommend(
     )
 
 
-def _confidence(spec: TaskSpec, candidate_missing: list[str]) -> tuple[float, list[str]]:
+def _confidence(
+    spec: TaskSpec, candidate_missing: list[str], familiarity: int = 0
+) -> tuple[float, list[str]]:
     clauses: list[str] = []
     score = spec.certainty
     if spec.missing_fields:
@@ -70,6 +84,14 @@ def _confidence(spec: TaskSpec, candidate_missing: list[str]) -> tuple[float, li
     if candidate_missing:
         score -= _UNSETTLED_CONVERSATION_PENALTY
         clauses.append("the conversation never settled the details")
+    # Repetition can only reward a spec that has nothing left unknown. Without
+    # this gate the bonus could lift a spec with a known gap back over the AUTO
+    # threshold even though it's smaller than one missing field's penalty —
+    # that penalty is per-field and stacks, but AUTO is a single fixed line, so
+    # a spec docked to just below it would get pushed back over.
+    if familiarity > 0 and not spec.missing_fields:
+        score += min(_MAX_FAMILIARITY_BONUS, _FAMILIARITY_BONUS * familiarity)
+        clauses.append(f"I've done this {familiarity} times before")
     return _clamp(score), clauses
 
 

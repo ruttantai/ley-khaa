@@ -253,6 +253,7 @@ class TaskDriver:
         recommendation = recommend(
             spec,
             candidate_missing_fields=list(candidate.missing_fields or []) if candidate else [],
+            familiarity=row.familiarity or 0,
         )
         updated = self.repo.save_recommendation(
             row.id,
