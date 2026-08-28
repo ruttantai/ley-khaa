@@ -54,30 +54,41 @@ export default function TaskDetail({
         {task.autonomy_reason && <p className="mt-1">{task.autonomy_reason}</p>}
       </div>
 
-      {modeEditable && (
-        <div className="flex gap-2">
-          {MODES.map((mode) => (
-            <button
-              key={mode.value}
-              aria-label={mode.label}
-              aria-pressed={task.effective_mode === mode.value}
-              onClick={() => run(setTaskMode(task.id, mode.value))}
-              className={`rounded px-3 py-1 text-sm border ${
-                task.effective_mode === mode.value
-                  ? "border-blue-500 bg-blue-50 text-blue-800"
-                  : "border-gray-200 text-gray-600"
-              }`}
-            >
-              {mode.label}
-            </button>
-          ))}
-          {task.mode_override && (
+      {(modeEditable || task.remembered_from_task_id) && (
+        <div className="flex items-center gap-2">
+          {modeEditable &&
+            MODES.map((mode) => (
+              <button
+                key={mode.value}
+                aria-label={mode.label}
+                aria-pressed={task.effective_mode === mode.value}
+                onClick={() => run(setTaskMode(task.id, mode.value))}
+                className={`rounded px-3 py-1 text-sm border ${
+                  task.effective_mode === mode.value
+                    ? "border-blue-500 bg-blue-50 text-blue-800"
+                    : "border-gray-200 text-gray-600"
+                }`}
+              >
+                {mode.label}
+              </button>
+            ))}
+          {modeEditable && task.mode_override && (
             <button
               onClick={() => run(setTaskMode(task.id, null))}
               className="text-sm text-gray-500 underline"
             >
               follow the recommendation
             </button>
+          )}
+          {task.remembered_from_task_id && (
+            // The source task id stays visible so a human can find what is
+            // being reused, not just that it was.
+            <span
+              className="rounded bg-indigo-100 px-2 py-0.5 text-xs text-indigo-800"
+              title={`spec reused from task ${task.remembered_from_task_id}`}
+            >
+              remembered · seen {task.familiarity}× (from {task.remembered_from_task_id})
+            </span>
           )}
         </div>
       )}

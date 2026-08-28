@@ -42,6 +42,8 @@ const task = (overrides: Partial<Task> = {}): Task => ({
   failure_reason: null,
   workspace_path: null,
   execution_verdict: null,
+  remembered_from_task_id: null,
+  familiarity: 0,
   ...overrides,
 });
 

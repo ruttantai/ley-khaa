@@ -89,6 +89,12 @@ class TaskOut(BaseModel):
     # The Output Bundle root on disk (spec §5.11), and what the run came to.
     workspace_path: str | None = None
     execution_verdict: dict[str, Any] | None = None
+    # Set when this task's spec came from memory rather than the interpreter
+    # (persistence/repository.py's save_memory_hit). familiarity feeds the
+    # autonomy dial; remembered_from_task_id is what the dashboard shows so a
+    # human can find the source task being reused.
+    remembered_from_task_id: str | None = None
+    familiarity: int = 0
 
 
 class RejectIn(BaseModel):

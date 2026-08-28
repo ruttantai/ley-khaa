@@ -66,6 +66,16 @@ def test_get_missing_task_404(client):
     assert client.get("/tasks/does-not-exist").status_code == 404
 
 
+def test_get_task_includes_memory_fields(client):
+    # The frontend's Task type claims these two keys exist; that's only true
+    # if the API actually sends them (schemas.py's TaskOut, not just the ORM).
+    body = client.post("/messages", json={"text": "compare the universes"}).json()
+    task_id = body["task_ids"][0]
+    task = client.get(f"/tasks/{task_id}").json()
+    assert "remembered_from_task_id" in task
+    assert "familiarity" in task
+
+
 def test_health(client):
     assert client.get("/health").json() == {"status": "ok"}
 
