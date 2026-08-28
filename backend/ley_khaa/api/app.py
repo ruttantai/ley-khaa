@@ -436,3 +436,21 @@ def promote_task_workflow(
     except NotPromotable as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return WorkflowOut.model_validate(row)
+
+
+@app.get("/registry", response_model=list[WorkflowOut])
+def list_workflows(session: Session = Depends(get_session)) -> list[WorkflowOut]:
+    # WorkflowOut deliberately omits `source`: this is a browsable listing, the
+    # source is model-written code, and source_sha256 identifies it exactly
+    # without putting a program in a page that renders it.
+    return [WorkflowOut.model_validate(row) for row in WorkflowRepository(session).list()]
+
+
+@app.post("/registry/{name}/unquarantine", response_model=WorkflowOut)
+def unquarantine_workflow(name: str, session: Session = Depends(get_session)) -> WorkflowOut:
+    return WorkflowOut.model_validate(WorkflowRepository(session).unquarantine(name))
+
+
+@app.delete("/registry/{name}", status_code=204)
+def delete_workflow(name: str, session: Session = Depends(get_session)) -> None:
+    WorkflowRepository(session).delete(name)
