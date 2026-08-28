@@ -53,8 +53,11 @@ class MemoryMatcher:
         if exact is not None:
             return exact
 
-        # Scoped to the project, always. A spec remembered for one client must
-        # never be reachable from another's conversation.
+        # Scoped by TaskRow.project, which is "default" for every task until
+        # §5.4 project routing lands (orchestrator.py's only call to
+        # TaskRepository.create hardcodes it). So today this scoping is
+        # structural, not yet a separation between clients: every client's
+        # memory is in the same project and is recallable by any of them.
         known = self.memories.for_project(project)
         if not known:
             return None
@@ -68,7 +71,10 @@ class MemoryMatcher:
         if not decision.memory_id or decision.confidence < CONFIDENCE_FLOOR:
             return None
         # Untrusted output: the id must be one we actually showed it.
-        return next((row for row in known if row.id == decision.memory_id), None)
+        match = next((row for row in known if row.id == decision.memory_id), None)
+        if match is None:
+            logger.info("memory matcher named an unknown memory id %r", decision.memory_id)
+        return match
 
 
 def _prompt(texts: list[str], known: list[MemoryRow]) -> str:
