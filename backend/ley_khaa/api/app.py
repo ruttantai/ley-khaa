@@ -23,6 +23,7 @@ from ..intake.simulator import Simulator
 from ..llm.factory import build_llm
 from ..orchestrator.orchestrator import ForeignReplyTarget, Orchestrator
 from ..persistence.candidate_repository import CandidateRepository
+from ..persistence.memory_repository import MemoryRepository
 from ..persistence.message_repository import MessageRepository
 from ..persistence.repository import TaskRepository
 from ..persistence.workflow_repository import DuplicateWorkflow, WorkflowRepository
@@ -54,6 +55,7 @@ def build_orchestrator(session: Session) -> Orchestrator:
         candidates=CandidateRepository(session),
         gate=ReadinessGate(settings.crystallizer_debounce_seconds),
         workflows=WorkflowRepository(session),
+        memories=MemoryRepository(session),
     )
 
 

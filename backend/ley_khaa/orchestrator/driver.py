@@ -11,9 +11,12 @@ from ..executor.sandbox import SandboxUnavailable
 from ..interpreter.interpreter import Interpreter, MalformedSpec
 from ..interpreter.spec import TaskSpec
 from ..llm.client import LLMClient
+from ..memory.fingerprint import request_fingerprint
+from ..memory.matcher import MemoryMatcher
 from ..persistence.candidate_repository import CandidateRepository
+from ..persistence.memory_repository import MemoryRepository
 from ..persistence.message_repository import MessageRepository
-from ..persistence.orm import TaskRow
+from ..persistence.orm import MemoryRow, TaskRow
 from ..persistence.repository import TaskRepository
 from ..persistence.workflow_repository import WorkflowRepository
 
@@ -63,14 +66,18 @@ class TaskDriver:
         messages: MessageRepository,
         candidates: CandidateRepository,
         workflows: WorkflowRepository | None = None,
+        memories: MemoryRepository | None = None,
     ) -> None:
         self.repo = repo
+        self.messages = messages
         self.candidates = candidates
         self.interpreter = Interpreter(llm, messages)
         # Constructing this is cheap: the sandbox itself is resolved on first
         # use, so a driver built for a request that executes nothing never
         # probes the Docker daemon.
         self.executor = ExecutionRunner(llm=llm, messages=messages, workflows=workflows)
+        self.memories = memories
+        self.memory = MemoryMatcher(memories, llm) if memories is not None else None
 
     def advance(self, task_id: str) -> TaskRow:
         """Push a task as far as it can go unattended, then return where it landed."""
@@ -165,6 +172,22 @@ class TaskDriver:
         return self.repo.claim(row.id, expected=TaskState.RECEIVED, target=TaskState.CLASSIFIED)
 
     def _interpret(self, row: TaskRow) -> bool:
+        remembered = self._recall(row)
+        if remembered is not None:
+            # Only the shape is reused. source_message_ids is re-pointed at THIS
+            # task's messages, and `inputs` are names that the resolver resolves
+            # against this task at execution time — last week's spec must not be
+            # able to quietly reuse last week's file.
+            spec = TaskSpec.model_validate(remembered.spec).model_copy(
+                update={"source_message_ids": list(row.source_message_ids or [])}
+            )
+            self.repo.save_memory_hit(
+                row.id,
+                source_task_id=remembered.source_task_id,
+                familiarity=remembered.times_seen,
+            )
+            return self._after_spec(row, spec)
+
         try:
             spec = self.interpreter.interpret(row)
         except MalformedSpec:
@@ -196,6 +219,20 @@ class TaskDriver:
                     )
             return False
 
+        return self._after_spec(row, spec)
+
+    def _recall(self, row: TaskRow) -> MemoryRow | None:
+        if self.memory is None:
+            return None
+        rows = self.messages.get_many(list(row.source_message_ids or []))
+        return self.memory.recall(row.project, [r.text for r in rows])
+
+    def _after_spec(self, row: TaskRow, spec: TaskSpec) -> bool:
+        """Everything that happens once a spec exists, however it was obtained.
+
+        Extracted so the remembered path and the interpreted path cannot drift:
+        a remembered spec with missing_fields must still stop and ask.
+        """
         self.repo.save_spec(row.id, spec)
         if spec.missing_fields and (row.clarification_rounds or 0) < _MAX_CLARIFICATION_ROUNDS:
             self.repo.set_open_question(row.id, _question_for(spec.missing_fields))
@@ -280,7 +317,15 @@ class TaskDriver:
         verdict = row.execution_verdict or {}
         if verdict.get("ok"):
             self.repo.set_open_question(row.id, None)
-            return self.repo.claim(row.id, expected=TaskState.VALIDATING, target=TaskState.DONE)
+            claimed = self.repo.claim(
+                row.id, expected=TaskState.VALIDATING, target=TaskState.DONE
+            )
+            if claimed:
+                # Only a proven run is remembered — the same rule promotion
+                # follows. Recording before the claim would remember a spec for
+                # a task another caller had already moved.
+                self._remember(row)
+            return claimed
 
         self.repo.set_open_question(
             row.id, verdict.get("reason") or "The run did not produce a usable result."
@@ -288,6 +333,27 @@ class TaskDriver:
         return self.repo.claim(
             row.id, expected=TaskState.VALIDATING, target=TaskState.NEEDS_CLARIFICATION
         )
+
+    def _remember(self, row: TaskRow) -> None:
+        if self.memories is None or not row.spec:
+            return
+        try:
+            rows = self.messages.get_many(list(row.source_message_ids or []))
+            texts = [r.text for r in rows]
+            fingerprint = request_fingerprint(texts)
+            if not fingerprint:
+                return
+            spec = TaskSpec.model_validate(row.spec)
+            self.memories.record(
+                project=row.project,
+                fingerprint=fingerprint,
+                intent=spec.intent,
+                spec=spec,
+                task_id=row.id,
+            )
+        except Exception:
+            # Remembering is a bonus, never a reason for a finished task to fail.
+            logger.exception("could not remember task %s", row.id)
 
 
 _STEPS: dict[TaskState, Callable[[TaskDriver, TaskRow], bool]] = {
