@@ -47,19 +47,38 @@ export default function Registry() {
   );
 }
 
-// Split out so each row can own its own "really delete?" confirm state
-// without the parent tracking which row is mid-confirm.
+// Split out so each row can own its own "really delete?" confirm state and
+// its own mutation error, without the parent tracking which row is mid-confirm
+// or mid-failure.
 function WorkflowRow({
   workflow,
   onUnquarantine,
   onDelete,
 }: {
   workflow: Workflow;
-  onUnquarantine: () => void;
-  onDelete: () => void;
+  onUnquarantine: () => Promise<void>;
+  onDelete: () => Promise<void>;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const roles = workflow.inputs.map((i) => i.role).join(", ") || "—";
+
+  // A rejected mutation must not go silent: the human clicked something —
+  // for delete, clicked twice to confirm something irreversible — and
+  // needs to know whether it actually happened. Delete also drops back out
+  // of the confirm gesture rather than leaving "Really delete?" stuck on
+  // screen with no way to tell it failed.
+  const handleUnquarantine = () => {
+    setError(null);
+    onUnquarantine().catch((e) => setError(String(e)));
+  };
+  const handleDelete = () => {
+    setError(null);
+    onDelete().catch((e) => {
+      setError(String(e));
+      setConfirming(false);
+    });
+  };
 
   return (
     <li className="rounded border border-gray-200 p-3">
@@ -79,10 +98,11 @@ function WorkflowRow({
         {roles} · {workflow.output_format} · {workflow.runs_ok} ok / {workflow.runs_failed} failed
         · {workflow.source_sha256.slice(0, 8)}
       </p>
+      {error && <p className="mt-1 text-sm text-red-600">{error}</p>}
       <div className="mt-2 flex gap-2">
         {workflow.quarantined && (
           <button
-            onClick={onUnquarantine}
+            onClick={handleUnquarantine}
             className="rounded border border-gray-300 px-3 py-1 text-sm text-gray-700"
           >
             Clear quarantine
@@ -97,7 +117,7 @@ function WorkflowRow({
           </button>
         ) : (
           <button
-            onClick={onDelete}
+            onClick={handleDelete}
             className="rounded bg-red-600 px-3 py-1 text-sm text-white"
           >
             Really delete?

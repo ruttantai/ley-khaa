@@ -123,3 +123,51 @@ test("surfaces a fetch failure", async () => {
 
   expect(await screen.findByText(/fetchWorkflows failed/i)).toBeTruthy();
 });
+
+test("surfaces a failed unquarantine without losing the quarantine badge", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (method === "POST" && u.includes("/unquarantine")) {
+        return { ok: false, status: 500, json: async () => null };
+      }
+      return okJson([workflow({ name: "flaky", quarantined: true, runs_failed: 3 })]);
+    }),
+  );
+  render(<Registry />);
+
+  expect(await screen.findByText(/quarantined/i)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /clear quarantine/i }));
+
+  expect(await screen.findByText(/unquarantineWorkflow failed/i)).toBeTruthy();
+  // Nothing was optimistically cleared — the badge is still there.
+  expect(screen.getByText(/quarantined/i)).toBeTruthy();
+});
+
+test("shows why a delete failed and leaves the row in place", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (method === "DELETE") {
+        return { ok: false, status: 500, json: async () => null };
+      }
+      return okJson([workflow({ name: "set_difference" })]);
+    }),
+  );
+  render(<Registry />);
+  await screen.findByText("set_difference");
+
+  fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+  fireEvent.click(screen.getByRole("button", { name: /really delete\?/i }));
+
+  expect(await screen.findByText(/deleteWorkflow failed/i)).toBeTruthy();
+  // Still present — the failed delete did not remove it.
+  expect(screen.getByText("set_difference")).toBeTruthy();
+  // The two-step confirm dropped back to idle rather than staying stuck.
+  expect(screen.getByRole("button", { name: /^delete$/i })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /really delete\?/i })).toBeNull();
+});
