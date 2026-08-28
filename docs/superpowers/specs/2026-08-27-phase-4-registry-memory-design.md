@@ -204,8 +204,11 @@ purpose.
 
 ### 3.7 Persistence
 
-Alembic `0004_registry_memory`: `workflows` and `task_memory` tables, plus seeded rows for the two
-seed workflows. The existing model-drift guard covers both new models.
+Alembic `0004_registry_memory`: `workflows` and `task_memory` tables. The two seed workflows are
+installed at startup instead, by `ensure_seed_workflows` (`registry/seeds/__init__.py`, called
+from `api/app.py`) — deliberately not in the migration, because a migration that imports
+application code rots when that code moves. The existing model-drift guard covers both new
+models.
 
 ## 4. Seed workflows
 
