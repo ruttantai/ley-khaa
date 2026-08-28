@@ -352,11 +352,24 @@ def _bundle_manifest(root: Path) -> dict:
     code, so `os.symlink("/etc/passwd", "manifest.json")` must not be
     followed. A symlink that escapes is treated exactly like a missing
     manifest — {} — rather than inventing a new refusal shape.
+
+    The bundle is mounted read-write into the sandbox and manifest.json sits
+    at its root, so `open("manifest.json", "w").write("{")` in any
+    synthesized script — buggy or malicious — leaves malformed content here,
+    same threat model registry/promote.py's `_load_json` was written for.
+    That helper isn't reused here: it raises NotPromotable for a 409 refusal
+    that makes sense mid-promotion, whereas this function's contract is to
+    hand back a dict, with {} already established as its shape for "nothing
+    usable here" — so a malformed manifest refuses the same way a missing one
+    does, not by raising.
     """
     manifest_path = _contained(root, root / MANIFEST_NAME)
     if manifest_path is None or not manifest_path.is_file():
         return {}
-    return json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {}
 
 
 @app.get("/tasks/{task_id}/bundle", response_model=BundleOut)

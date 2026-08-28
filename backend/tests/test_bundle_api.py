@@ -202,3 +202,19 @@ def test_a_manifest_symlink_escaping_the_bundle_is_not_served(client, bundled, t
 
     assert body["manifest"] == {}
     assert "SIMULATED HOST SECRET" not in json.dumps(body)
+
+
+def test_a_malformed_manifest_does_not_500_the_bundle_endpoint(client, bundled):
+    """Finding 2: the bundle is mounted read-write into the sandbox, and
+    manifest.json sits at its root, so any synthesized script (buggy or
+    malicious) can leave it truncated with a single `open("manifest.json",
+    "w").write("{")`. That must degrade the same way a missing manifest
+    does — {} — not 500 forever on the one route the task's detail page
+    depends on."""
+    task, workspace = bundled
+    (workspace.root / "manifest.json").write_text("{")  # truncated JSON
+
+    response = client.get(f"/tasks/{task.id}/bundle")
+
+    assert response.status_code == 200
+    assert response.json()["manifest"] == {}
