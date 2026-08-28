@@ -18,7 +18,7 @@ class MemoryRepository:
 
     def record(
         self, *, project: str, fingerprint: str, intent: str, spec: TaskSpec, task_id: str
-    ) -> MemoryRow:
+    ) -> MemoryRow | None:
         """Remember a proven spec, or note that we have seen this again.
 
         An upsert, not an insert: times_seen is what the autonomy dial reads,
@@ -32,7 +32,18 @@ class MemoryRepository:
         loser's insert raises IntegrityError instead of creating a second row
         — caught here and turned into the same increment the winner's request
         would have produced on a later, non-racing repeat.
+
+        An empty fingerprint is not remembered at all — it returns None
+        without touching the table. by_fingerprint() refuses to match one
+        (so does Task 12's MemoryMatcher.recall, before ever querying), which
+        makes a stored empty-fingerprint row unrecallable by construction. A
+        second one would only exist to collide with the first under the
+        unique constraint above — refusing keeps that invariant in one place
+        instead of teaching every layer its own way around it.
         """
+        if not fingerprint:
+            return None
+
         existing = self.by_fingerprint(project, fingerprint)
         if existing is not None:
             return self._touch(existing)

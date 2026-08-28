@@ -69,3 +69,19 @@ def test_a_race_between_two_recordings_counts_as_a_repeat_not_an_error(session, 
     assert loser.times_seen == 2
     assert loser.source_task_id == "t1"
     assert len(repo.for_project("default")) == 1
+
+
+def test_recording_with_an_empty_fingerprint_is_a_no_op_not_an_error(session):
+    """An empty fingerprint can never be recalled — by_fingerprint refuses it
+    by design, and MemoryMatcher.recall (Task 12) short-circuits on it before
+    ever querying. Storing it anyway would just be an unrecallable row that
+    collides with the next unrecallable row under the unique constraint.
+    record() must refuse instead of raising."""
+    repo = MemoryRepository(session)
+
+    first = repo.record(project="default", fingerprint="", intent="i", spec=_spec(), task_id="t1")
+    second = repo.record(project="default", fingerprint="", intent="i", spec=_spec(), task_id="t2")
+
+    assert first is None
+    assert second is None
+    assert repo.for_project("default") == []
