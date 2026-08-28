@@ -47,13 +47,14 @@ const task = (overrides: Partial<Task> = {}): Task => ({
   ...overrides,
 });
 
-function stubApi(candidates: unknown[]) {
+function stubApi(candidates: unknown[], workflows: unknown[] = []) {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (url: string) => ({
-      ok: true,
-      json: async () => (String(url).includes("/candidates") ? candidates : [task()]),
-    })),
+    vi.fn(async (url: string) => {
+      const u = String(url);
+      const body = u.includes("/candidates") ? candidates : u.includes("/registry") ? workflows : [task()];
+      return { ok: true, json: async () => body };
+    }),
   );
 }
 

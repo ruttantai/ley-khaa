@@ -135,3 +135,22 @@ export async function fetchCandidates(): Promise<Candidate[]> {
   if (!res.ok) throw new Error(`fetchCandidates failed: ${res.status}`);
   return res.json();
 }
+
+export async function fetchWorkflows(): Promise<Workflow[]> {
+  const res = await fetch(`${BASE}/registry`);
+  if (!res.ok) throw new Error(`fetchWorkflows failed: ${res.status}`);
+  return res.json();
+}
+
+export async function unquarantineWorkflow(name: string): Promise<Workflow> {
+  const res = await fetch(`${BASE}/registry/${encodeURIComponent(name)}/unquarantine`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`unquarantineWorkflow failed: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteWorkflow(name: string): Promise<void> {
+  const res = await fetch(`${BASE}/registry/${encodeURIComponent(name)}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`deleteWorkflow failed: ${res.status}`);
+}
