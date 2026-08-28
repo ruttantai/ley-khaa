@@ -2,6 +2,7 @@ import pytest
 
 from ley_khaa.interpreter.spec import TaskSpec
 from ley_khaa.llm.client import FakeLLM
+from ley_khaa.llm.router import Stage, model_for
 from ley_khaa.memory.fingerprint import request_fingerprint
 from ley_khaa.memory.matcher import CONFIDENCE_FLOOR, MemoryMatcher
 from ley_khaa.memory.models import MemoryDecision
@@ -98,13 +99,21 @@ def test_a_broken_model_call_is_a_miss_not_a_crash(session):
 
 
 def test_the_offline_stand_in_answers_no_match(session):
-    """With no API key the fast path is fingerprint-only, not broken."""
+    """With no API key the fast path is fingerprint-only, not broken.
+
+    Asserted directly against HeuristicLLM.parse(), not through
+    MemoryMatcher.recall(): recall() swallows every exception at its
+    boundary, including NotImplementedError, so asserting through it would
+    still pass even if HeuristicLLM had no rule for MemoryDecision at all and
+    every offline recall miss silently degraded to a logged traceback.
+    """
     from ley_khaa.llm.heuristic import HeuristicLLM
 
-    repo, row = _seed(session)
-    assert MemoryMatcher(repo, HeuristicLLM()).recall(
-        "acme", ["something entirely unrelated today"]
-    ) is None
+    decision = HeuristicLLM().parse(
+        choice=model_for(Stage.MEMORY_MATCH), system="s", user="u",
+        output_format=MemoryDecision,
+    )
+    assert decision.memory_id is None
 
 
 def test_an_empty_request_never_recalls(session):

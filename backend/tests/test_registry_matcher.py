@@ -3,6 +3,7 @@ import pytest
 from ley_khaa.executor.resolver import ResolvedInput
 from ley_khaa.interpreter.spec import TaskSpec
 from ley_khaa.llm.client import FakeLLM
+from ley_khaa.llm.router import Stage, model_for
 from ley_khaa.persistence.workflow_repository import WorkflowRepository
 from ley_khaa.registry.matcher import CONFIDENCE_FLOOR, RegistryMatcher
 from ley_khaa.registry.models import RegistryDecision
@@ -109,8 +110,18 @@ def test_a_broken_model_call_is_a_miss_not_a_crash(session):
 
 
 def test_the_offline_stand_in_answers_no_match(session):
-    """With no API key the fast path is fingerprint-only, not broken."""
+    """With no API key the fast path is fingerprint-only, not broken.
+
+    Asserted directly against HeuristicLLM.parse(), not through
+    RegistryMatcher.match(): match() swallows every exception at its
+    boundary, including NotImplementedError, so asserting through it would
+    still pass even if HeuristicLLM had no rule for RegistryDecision at all
+    and every offline match miss silently degraded to a logged traceback.
+    """
     from ley_khaa.llm.heuristic import HeuristicLLM
 
-    repo = _seed(session)
-    assert RegistryMatcher(repo, HeuristicLLM()).match(_spec(operation="compare_lists"), _resolved()) is None
+    decision = HeuristicLLM().parse(
+        choice=model_for(Stage.REGISTRY_MATCH), system="s", user="u",
+        output_format=RegistryDecision,
+    )
+    assert decision.workflow is None

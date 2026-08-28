@@ -228,3 +228,31 @@ def test_with_no_memory_repository_the_driver_behaves_exactly_as_before(session)
 
     memories = MemoryRepository(session)
     assert memories.by_fingerprint("default", request_fingerprint([TEXT])) is None
+
+
+def test_a_task_whose_text_is_all_stopwords_finishes_without_being_remembered(session):
+    """MemoryRepository.record() refuses to store an empty fingerprint and
+    returns None rather than a row (a request that fingerprints to nothing is
+    unrecallable by construction — by_fingerprint("") and MemoryMatcher.recall
+    both bail on it too). _remember() must not crash when record() answers
+    None for the call site the phase's own review named directly: driver.py's
+    _remember, not just the matcher's read path.
+
+    All-stopword text ("the and") fingerprints to "" (see fingerprint.py).
+    """
+    blank_text = "the and"
+    assert request_fingerprint([blank_text]) == ""
+
+    repo, messages, task = _make_task(session, blank_text)
+    driver = _driver(session, repo, messages, responses=[_spec(intent=blank_text)])
+    driver.executor.run = lambda row, spec: ExecutionOutcome(
+        verdict=Verdict(ok=True, reason="stubbed pass", checks={}),
+        workspace_path="/bundles/blank", attempts=1,
+    )
+
+    result = driver.advance(task.id)
+
+    assert result.state == TaskState.DONE.value
+
+    memories = MemoryRepository(session)
+    assert memories.for_project("default") == []
