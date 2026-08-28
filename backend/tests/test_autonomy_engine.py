@@ -137,13 +137,35 @@ def test_familiarity_cannot_carry_an_incomplete_spec_to_auto():
     assert recommend(spec, familiarity=99).mode is not AutonomyMode.AUTO
 
 
+def test_familiarity_cannot_carry_an_unsettled_conversation_to_auto():
+    """The same invariant, one path over: an unsettled conversation is also a
+    known gap, and its penalty (0.1) is even smaller than the bonus cap (0.15)
+    — so without the gate this path is the worse of the two."""
+    spec = _spec(certainty=0.9)
+    rec = recommend(spec, candidate_missing_fields=["deadline"], familiarity=99)
+    assert rec.mode is not AutonomyMode.AUTO
+
+
 def test_zero_familiarity_changes_nothing():
     spec = _spec(certainty=0.9)
-    assert recommend(spec, familiarity=0).reason == recommend(spec).reason
+    fresh = recommend(spec)
+    seen = recommend(spec, familiarity=0)
+    assert seen.reason == fresh.reason
+    # The equality above would also hold if familiarity=0 wrongly appended its
+    # own (vacuous) clause to both sides identically — assert directly that no
+    # familiarity clause is present at all.
+    assert "done this" not in seen.reason
 
 
 def test_the_familiarity_numbers_are_pinned():
-    """These two numbers are the policy, like the four already pinned here."""
+    """These two numbers are the policy, like the four already pinned here.
+
+    The gate in _confidence — not this relation — is what actually stops
+    repetition from carrying a request with a known gap to AUTO; see the two
+    test_familiarity_cannot_carry_* tests above. This relation is now just a
+    sanity bound between the constants: a relative fact about their sizes, not
+    a guard on the absolute AUTO threshold.
+    """
     from ley_khaa.autonomy.engine import (
         _FAMILIARITY_BONUS,
         _MAX_FAMILIARITY_BONUS,

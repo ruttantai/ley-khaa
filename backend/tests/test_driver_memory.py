@@ -230,6 +230,26 @@ def test_with_no_memory_repository_the_driver_behaves_exactly_as_before(session)
     assert memories.by_fingerprint("default", request_fingerprint([TEXT])) is None
 
 
+def test_familiarity_flows_into_the_stored_recommendation(session):
+    """driver.py:_gate's familiarity=row.familiarity or 0 is the entire
+    production wiring this task delivers. Task 12's tests assert the column
+    is persisted; this asserts it actually reaches recommend() and changes
+    what gets stored, not just that the number sits on the row unused."""
+    from ley_khaa.autonomy.engine import recommend
+
+    remembered = _seed_memory(session, "default", [TEXT], _spec(certainty=0.75))
+    repo, messages, task = _make_task(session, TEXT)
+    driver = _driver(session, repo, messages, responses=[])
+
+    result = driver.advance(task.id)
+
+    assert result.familiarity == remembered.times_seen == 1
+    assert "I've done this 1 times before" in result.autonomy_reason
+
+    baseline = recommend(TaskSpec.model_validate(result.spec)).confidence
+    assert result.confidence == round(baseline + 0.05, 4)
+
+
 def test_a_task_whose_text_is_all_stopwords_finishes_without_being_remembered(session):
     """MemoryRepository.record() refuses to store an empty fingerprint and
     returns None rather than a row (a request that fingerprints to nothing is

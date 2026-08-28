@@ -84,12 +84,14 @@ def _confidence(
     if candidate_missing:
         score -= _UNSETTLED_CONVERSATION_PENALTY
         clauses.append("the conversation never settled the details")
-    # Repetition can only reward a spec that has nothing left unknown. Without
-    # this gate the bonus could lift a spec with a known gap back over the AUTO
-    # threshold even though it's smaller than one missing field's penalty —
-    # that penalty is per-field and stacks, but AUTO is a single fixed line, so
-    # a spec docked to just below it would get pushed back over.
-    if familiarity > 0 and not spec.missing_fields:
+    # Repetition can only reward a request with no known gaps — neither a spec
+    # field still missing nor a conversation that never settled the details.
+    # Without this gate the bonus could lift either kind of gap back over the
+    # AUTO threshold: the cap is smaller than each individual penalty, but that
+    # is a bound between constants, not a guard on an absolute threshold — a
+    # request docked to just below AUTO by either gap would get pushed back
+    # over by repetition alone.
+    if familiarity > 0 and not spec.missing_fields and not candidate_missing:
         score += min(_MAX_FAMILIARITY_BONUS, _FAMILIARITY_BONUS * familiarity)
         clauses.append(f"I've done this {familiarity} times before")
     return _clamp(score), clauses
