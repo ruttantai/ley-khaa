@@ -40,7 +40,9 @@ def test_migrations_match_the_models(tmp_path):
     """A schema change with no migration is a failing test, not a prod crash."""
     engine = _upgraded_engine(tmp_path)
     with engine.connect() as connection:
-        context = MigrationContext.configure(connection, opts={"compare_type": True})
+        context = MigrationContext.configure(
+            connection, opts={"compare_type": True, "compare_server_default": True}
+        )
         diff = compare_metadata(context, Base.metadata)
     assert diff == [], f"models and migrations disagree: {diff}"
 
