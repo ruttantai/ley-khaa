@@ -5,6 +5,70 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-28
+
+### Added
+- Workflow registry (§3.3, §3.4, §5.6): a `workflows` table storing frozen source, its sha256, the
+  operation aliases and input roles it matches, `origin` (`seed` | `promoted`), run counters, and a
+  quarantine flag. `WorkflowRepository` hashes source on the way in and quarantines a workflow on its
+  first cached-run failure.
+- `RegistryMatcher`, a two-stage matcher: a free, deterministic fingerprint match (operation alias +
+  format agreement + input count) first; one Haiku call only on a miss, gated at confidence 0.8, and
+  its answer is treated as untrusted — the named workflow must exist, be active, and still bind
+  before it counts as a match.
+- `bind()`: positional binding of a workflow's declared roles to a run's resolved inputs by suffix.
+  Every malformed or ambiguous case returns "no bind" rather than guessing — a wrong bind would run
+  code proven for a different job and produce a plausible, wrong answer.
+- Two hand-written seed workflows, installed idempotently at startup: `set_difference` (two csv
+  inputs, xlsx output) and `summary_stats` (one csv input, csv output). A fresh clone can show the
+  fast path before anyone has promoted anything, and the seeded demo conversation now matches
+  `set_difference` and takes it.
+- `ExecutionRunner`'s registry fast path (§3.4, §5.6): a matched request runs the workflow's frozen
+  source in the same sandbox, judged by the same validator. The manifest records `lane: "registry"`,
+  the workflow's name/hash/binding, and credits no model — none wrote the script. A failing cached
+  run quarantines the workflow and falls through to synthesis with a full attempt budget.
+- Promotion (§5.6): `POST /tasks/{id}/promote` turns a bundle's winning attempt into a workflow. A
+  pure byte-for-byte copy of the script that actually passed — never a rewrite — with roles taken
+  from the `params.json` binding that run used. Only a passed verdict can be promoted, and every
+  bundle path (manifest, attempt, params) is read through the same containment check the bundle API
+  uses, so generator-planted symlinks can't forge or exfiltrate their way into the registry.
+- Registry API: `GET /registry`, `POST /registry/{name}/unquarantine`, `DELETE /registry/{name}`.
+  The listing omits `source` by design — a workflow is identified by its hash, not by shipping
+  model-written code into a page that renders it.
+- Task memory (§3.5, §5.14): a `task_memory` table remembering the `TaskSpec` that satisfied a
+  request, keyed on a fingerprint of the request's own text (stopwords stripped, tokens sorted, so
+  word order and politeness don't split a repeat). Written only for a task that reached `done` with
+  a passing verdict.
+- `MemoryMatcher`, the same two-stage shape as the registry: an exact fingerprint hit costs no model
+  call; a miss gets one cheap Haiku call at the same 0.8 confidence floor; null is always a legal
+  answer, scoped to the project so one client's memory is never reachable from another's.
+- `TaskDriver`: a recognised repeat skips the interpreter entirely and reuses the remembered spec's
+  shape — `source_message_ids` re-pointed at this task's own messages, and `inputs` re-resolved
+  against this task's own attachments/catalog at execution time, never the remembered task's files.
+- Autonomy: a familiarity bonus (+0.05 per remembered run, capped at +0.15) nudges confidence up for
+  a repeat request. Withheld whenever the spec — or its candidate — still has a missing field, so
+  repetition alone can never lift a spec with a known gap into Auto.
+- Dashboard: a Registry page listing every cached workflow (origin, aliases, hash, run counts,
+  quarantine state) with unquarantine and delete; a Promote control on a bundle that passed
+  validation; a "remembered" badge on a task whose spec came from memory, naming the source task and
+  how many times it's been seen; a bundle panel note when the deliverable replayed a registry
+  workflow instead of being synthesized.
+- `backend/tests/test_caches_end_to_end.py` (§9): the phase's headline claim as a test — the same
+  request asked twice makes zero model calls the second time and (for a csv deliverable) produces
+  byte-identical output; a request no seed knows still synthesizes.
+
+### Changed
+- **`inputs/params.json` is now the only contract a generator script may use for its input and
+  output paths — the one change affecting Phase 3 behaviour.** Every synthesized script (not only a
+  cached one) now reads `{"inputs": {"<role>": "<filename>"}, "output": "...", "seed": <int>}` from
+  that file instead of having filenames written into its prompt. A script that hardcoded a filename
+  could not be re-run against different data, which made it unpromotable; every generator, seeded or
+  synthesized, now has the same shape a promoted workflow needs. `params.json` is written into
+  `inputs/`, so it travels with the bundle, is covered by the existing tamper check, and re-running
+  `generator/run.sh` reproduces the same binding.
+- `tasks` gains `remembered_from_task_id` and `familiarity` (Alembic `0004_registry_memory`, which
+  also creates `workflows` and `task_memory`). `GET /tasks/{id}` now returns both fields.
+
 ## [0.4.0] — 2026-08-27
 
 ### Added
