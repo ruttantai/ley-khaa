@@ -95,7 +95,10 @@ def promote(
     if not winning:
         raise NotPromotable("this bundle has no passing attempt to promote")
     attempt_number = winning[-1].get("attempt")
-    if not isinstance(attempt_number, int):
+    # bool subclasses int in Python, so isinstance(True, int) is True — excluded
+    # explicitly so a JSON `true`/`false` attempt number is rejected here rather
+    # than passing this guard and failing later for an unrelated reason.
+    if not isinstance(attempt_number, int) or isinstance(attempt_number, bool):
         raise NotPromotable("the winning attempt has no valid attempt number")
     attempt_path = contained(root, root / "generator" / f"attempt_{attempt_number}.py")
     if attempt_path is None or not attempt_path.is_file():

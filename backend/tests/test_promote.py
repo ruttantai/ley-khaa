@@ -312,6 +312,39 @@ def test_a_missing_attempt_number_is_a_409(client, session, tmp_path):
     assert WorkflowRepository(session).get("attemptless_workflow") is None
 
 
+def test_a_boolean_attempt_number_is_rejected(client, session, tmp_path):
+    """bool is a subclass of int in Python, so isinstance(True, int) is True —
+    a manifest whose winning "attempt" is JSON `true` must not pass the
+    isinstance(attempt_number, int) guard as if it were a real attempt
+    number. A file actually named attempt_True.py is planted so this proves
+    the guard itself rejects the bool — without it, f"attempt_{True}.py"
+    would resolve straight to this file and get promoted, a 200, not merely
+    fail an incidental is_file() check on a path that happens not to exist."""
+    repo = TaskRepository(session)
+    task = repo.create(project="demo", title="boolean attempt number", source_message_ids=[])
+    workspace = Workspace.create(tmp_path, task.id)
+    (workspace.inputs_dir / "dataset.csv").write_text("ticker\nAAA\n")
+    workspace.write_params(inputs={"dataset": "dataset.csv"}, output="deliverable/output.csv", seed=1)
+    (workspace.generator_dir / "attempt_True.py").write_text("print('hi')\n")
+    workspace.write_manifest(
+        {
+            "task_id": task.id,
+            "spec": {"operation": "summary_stats", "output_format": "csv"},
+            "attempts": [{"attempt": True, "ok": True}],
+            "verdict": {"ok": True, "reason": "x"},
+        }
+    )
+    repo.save_execution(task.id, workspace_path=str(workspace.root), verdict={"ok": True, "reason": "x"})
+
+    response = client.post(
+        f"/tasks/{task.id}/promote", json={"name": "boolean_attempt_workflow", "description": ""}
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]
+    assert WorkflowRepository(session).get("boolean_attempt_workflow") is None
+
+
 def test_malformed_params_json_is_a_409(client, session, tmp_path):
     repo = TaskRepository(session)
     task = repo.create(project="demo", title="broken params", source_message_ids=[])
