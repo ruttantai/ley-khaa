@@ -83,6 +83,31 @@ class Workspace:
             _validate_safe_filename(item.filename)
             (self.inputs_dir / item.filename).write_text(item.content, encoding="utf-8")
 
+    def write_params(self, *, inputs: dict[str, str], output: str, seed: int) -> Path:
+        """The binding a generator reads instead of hardcoding filenames.
+
+        Keys are roles: on a synthesized run they are the spec's own input
+        names; on a cached run they are the promoted workflow's role names bound
+        to THIS run's files. That is what lets a frozen script run unchanged
+        against different data — the script reads the name it was born with.
+
+        Written into inputs/ deliberately: it travels with the bundle, so
+        re-running generator/run.sh reproduces the binding too, and the existing
+        input_hashes() tamper check covers it for free.
+        """
+        # No sort_keys: it recurses into "inputs" too, and the offline stand-in's
+        # set_difference reads INPUTS[0]/INPUTS[1] as left/right operands — an
+        # alphabetical resort would silently swap them for any pair not already
+        # in alphabetical order. Insertion order is already deterministic here
+        # (the caller builds `inputs` from spec.inputs order once per run), so
+        # sorting buys nothing and breaks operand order.
+        path = self.inputs_dir / "params.json"
+        path.write_text(
+            json.dumps({"inputs": inputs, "output": output, "seed": seed}, indent=2),
+            encoding="utf-8",
+        )
+        return path
+
     def next_attempt_number(self) -> int:
         """The number a fresh attempt should take, continuing across rounds.
 

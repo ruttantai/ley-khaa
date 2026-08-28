@@ -30,3 +30,15 @@ def test_opus_advertises_thinking():
 
 def test_unknown_complexity_falls_back_to_routine():
     assert model_for(Stage.CRYSTALLIZER, "banana").model == "claude-haiku-4-5"
+
+
+def test_the_cache_matchers_run_on_haiku():
+    """These calls exist to AVOID an Opus call. Routing them to Opus would make
+    consulting the cache cost more than the synthesis it saves."""
+    from ley_khaa.llm.router import HAIKU, Stage, model_for
+
+    for stage in (Stage.REGISTRY_MATCH, Stage.MEMORY_MATCH):
+        for complexity in ("routine", "hard"):
+            choice = model_for(stage, complexity)
+            assert choice.model == HAIKU
+            assert choice.supports_thinking is False

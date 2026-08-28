@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import Candidates from "./Candidates";
+import Registry from "./Registry";
 import TaskDetail from "./TaskDetail";
 import { fetchCandidates, fetchTasks, type Candidate, type Task } from "./api";
 
@@ -58,6 +59,9 @@ export default function App() {
           </li>
         ))}
       </ul>
+
+      <h2 className="text-lg font-semibold mb-2 mt-8">Registry</h2>
+      <Registry />
     </main>
   );
 }

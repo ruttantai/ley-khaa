@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ..registry.promote import NAME_PATTERN
+
 
 class AttachmentIn(BaseModel):
     kind: str
@@ -87,6 +89,12 @@ class TaskOut(BaseModel):
     # The Output Bundle root on disk (spec §5.11), and what the run came to.
     workspace_path: str | None = None
     execution_verdict: dict[str, Any] | None = None
+    # Set when this task's spec came from memory rather than the interpreter
+    # (persistence/repository.py's save_memory_hit). familiarity feeds the
+    # autonomy dial; remembered_from_task_id is what the dashboard shows so a
+    # human can find the source task being reused.
+    remembered_from_task_id: str | None = None
+    familiarity: int = 0
 
 
 class RejectIn(BaseModel):
@@ -122,3 +130,28 @@ class BundleOut(BaseModel):
     # can hand them straight back to the file endpoint.
     files: list[str]
     deliverables: list[str]
+
+
+class PromoteIn(BaseModel):
+    # Same pattern promote.py's own NAME guard enforces (imported so there is
+    # one source of truth). Validated here too so a malformed name is FastAPI's
+    # native 422 — a bad request — rather than promote()'s 409, which is
+    # reserved for a state conflict in the bundle's own content.
+    name: str = Field(pattern=NAME_PATTERN)
+    description: str = ""
+
+
+class WorkflowOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str
+    description: str
+    operation_aliases: list[str]
+    output_format: str
+    inputs: list[dict[str, Any]]
+    origin: str
+    promoted_from_task_id: str | None = None
+    runs_ok: int
+    runs_failed: int
+    quarantined: bool
+    source_sha256: str

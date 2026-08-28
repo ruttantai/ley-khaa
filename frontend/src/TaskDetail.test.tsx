@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, test, vi } from "vitest";
 import TaskDetail from "./TaskDetail";
 import type { Task } from "./api";
 
@@ -29,6 +29,8 @@ const task = (overrides: Partial<Task> = {}): Task => ({
   failure_reason: null,
   workspace_path: null,
   execution_verdict: null,
+  remembered_from_task_id: null,
+  familiarity: 0,
   ...overrides,
 });
 
@@ -148,4 +150,31 @@ test("M6: clearing the nullable recipient field still sends null", async () => {
   const [, init] = (globalThis.fetch as never as { mock: { calls: [string, RequestInit][] } })
     .mock.calls[0];
   expect(JSON.parse(init.body as string)).toEqual({ patch: { recipient: null } });
+});
+
+it("marks a task whose spec came from memory", () => {
+  render(<TaskDetail task={task({ remembered_from_task_id: "t0", familiarity: 3 })} onChanged={() => {}} />);
+  expect(screen.getByText(/remembered/i)).toBeTruthy();
+  expect(screen.getByText(/3/)).toBeTruthy();
+});
+
+it("says nothing about memory for a freshly interpreted task", () => {
+  render(<TaskDetail task={task({ remembered_from_task_id: null, familiarity: 0 })} onChanged={() => {}} />);
+  expect(screen.queryByText(/remembered/i)).toBeNull();
+});
+
+it("still marks a finished task as remembered, without reviving the mode controls", () => {
+  // A done task is not modeEditable, so the badge's visibility must not ride
+  // on that gate — but it must also not drag the mode buttons back in along
+  // with it (that would let a completed task's autonomy mode look editable).
+  render(
+    <TaskDetail
+      task={task({ state: "done", remembered_from_task_id: "t0", familiarity: 3 })}
+      onChanged={() => {}}
+    />,
+  );
+  expect(screen.getByText(/remembered/i)).toBeTruthy();
+  expect(screen.queryByLabelText("Suggest")).toBeNull();
+  expect(screen.queryByLabelText("Co-pilot")).toBeNull();
+  expect(screen.queryByLabelText("Auto")).toBeNull();
 });

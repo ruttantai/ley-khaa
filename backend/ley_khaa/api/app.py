@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import logging
 import zipfile
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -17,13 +18,17 @@ from ..config import settings
 from ..crystallizer.gate import ReadinessGate
 from ..db import SessionLocal, run_migrations
 from ..domain.states import InvalidTransition
-from ..executor.workspace import Workspace
+from ..executor.workspace import MANIFEST_NAME, Workspace
 from ..intake.simulator import Simulator
 from ..llm.factory import build_llm
 from ..orchestrator.orchestrator import ForeignReplyTarget, Orchestrator
 from ..persistence.candidate_repository import CandidateRepository
+from ..persistence.memory_repository import MemoryRepository
 from ..persistence.message_repository import MessageRepository
 from ..persistence.repository import TaskRepository
+from ..persistence.workflow_repository import DuplicateWorkflow, WorkflowRepository
+from ..registry.promote import NotPromotable, promote
+from ..registry.seeds import ensure_seed_workflows
 from .schemas import (
     AnswerIn,
     BundleOut,
@@ -32,9 +37,11 @@ from .schemas import (
     MessageIn,
     MessageOut,
     ModeIn,
+    PromoteIn,
     RejectIn,
     SpecPatchIn,
     TaskOut,
+    WorkflowOut,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,6 +54,8 @@ def build_orchestrator(session: Session) -> Orchestrator:
         messages=MessageRepository(session),
         candidates=CandidateRepository(session),
         gate=ReadinessGate(settings.crystallizer_debounce_seconds),
+        workflows=WorkflowRepository(session),
+        memories=MemoryRepository(session),
     )
 
 
@@ -98,6 +107,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     session = SessionLocal()
     try:
         repo = TaskRepository(session)
+        # The registry ships with two proven workflows so a fresh clone can show
+        # the fast path before anyone has promoted anything.
+        ensure_seed_workflows(session)
         if not repo.list():
             Simulator(build_orchestrator(session)).replay("messy_universe_check")
     finally:
@@ -330,6 +342,36 @@ def _contained(root: Path, candidate: Path) -> Path | None:
     return resolved
 
 
+def _bundle_manifest(root: Path) -> dict:
+    """Read manifest.json the way every other bundle route reads a path:
+    resolve and containment-check the candidate BEFORE opening it, then read
+    the RESOLVED path — never the unresolved one after only checking the
+    resolved one, which is the classic bypass. Workspace.read_manifest()
+    does the same exists()+read_text() unguarded, and both follow symlinks;
+    manifest.json lives inside a workspace filled by untrusted generator
+    code, so `os.symlink("/etc/passwd", "manifest.json")` must not be
+    followed. A symlink that escapes is treated exactly like a missing
+    manifest — {} — rather than inventing a new refusal shape.
+
+    The bundle is mounted read-write into the sandbox and manifest.json sits
+    at its root, so `open("manifest.json", "w").write("{")` in any
+    synthesized script — buggy or malicious — leaves malformed content here,
+    same threat model registry/promote.py's `_load_json` was written for.
+    That helper isn't reused here: it raises NotPromotable for a 409 refusal
+    that makes sense mid-promotion, whereas this function's contract is to
+    hand back a dict, with {} already established as its shape for "nothing
+    usable here" — so a malformed manifest refuses the same way a missing one
+    does, not by raising.
+    """
+    manifest_path = _contained(root, root / MANIFEST_NAME)
+    if manifest_path is None or not manifest_path.is_file():
+        return {}
+    try:
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+
+
 @app.get("/tasks/{task_id}/bundle", response_model=BundleOut)
 def get_bundle(task_id: str, session: Session = Depends(get_session)) -> BundleOut:
     root = _bundle_root(session, task_id)
@@ -341,7 +383,7 @@ def get_bundle(task_id: str, session: Session = Depends(get_session)) -> BundleO
     return BundleOut(
         task_id=task_id,
         root=str(root),
-        manifest=Workspace(root).read_manifest(),
+        manifest=_bundle_manifest(root),
         files=files,
         deliverables=[name for name in files if name.startswith("deliverable/")],
     )
@@ -406,3 +448,42 @@ def download_bundle(task_id: str, session: Session = Depends(get_session)) -> St
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="task-{task_id}-bundle.zip"'},
     )
+
+
+@app.post("/tasks/{task_id}/promote", response_model=WorkflowOut)
+def promote_task_workflow(
+    task_id: str, body: PromoteIn, session: Session = Depends(get_session)
+) -> WorkflowOut:
+    root = _bundle_root(session, task_id)
+    try:
+        row = promote(
+            session,
+            task_id=task_id,
+            name=body.name,
+            description=body.description,
+            root=root,
+            contained=_contained,
+        )
+    except DuplicateWorkflow:
+        raise HTTPException(status_code=409, detail=f"a workflow named {body.name!r} already exists")
+    except NotPromotable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return WorkflowOut.model_validate(row)
+
+
+@app.get("/registry", response_model=list[WorkflowOut])
+def list_workflows(session: Session = Depends(get_session)) -> list[WorkflowOut]:
+    # WorkflowOut deliberately omits `source`: this is a browsable listing, the
+    # source is model-written code, and source_sha256 identifies it exactly
+    # without putting a program in a page that renders it.
+    return [WorkflowOut.model_validate(row) for row in WorkflowRepository(session).list()]
+
+
+@app.post("/registry/{name}/unquarantine", response_model=WorkflowOut)
+def unquarantine_workflow(name: str, session: Session = Depends(get_session)) -> WorkflowOut:
+    return WorkflowOut.model_validate(WorkflowRepository(session).unquarantine(name))
+
+
+@app.delete("/registry/{name}", status_code=204)
+def delete_workflow(name: str, session: Session = Depends(get_session)) -> None:
+    WorkflowRepository(session).delete(name)

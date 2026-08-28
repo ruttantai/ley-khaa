@@ -26,6 +26,11 @@ export type Task = {
   failure_reason: string | null;
   workspace_path: string | null;
   execution_verdict: Record<string, unknown> | null;
+  // Set when this task's spec came from memory rather than the interpreter.
+  // familiarity feeds the autonomy dial; remembered_from_task_id is what the
+  // dashboard should let a human find and inspect.
+  remembered_from_task_id: string | null;
+  familiarity: number;
 };
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
@@ -55,6 +60,37 @@ export const answerTask = (id: string, text: string) =>
   send(`/tasks/${id}/answer`, "POST", { text });
 export const patchTaskSpec = (id: string, patch: Record<string, unknown>) =>
   send(`/tasks/${id}/spec`, "PATCH", { patch });
+
+export type Workflow = {
+  name: string;
+  description: string;
+  operation_aliases: string[];
+  output_format: string;
+  inputs: { role: string; suffixes: string[] }[];
+  origin: string;
+  promoted_from_task_id: string | null;
+  runs_ok: number;
+  runs_failed: number;
+  quarantined: boolean;
+  source_sha256: string;
+};
+
+// Deliberately not routed through send(): send() discards the response body
+// on failure, but a promotion's 409 detail (a taken name, a run that did not
+// pass) is the actionable part — the human needs to read it, not just learn
+// that the request failed.
+export async function promoteTask(id: string, name: string, description: string): Promise<Workflow> {
+  const res = await fetch(`${BASE}/tasks/${id}/promote`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, description }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.detail ?? `promoteTask failed: ${res.status}`);
+  }
+  return res.json();
+}
 
 export type Bundle = {
   task_id: string;
@@ -98,4 +134,23 @@ export async function fetchCandidates(): Promise<Candidate[]> {
   const res = await fetch(`${BASE}/candidates`);
   if (!res.ok) throw new Error(`fetchCandidates failed: ${res.status}`);
   return res.json();
+}
+
+export async function fetchWorkflows(): Promise<Workflow[]> {
+  const res = await fetch(`${BASE}/registry`);
+  if (!res.ok) throw new Error(`fetchWorkflows failed: ${res.status}`);
+  return res.json();
+}
+
+export async function unquarantineWorkflow(name: string): Promise<Workflow> {
+  const res = await fetch(`${BASE}/registry/${encodeURIComponent(name)}/unquarantine`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`unquarantineWorkflow failed: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteWorkflow(name: string): Promise<void> {
+  const res = await fetch(`${BASE}/registry/${encodeURIComponent(name)}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`deleteWorkflow failed: ${res.status}`);
 }

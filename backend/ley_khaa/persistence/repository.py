@@ -151,3 +151,15 @@ class TaskRepository:
                 select(TaskRow).where(TaskRow.state == state.value).order_by(TaskRow.created_at)
             )
         )
+
+    def save_memory_hit(self, task_id: str, *, source_task_id: str, familiarity: int) -> TaskRow:
+        """Record that this spec came from memory rather than the interpreter.
+
+        familiarity feeds the autonomy dial; source_task_id is what the
+        dashboard links back to so a human can see what is being reused.
+        """
+        row = self._row(task_id)
+        row.remembered_from_task_id = source_task_id
+        row.familiarity = familiarity
+        self.session.commit()
+        return row

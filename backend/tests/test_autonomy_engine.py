@@ -111,3 +111,66 @@ def test_the_unsettled_conversation_penalty_is_pinned():
     settled = recommend(_spec()).confidence
     unsettled = recommend(_spec(), candidate_missing_fields=["deadline"]).confidence
     assert round(settled - unsettled, 4) == 0.1
+
+
+def test_familiarity_raises_confidence_and_says_so():
+    spec = _spec(certainty=0.75)
+    fresh = recommend(spec)
+    seen = recommend(spec, familiarity=2)
+
+    assert seen.confidence == round(fresh.confidence + 0.10, 4)
+    assert "done this 2 times before" in seen.reason
+
+
+def test_the_familiarity_bonus_is_capped():
+    """A request repeated a hundred times is not more certain than one repeated
+    three times — repetition is weak evidence and must stay weak."""
+    spec = _spec(certainty=0.5)
+    assert recommend(spec, familiarity=3).confidence == recommend(spec, familiarity=99).confidence
+    assert recommend(spec, familiarity=99).confidence == round(recommend(spec).confidence + 0.15, 4)
+
+
+def test_familiarity_cannot_carry_an_incomplete_spec_to_auto():
+    """The whole bonus is smaller than one missing field's penalty. Repetition
+    must never be able to push a spec with known gaps into acting alone."""
+    spec = _spec(certainty=1.0, missing_fields=["output_format"])
+    assert recommend(spec, familiarity=99).mode is not AutonomyMode.AUTO
+
+
+def test_familiarity_cannot_carry_an_unsettled_conversation_to_auto():
+    """The same invariant, one path over: an unsettled conversation is also a
+    known gap, and its penalty (0.1) is even smaller than the bonus cap (0.15)
+    — so without the gate this path is the worse of the two."""
+    spec = _spec(certainty=0.9)
+    rec = recommend(spec, candidate_missing_fields=["deadline"], familiarity=99)
+    assert rec.mode is not AutonomyMode.AUTO
+
+
+def test_zero_familiarity_changes_nothing():
+    spec = _spec(certainty=0.9)
+    fresh = recommend(spec)
+    seen = recommend(spec, familiarity=0)
+    assert seen.reason == fresh.reason
+    # The equality above would also hold if familiarity=0 wrongly appended its
+    # own (vacuous) clause to both sides identically — assert directly that no
+    # familiarity clause is present at all.
+    assert "done this" not in seen.reason
+
+
+def test_the_familiarity_numbers_are_pinned():
+    """These two numbers are the policy, like the four already pinned here.
+
+    The gate in _confidence — not this relation — is what actually stops
+    repetition from carrying a request with a known gap to AUTO; see the two
+    test_familiarity_cannot_carry_* tests above. This relation is now just a
+    sanity bound between the constants: a relative fact about their sizes, not
+    a guard on the absolute AUTO threshold.
+    """
+    from ley_khaa.autonomy.engine import (
+        _FAMILIARITY_BONUS,
+        _MAX_FAMILIARITY_BONUS,
+        _MISSING_FIELD_PENALTY,
+    )
+
+    assert (_FAMILIARITY_BONUS, _MAX_FAMILIARITY_BONUS) == (0.05, 0.15)
+    assert _MAX_FAMILIARITY_BONUS < _MISSING_FIELD_PENALTY

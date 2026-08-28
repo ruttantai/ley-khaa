@@ -7,6 +7,8 @@ from ..crystallizer.engine import HANDLED_HEADER, CandidateDraft, CrystallizerOu
 from ..crystallizer.relevance import RelevanceVerdict
 from ..executor.synthesizer import SynthesizedScript
 from ..interpreter.spec import TaskSpec
+from ..memory.models import MemoryDecision
+from ..registry.models import RegistryDecision
 from .router import ModelChoice
 
 T = TypeVar("T", bound=BaseModel)
@@ -67,6 +69,14 @@ real, runnable program: it reads the frozen inputs and writes the deliverable,
 so a fresh clone with no ANTHROPIC_API_KEY still produces a genuine bundle.
 """
 import csv
+import json
+
+_params = json.load(open("inputs/params.json", encoding="utf-8"))
+# Ordered: params.json is written in spec-input order (never sorted — see
+# write_params), and dicts preserve insertion order, so INPUTS[0]/[1] land as
+# the same left/right operands _SET_DIFFERENCE was given.
+INPUTS = list(_params["inputs"].values())
+TARGET = _params["output"]
 
 
 def read_rows(name):
@@ -168,6 +178,14 @@ class HeuristicLLM:
             return self._interpret(user)
         if output_format is SynthesizedScript:
             return self._synthesize(user)
+        if output_format is RegistryDecision:
+            # Offline matching is fingerprint-only by design: a regex cannot
+            # judge whether two phrasings mean the same operation, and guessing
+            # here would hand a request to code proven for a different job.
+            return RegistryDecision(workflow=None, confidence=0.0, reason="offline: no model match")
+        if output_format is MemoryDecision:
+            # Fingerprint-only offline, for the same reason as RegistryDecision.
+            return MemoryDecision(memory_id=None, confidence=0.0, reason="offline: no model match")
         raise NotImplementedError(f"HeuristicLLM has no rule for {output_format.__name__}")
 
     def _relevance(self, user: str) -> RelevanceVerdict:
@@ -289,6 +307,7 @@ class HeuristicLLM:
 
         reasoning = f"Offline canned script for {operation or 'an unrecognised operation'}: {approach}."
         substitution = ""
+        substitution_target = ""
         if not target.endswith((".xlsx", ".csv")):
             # write_rows only genuinely produces .xlsx (openpyxl) or CSV text.
             # Writing CSV bytes under the requested name (e.g. .docx) would be
@@ -298,13 +317,17 @@ class HeuristicLLM:
             # printed summary and in reasoning, instead of faking the format.
             requested = target
             target = "deliverable/output.csv"
+            substitution_target = f"TARGET = {target!r}\n"
             substitution = (
                 'print("offline stand-in cannot write %s; wrote CSV to %s instead")\n'
                 % (requested, target)
             )
             reasoning += f" Offline mode cannot write {requested}; wrote CSV to {target} instead."
 
-        source = _PREAMBLE + f"INPUTS = {inputs!r}\nTARGET = {target!r}\n" + body + substitution
+        # INPUTS and TARGET now come from inputs/params.json, set in _PREAMBLE.
+        # The substitution below still overrides TARGET when the requested
+        # format is one the offline stand-in cannot honestly write.
+        source = _PREAMBLE + substitution_target + body + substitution
         return SynthesizedScript(reasoning=reasoning, source=source)
 
 

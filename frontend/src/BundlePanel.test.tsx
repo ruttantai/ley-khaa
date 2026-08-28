@@ -1,6 +1,6 @@
 // frontend/src/BundlePanel.test.tsx
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, test, vi } from "vitest";
 import BundlePanel from "./BundlePanel";
 
 const bundle = {
@@ -27,6 +27,35 @@ const bundle = {
 };
 
 const okJson = (body: unknown) => ({ ok: true, json: async () => body });
+
+// Re-stubs fetch with a bundle whose manifest is shallow-merged with
+// `overrides.manifest`, and a POST /promote response controlled separately —
+// its own tests need both a success shape and a 409-with-detail shape.
+const mockBundle = (
+  overrides: { manifest?: Record<string, unknown> } = {},
+  promoteResponse: { ok: boolean; status?: number; body: unknown } = {
+    ok: true,
+    body: { name: "" },
+  },
+) => {
+  const merged = { ...bundle, manifest: { ...bundle.manifest, ...overrides.manifest } };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        return {
+          ok: promoteResponse.ok,
+          status: promoteResponse.status ?? (promoteResponse.ok ? 200 : 409),
+          json: async () => promoteResponse.body,
+        };
+      }
+      if (url.includes("/bundle/file")) {
+        return okJson({ path: "generator/attempt_2.py", content: "print('the real script')" });
+      }
+      return okJson(merged);
+    }),
+  );
+};
 
 beforeEach(() => {
   vi.stubGlobal(
@@ -74,4 +103,59 @@ test("says nothing loudly when there is no bundle", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 404 })));
   render(<BundlePanel taskId="t1" />);
   expect(await screen.findByText(/no bundle/i)).toBeTruthy();
+});
+
+it("offers promotion only for a bundle that passed", async () => {
+  // A failed run has nothing worth freezing; offering the button would invite a
+  // 409 the human cannot act on.
+  mockBundle({ manifest: { verdict: { ok: false } } });
+  render(<BundlePanel taskId="t1" />);
+  // The fixture ships two generator/*.py files, so this asserts the panel
+  // rendered normally (not the "no bundle" empty state) rather than picking
+  // one of two equally-valid matches.
+  expect(await screen.findAllByText(/generator/i)).toHaveLength(2);
+  expect(screen.queryByRole("button", { name: /promote/i })).toBeNull();
+});
+
+it("promotes a passing bundle under a name the human chooses", async () => {
+  mockBundle({ manifest: { verdict: { ok: true } } });
+  render(<BundlePanel taskId="t1" />);
+
+  fireEvent.click(await screen.findByRole("button", { name: /promote/i }));
+  fireEvent.change(screen.getByLabelText(/name/i), { target: { value: "universe_check" } });
+  fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+  await waitFor(() => {
+    const calls = (fetch as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls;
+    const promoteCall = calls.find(([, init]) => init?.method === "POST");
+    expect(promoteCall).toBeTruthy();
+    const [url, init] = promoteCall!;
+    expect(url).toContain("/tasks/t1/promote");
+    expect(JSON.parse(init.body as string)).toEqual({ name: "universe_check", description: "" });
+  });
+});
+
+it("shows why a promotion was refused", async () => {
+  // A duplicate name is the common case, and it is fixable — the human needs to
+  // read it, not watch the dialog close on nothing.
+  mockBundle(
+    { manifest: { verdict: { ok: true } } },
+    { ok: false, body: { detail: "a workflow named 'universe_check' already exists" } },
+  );
+  render(<BundlePanel taskId="t1" />);
+
+  fireEvent.click(await screen.findByRole("button", { name: /promote/i }));
+  fireEvent.change(screen.getByLabelText(/name/i), { target: { value: "universe_check" } });
+  fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+  await waitFor(() => expect(screen.getByText(/already exists/)).toBeTruthy());
+});
+
+it("says a cached run took the fast path and names the workflow", async () => {
+  mockBundle({
+    manifest: { lane: "registry", workflow: { name: "set_difference", matched_by: "fingerprint" } },
+  });
+  render(<BundlePanel taskId="t1" />);
+  expect(await screen.findByText(/set_difference/)).toBeTruthy();
+  expect(screen.getByText(/no model/i)).toBeTruthy();
 });

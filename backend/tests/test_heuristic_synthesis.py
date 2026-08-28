@@ -8,6 +8,7 @@ turning the no-API-key demo into an empty bundle.
 from openpyxl import load_workbook
 
 from ley_khaa.executor import catalog
+from ley_khaa.executor.formats import deliverable_filename
 from ley_khaa.executor.resolver import ResolvedInput
 from ley_khaa.executor.sandbox import SubprocessSandbox
 from ley_khaa.executor.synthesizer import Synthesizer
@@ -44,17 +45,28 @@ def _universes() -> list[ResolvedInput]:
 
 
 def _run(tmp_path, spec, resolved):
-    """Synthesize offline, then actually execute the result."""
+    """Synthesize offline, then actually execute the result.
+
+    Mirrors ExecutionRunner.run(): inputs, then params.json (the binding the
+    canned script now reads instead of hardcoding filenames), then the hashes
+    a tamper check would compare against, all before the script ever runs.
+    """
     script = Synthesizer(HeuristicLLM()).synthesize(spec, resolved)
     workspace = Workspace.create(tmp_path, "t1")
     workspace.write_inputs(resolved)
+    workspace.write_params(
+        inputs={item.name: item.filename for item in resolved},
+        output=f"deliverable/{deliverable_filename(spec.output_format)}",
+        seed=catalog.CATALOG_SEED,
+    )
+    before_hashes = workspace.input_hashes()
     path = workspace.write_generator(1, script.source)
     result = SubprocessSandbox().run(script=path, workspace=workspace.root, timeout_s=60)
-    return workspace, result
+    return workspace, result, before_hashes
 
 
 def test_the_offline_set_difference_actually_writes_a_spreadsheet(tmp_path):
-    workspace, result = _run(tmp_path, _spec(), _universes())
+    workspace, result, _ = _run(tmp_path, _spec(), _universes())
     assert result.ok, result.stderr
     book = load_workbook(workspace.deliverable_dir / "output.xlsx")
     # Task 1 guarantees bloomberg has exactly 5 tickers factset lacks; header + 5.
@@ -63,7 +75,7 @@ def test_the_offline_set_difference_actually_writes_a_spreadsheet(tmp_path):
 
 
 def test_the_offline_lane_honours_a_csv_request(tmp_path):
-    workspace, result = _run(tmp_path, _spec(output_format="csv"), _universes())
+    workspace, result, _ = _run(tmp_path, _spec(output_format="csv"), _universes())
     assert result.ok, result.stderr
     lines = (workspace.deliverable_dir / "output.csv").read_text().splitlines()
     assert len(lines) == 6
@@ -79,7 +91,7 @@ def test_summary_stats_describes_the_numeric_columns(tmp_path):
         )
     ]
     spec = _spec(operation="summary_stats", output_format="csv")
-    workspace, result = _run(tmp_path, spec, resolved)
+    workspace, result, _ = _run(tmp_path, spec, resolved)
     assert result.ok, result.stderr
     body = (workspace.deliverable_dir / "output.csv").read_text()
     assert body.startswith("column,count,min,max,mean\n")
@@ -91,7 +103,7 @@ def test_an_unrecognised_operation_still_produces_an_honest_deliverable(tmp_path
     bundle. A request it cannot pattern-match gets a truthful description of the
     inputs rather than an exception."""
     spec = _spec(operation="reconcile_everything", output_format="csv")
-    workspace, result = _run(tmp_path, spec, _universes())
+    workspace, result, _ = _run(tmp_path, spec, _universes())
     assert result.ok, result.stderr
     body = (workspace.deliverable_dir / "output.csv").read_text()
     assert "bloomberg_universe.csv" in body
@@ -100,11 +112,8 @@ def test_an_unrecognised_operation_still_produces_an_honest_deliverable(tmp_path
 def test_the_canned_script_never_touches_its_inputs(tmp_path):
     """Reproducibility is the bundle's whole claim, and the validator enforces
     it — the offline lane must not be the thing that trips it."""
-    workspace, result = _run(tmp_path, _spec(), _universes())
+    workspace, result, before = _run(tmp_path, _spec(), _universes())
     assert result.ok, result.stderr
-    before = {
-        item.filename: item.sha256 for item in _universes()
-    }
     assert workspace.input_hashes() == before
 
 
@@ -114,7 +123,7 @@ def test_the_offline_lane_never_mislabels_a_format_it_cannot_write(tmp_path):
     what it is, and Task 8's validator checks the deliverable's suffix, not
     its content — so that lie would pass validation silently. The offline
     lane must substitute CSV honestly and say so, not fake the format."""
-    workspace, result = _run(tmp_path, _spec(output_format="docx"), _universes())
+    workspace, result, _ = _run(tmp_path, _spec(output_format="docx"), _universes())
     assert result.ok, result.stderr
     assert not (workspace.deliverable_dir / "output.docx").exists()
     deliverables = [p.name for p in workspace.deliverable_dir.iterdir() if p.is_file()]
@@ -124,8 +133,8 @@ def test_the_offline_lane_never_mislabels_a_format_it_cannot_write(tmp_path):
 
 
 def test_the_offline_script_is_deterministic(tmp_path):
-    first, _ = _run(tmp_path / "a", _spec(output_format="csv"), _universes())
-    second, _ = _run(tmp_path / "b", _spec(output_format="csv"), _universes())
+    first, _, _ = _run(tmp_path / "a", _spec(output_format="csv"), _universes())
+    second, _, _ = _run(tmp_path / "b", _spec(output_format="csv"), _universes())
     assert (first.deliverable_dir / "output.csv").read_bytes() == (
         second.deliverable_dir / "output.csv"
     ).read_bytes()

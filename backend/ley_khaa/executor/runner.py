@@ -20,7 +20,12 @@ from ..llm.client import LLMClient
 from ..llm.router import Stage, model_for
 from ..persistence.message_repository import MessageRepository
 from ..persistence.orm import TaskRow
+from ..persistence.workflow_repository import WorkflowRepository
+from ..registry.fingerprint import normalize_operation
+from ..registry.matcher import RegistryMatcher
+from ..registry.models import Match
 from . import catalog
+from .formats import deliverable_filename
 from .resolver import ResolvedInput, UnresolvedInputs, resolve_inputs
 from .sandbox import SandboxRunner, SandboxResult, SandboxUnavailable, pick_sandbox
 from .synthesizer import SynthesizedScript, Synthesizer
@@ -61,6 +66,25 @@ def _synthesis_author(llm: LLMClient) -> str:
     return f"{llm.name} (no model ran)"
 
 
+def _attempt_record(number: int, result: SandboxResult, verdict: Verdict, reasoning: str) -> dict:
+    """One attempt's manifest entry. Shared by the cached lane and the synthesis
+    loop so the two cannot drift apart on which keys a consumer can rely on —
+    that drift is exactly how the cached lane's SandboxUnavailable handler once
+    ended up crediting a model that was never called (it copied a dict literal
+    instead of this)."""
+    return {
+        "attempt": number,
+        "exit_code": result.exit_code,
+        "duration_ms": result.duration_ms,
+        "timed_out": result.timed_out,
+        "ok": verdict.ok,
+        "reason": verdict.reason,
+        "checks": verdict.checks,
+        "reasoning": reasoning,
+        "stderr_tail": result.stderr[-_STDERR_IN_MANIFEST:],
+    }
+
+
 class ExecutionRunner:
     def __init__(
         self,
@@ -69,11 +93,16 @@ class ExecutionRunner:
         messages: MessageRepository,
         sandbox: SandboxRunner | None = None,
         workspace_root: Path | str | None = None,
+        workflows: WorkflowRepository | None = None,
     ) -> None:
         self.synthesizer = Synthesizer(llm)
         self.messages = messages
         self._sandbox = sandbox
         self.workspace_root = Path(workspace_root or settings.workspace_root)
+        # None is a supported configuration: without a registry the runner is
+        # exactly the Phase 3 runner, which is what every existing test builds.
+        self.workflows = workflows
+        self.matcher = RegistryMatcher(workflows, llm) if workflows is not None else None
 
     @property
     def sandbox(self) -> SandboxRunner:
@@ -99,6 +128,11 @@ class ExecutionRunner:
         # next_attempt_number() keeps this round from overwriting the last one's.
         workspace.clear_deliverables()
         first_attempt = workspace.next_attempt_number()
+        # Captured before a cached attempt (if any) shifts first_attempt for the
+        # synthesis fallback below. Both manifest writes past this point report
+        # how many generator/attempt_*.py files belong to earlier ROUNDS, not to
+        # this round's own lane switch — so both must use this same value.
+        earlier = first_attempt - 1
 
         try:
             resolved = resolve_inputs(spec, row, self.messages)
@@ -121,17 +155,114 @@ class ExecutionRunner:
                 resolved=[],
                 attempts=[],
                 verdict=verdict,
-                earlier_attempts=first_attempt - 1,
+                earlier_attempts=earlier,
             )
             return ExecutionOutcome(verdict, str(workspace.root), 0)
 
         workspace.write_inputs(resolved)
-        input_hashes = workspace.input_hashes()
+        target = f"deliverable/{deliverable_filename(spec.output_format)}"
+
+        match = self.matcher.match(spec, resolved) if self.matcher is not None else None
+        # Bind under the workflow's role names when one matched, and under the
+        # spec's own input names otherwise. input_hashes is computed AFTER this,
+        # and again after any rewrite below: hashing a params.json that is about
+        # to change makes the validator report the script tampered with its
+        # inputs, which is both false and misleading.
+        input_hashes = self._bind(workspace, spec, resolved, match, target)
 
         attempts: list[dict] = []
+        workflow_record: dict | None = None
+        verdict = Verdict(ok=False, reason=_SYNTHESIS_FAILED, checks={})
+
+        if match is not None:
+            number = first_attempt
+            # Built before the sandbox even runs, and with quarantined=False:
+            # if SandboxUnavailable strikes below, that is ley-khaa's daemon
+            # dying, not the workflow's fault, and the handler needs a real
+            # workflow_record (not the None a KeyError-shaped omission would
+            # leave it with) to report lane="registry" honestly rather than
+            # falling back to _write_manifest's synthesis-shaped defaults.
+            workflow_record = {
+                "name": match.workflow.name,
+                "sha256": match.workflow.source_sha256,
+                "matched_by": match.matched_by,
+                "binding": dict(match.binding),
+                "quarantined": False,
+            }
+            try:
+                verdict, result = self._run_workflow(
+                    workspace, match, number, spec, input_hashes
+                )
+            except SandboxUnavailable as exc:
+                # Caught HERE, at the call site, rather than inside
+                # _run_workflow: this is what lets _run_workflow stay a pure
+                # "run and validate" helper with no manifest-writing concerns
+                # of its own, while still writing one before the exception
+                # continues up to the driver. Same reasoning as the synthesis
+                # loop's identical handler below: clear_deliverables() already
+                # ran, so without this an earlier round's manifest would keep
+                # attesting deliverables that are no longer on disk. lane and
+                # workflow are passed explicitly — the defaults on
+                # _write_manifest describe the SYNTHESIS lane, and this failure
+                # never reached synthesis at all.
+                self._write_manifest(
+                    workspace,
+                    row,
+                    spec,
+                    resolved=resolved,
+                    attempts=attempts,
+                    verdict=Verdict(
+                        ok=False,
+                        reason=f"The sandbox was unavailable: {exc}",
+                        checks={"sandbox_available": False},
+                    ),
+                    earlier_attempts=earlier,
+                    lane="registry",
+                    workflow=workflow_record,
+                )
+                raise
+            attempts.append(
+                _attempt_record(
+                    number, result, verdict,
+                    f"cached workflow {match.workflow.name}, no model call",
+                )
+            )
+            workflow_record["quarantined"] = not verdict.ok
+            if verdict.ok:
+                self.workflows.record_success(
+                    match.workflow.name,
+                    # Only a phrasing the model found is worth learning; a
+                    # fingerprint hit already knew this operation.
+                    learned_alias=(
+                        normalize_operation(spec.operation)
+                        if match.matched_by == "model"
+                        else None
+                    ),
+                )
+                workspace.write_run_script(number)
+                self._write_manifest(
+                    workspace, row, spec, resolved=resolved, attempts=attempts,
+                    verdict=verdict, earlier_attempts=earlier,
+                    lane="registry", workflow=workflow_record,
+                )
+                return ExecutionOutcome(verdict, str(workspace.root), len(attempts))
+
+            # Proven code that just produced a wrong answer is not proven any
+            # more. Quarantine it, re-bind under the spec's names, and let
+            # synthesis rescue this run with its own full attempt budget.
+            self.workflows.record_failure(match.workflow.name)
+            first_attempt = number + 1
+            input_hashes = self._bind(workspace, spec, resolved, None, target)
+            # Discards the cached lane's verdict so the synthesis loop below
+            # starts from the same "nothing has run yet" state it would if the
+            # registry had never matched at all — the loop's own repair logic
+            # reads `verdict` to decide synthesize-vs-repair, and the cached
+            # script's failure has nothing to do with what synthesis is about
+            # to write.
+            verdict = Verdict(ok=False, reason=_SYNTHESIS_FAILED, checks={})
+
         previous: SynthesizedScript | None = None
         last: SandboxResult | None = None
-        verdict = Verdict(ok=False, reason=_SYNTHESIS_FAILED, checks={})
 
         for number in range(first_attempt, first_attempt + _MAX_ATTEMPTS):
             try:
@@ -171,23 +302,11 @@ class ExecutionRunner:
                         reason=f"The sandbox was unavailable: {exc}",
                         checks={"sandbox_available": False},
                     ),
-                    earlier_attempts=first_attempt - 1,
+                    earlier_attempts=earlier,
                 )
                 raise
             verdict = validate(spec, workspace, result, input_hashes)
-            attempts.append(
-                {
-                    "attempt": number,
-                    "exit_code": result.exit_code,
-                    "duration_ms": result.duration_ms,
-                    "timed_out": result.timed_out,
-                    "ok": verdict.ok,
-                    "reason": verdict.reason,
-                    "checks": verdict.checks,
-                    "reasoning": script.reasoning,
-                    "stderr_tail": result.stderr[-_STDERR_IN_MANIFEST:],
-                }
-            )
+            attempts.append(_attempt_record(number, result, verdict, script.reasoning))
             previous, last = script, result
             if verdict.ok:
                 workspace.write_run_script(number)
@@ -200,7 +319,14 @@ class ExecutionRunner:
             resolved=resolved,
             attempts=attempts,
             verdict=verdict,
-            earlier_attempts=first_attempt - 1,
+            earlier_attempts=earlier,
+            # Always "synthesis": the only way to reach this line is either no
+            # match at all, or a match that already returned above on success.
+            # A quarantined match still ends up here having fallen all the way
+            # through the synthesis loop, so the lane that produced whatever
+            # verdict is being written really is synthesis.
+            lane="synthesis",
+            workflow=workflow_record,
         )
         return ExecutionOutcome(verdict, str(workspace.root), len(attempts))
 
@@ -227,6 +353,58 @@ class ExecutionRunner:
             raise _NoScript("the model returned an empty script")
         return script
 
+    def _bind(
+        self,
+        workspace: Workspace,
+        spec: TaskSpec,
+        resolved: list[ResolvedInput],
+        match: Match | None,
+        target: str,
+    ) -> dict[str, str]:
+        """Write params.json for whichever lane is about to run, then hash.
+
+        Returns the input hashes, so callers cannot forget to recompute them
+        after a rewrite — the failure mode is a false "the script modified its
+        inputs" verdict. A cached run binds under the workflow's role names; a
+        synthesis run (including one rescuing a quarantined cache) binds under
+        the spec's own input names, because that is what a freshly-synthesized
+        script is written to expect.
+        """
+        binding = (
+            dict(match.binding)
+            if match is not None
+            else {item.name: item.filename for item in resolved}
+        )
+        workspace.write_params(inputs=binding, output=target, seed=catalog.CATALOG_SEED)
+        return workspace.input_hashes()
+
+    def _run_workflow(
+        self,
+        workspace: Workspace,
+        match: Match,
+        number: int,
+        spec: TaskSpec,
+        input_hashes: dict[str, str],
+    ) -> tuple[Verdict, SandboxResult]:
+        """Run frozen, proven source. No model, no repair.
+
+        There is deliberately no repair loop here: a cached script is proven
+        code, so a failure means it is wrong for THIS request, and re-running it
+        unchanged would fail identically. Repairing it would also mean the
+        registry's source no longer matches what ran.
+
+        SandboxUnavailable is deliberately NOT caught here: the call site (in
+        run()) catches it instead, because writing the manifest before
+        re-raising needs the lane and the workflow record, and this helper has
+        neither — keeping both concerns split is what lets this stay a plain
+        "run and validate" function.
+        """
+        path = workspace.write_generator(number, match.workflow.source)
+        result = self.sandbox.run(
+            script=path, workspace=workspace.root, timeout_s=settings.sandbox_timeout_seconds
+        )
+        return validate(spec, workspace, result, input_hashes), result
+
     def _write_manifest(
         self,
         workspace: Workspace,
@@ -237,12 +415,15 @@ class ExecutionRunner:
         attempts: list[dict],
         verdict: Verdict,
         earlier_attempts: int = 0,
+        lane: str = "synthesis",
+        workflow: dict | None = None,
     ) -> None:
         workspace.write_manifest(
             {
                 "task_id": row.id,
                 "created_at": datetime.now(timezone.utc).isoformat(),
-                "lane": "synthesis",
+                "lane": lane,
+                "workflow": workflow,
                 # The sandbox that ACTUALLY ran, never the one we hoped for —
                 # and never resolved just to fill in this field. Reads the
                 # backing field, not the lazy property: the unresolved-inputs
@@ -255,8 +436,16 @@ class ExecutionRunner:
                 "sandbox": self._sandbox.name if self._sandbox is not None else None,
                 # Same rule as "sandbox" above, for the same reason: what
                 # actually wrote the script, never what the router would have
-                # picked. See _synthesis_author.
-                "models": {Stage.SYNTHESIS.value: _synthesis_author(self.synthesizer.llm)},
+                # picked. See _synthesis_author. On the cached lane no model
+                # wrote this script, and the manifest may not imply one did —
+                # unless synthesis went on to rescue the run after a quarantine,
+                # in which case a model DID write the winning script, and this
+                # is the same honesty rule crediting it, not an exception to it.
+                "models": {
+                    Stage.SYNTHESIS.value: (
+                        None if lane == "registry" else _synthesis_author(self.synthesizer.llm)
+                    )
+                },
                 "catalog_seed": catalog.CATALOG_SEED,
                 "spec": spec.model_dump(mode="json"),
                 "inputs": [

@@ -180,3 +180,41 @@ def test_an_oversized_bundle_is_refused_rather_than_zipped_in_memory(client, bun
     assert "individually" in response.json()["detail"]
     # The per-file routes still work, which is what the message points at.
     assert client.get(f"/tasks/{task.id}/bundle/deliverable").status_code == 200
+
+
+def test_a_manifest_symlink_escaping_the_bundle_is_not_served(client, bundled, tmp_path):
+    """manifest.json is read by get_bundle without going through _contained()
+    the way every other bundle path does — a symlink planted there by the
+    untrusted generator (os.symlink("/etc/passwd", "manifest.json")) would
+    otherwise have its target's bytes served through the dashboard. Treated
+    the same as a genuinely missing manifest: {}, never the target's content.
+    """
+    task, workspace = bundled
+    # A sibling of workspace.root under tmp_path: genuinely outside containment.
+    secret = tmp_path / "outside-secret.txt"
+    secret.write_text("SIMULATED HOST SECRET\n")
+    # Replace the real manifest.json (already written by the `bundled` fixture)
+    # with a symlink to that outside file.
+    (workspace.root / "manifest.json").unlink()
+    (workspace.root / "manifest.json").symlink_to(secret)
+
+    body = client.get(f"/tasks/{task.id}/bundle").json()
+
+    assert body["manifest"] == {}
+    assert "SIMULATED HOST SECRET" not in json.dumps(body)
+
+
+def test_a_malformed_manifest_does_not_500_the_bundle_endpoint(client, bundled):
+    """Finding 2: the bundle is mounted read-write into the sandbox, and
+    manifest.json sits at its root, so any synthesized script (buggy or
+    malicious) can leave it truncated with a single `open("manifest.json",
+    "w").write("{")`. That must degrade the same way a missing manifest
+    does — {} — not 500 forever on the one route the task's detail page
+    depends on."""
+    task, workspace = bundled
+    (workspace.root / "manifest.json").write_text("{")  # truncated JSON
+
+    response = client.get(f"/tasks/{task.id}/bundle")
+
+    assert response.status_code == 200
+    assert response.json()["manifest"] == {}
