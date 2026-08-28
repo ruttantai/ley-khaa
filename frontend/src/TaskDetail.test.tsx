@@ -162,3 +162,19 @@ it("says nothing about memory for a freshly interpreted task", () => {
   render(<TaskDetail task={task({ remembered_from_task_id: null, familiarity: 0 })} onChanged={() => {}} />);
   expect(screen.queryByText(/remembered/i)).toBeNull();
 });
+
+it("still marks a finished task as remembered, without reviving the mode controls", () => {
+  // A done task is not modeEditable, so the badge's visibility must not ride
+  // on that gate — but it must also not drag the mode buttons back in along
+  // with it (that would let a completed task's autonomy mode look editable).
+  render(
+    <TaskDetail
+      task={task({ state: "done", remembered_from_task_id: "t0", familiarity: 3 })}
+      onChanged={() => {}}
+    />,
+  );
+  expect(screen.getByText(/remembered/i)).toBeTruthy();
+  expect(screen.queryByLabelText("Suggest")).toBeNull();
+  expect(screen.queryByLabelText("Co-pilot")).toBeNull();
+  expect(screen.queryByLabelText("Auto")).toBeNull();
+});
