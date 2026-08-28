@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ..registry.promote import NAME_PATTERN
+
 
 class AttachmentIn(BaseModel):
     kind: str
@@ -125,7 +127,11 @@ class BundleOut(BaseModel):
 
 
 class PromoteIn(BaseModel):
-    name: str
+    # Same pattern promote.py's own NAME guard enforces (imported so there is
+    # one source of truth). Validated here too so a malformed name is FastAPI's
+    # native 422 — a bad request — rather than promote()'s 409, which is
+    # reserved for a state conflict in the bundle's own content.
+    name: str = Field(pattern=NAME_PATTERN)
     description: str = ""
 
 

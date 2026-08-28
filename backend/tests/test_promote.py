@@ -10,11 +10,39 @@ must never be promoted into code that runs on every future match.
 import json
 from pathlib import Path
 
+import pytest
+
 from ley_khaa.executor.workspace import Workspace
 from ley_khaa.persistence.repository import TaskRepository
 from ley_khaa.persistence.workflow_repository import WorkflowRepository
+from ley_khaa.registry.promote import NotPromotable, promote
 
 from .test_executor_end_to_end import _run_the_golden_conversation
+
+
+def _minimal_passing_bundle(session, tmp_path, *, inputs: dict[str, str]) -> tuple:
+    """A hand-built bundle that promote() will accept, for tests that need to
+    control exactly what the manifest/params/source say rather than driving a
+    real synthesis run."""
+    repo = TaskRepository(session)
+    task = repo.create(project="demo", title="hand-built bundle", source_message_ids=[])
+    workspace = Workspace.create(tmp_path, task.id)
+    for filename in inputs.values():
+        (workspace.inputs_dir / filename).write_text("a\n1\n")
+    workspace.write_generator(1, "print('ok')\n")
+    workspace.write_params(inputs=inputs, output="deliverable/output.csv", seed=1)
+    workspace.write_manifest(
+        {
+            "task_id": task.id,
+            "spec": {"operation": "summary_stats", "output_format": "csv"},
+            "attempts": [{"attempt": 1, "ok": True}],
+            "verdict": {"ok": True, "reason": "looked fine"},
+        }
+    )
+    repo.save_execution(
+        task.id, workspace_path=str(workspace.root), verdict={"ok": True, "reason": "looked fine"}
+    )
+    return task, workspace
 
 
 def _run_the_golden_conversation_again(client) -> dict:
@@ -190,3 +218,256 @@ def test_the_promoted_workflow_serves_the_next_matching_request(client, session)
     manifest, _ = _manifest_and_params(second)
     assert manifest["lane"] == "registry"
     assert manifest["workflow"]["name"] == "universe_check"
+
+
+# --- Finding 1: manifest.json itself must go through containment --------------
+
+def test_promotion_never_reads_a_symlinked_manifest(client, session, tmp_path):
+    """promote.py's docstring claims 'every path read below goes through'
+    contained(), but manifest.json was read via Workspace.read_manifest(),
+    which does exists() + read_text() — both symlink-following. A symlinked
+    manifest.json could smuggle a fabricated verdict and attempt list past
+    every other check promote() makes."""
+    repo = TaskRepository(session)
+    task = repo.create(project="demo", title="a poisoned manifest", source_message_ids=[])
+    workspace = Workspace.create(tmp_path, task.id)
+    (workspace.inputs_dir / "dataset.csv").write_text("ticker\nAAA\n")
+    workspace.write_params(inputs={"dataset": "dataset.csv"}, output="deliverable/output.csv", seed=1)
+    workspace.write_generator(1, "print('hi')\n")
+
+    # A forged manifest living outside the bundle entirely, claiming a passing
+    # verdict this bundle never earned.
+    outside = tmp_path / "outside-manifest.json"
+    outside.write_text(
+        json.dumps(
+            {
+                "task_id": task.id,
+                "spec": {"operation": "summary_stats", "output_format": "csv"},
+                "attempts": [{"attempt": 1, "ok": True}],
+                "verdict": {"ok": True, "reason": "forged"},
+            }
+        )
+    )
+    (workspace.root / "manifest.json").symlink_to(outside)
+
+    repo.save_execution(
+        task.id, workspace_path=str(workspace.root), verdict={"ok": True, "reason": "forged"}
+    )
+
+    response = client.post(
+        f"/tasks/{task.id}/promote", json={"name": "poisoned_manifest_workflow", "description": ""}
+    )
+
+    assert response.status_code == 409
+    assert WorkflowRepository(session).get("poisoned_manifest_workflow") is None
+
+
+# --- Finding 2: malformed bundle content is a 409, never a 500 ----------------
+
+def test_a_malformed_manifest_json_is_a_409(client, session, tmp_path):
+    repo = TaskRepository(session)
+    task = repo.create(project="demo", title="broken manifest", source_message_ids=[])
+    workspace = Workspace.create(tmp_path, task.id)
+    (workspace.inputs_dir / "dataset.csv").write_text("ticker\nAAA\n")
+    workspace.write_params(inputs={"dataset": "dataset.csv"}, output="deliverable/output.csv", seed=1)
+    workspace.write_generator(1, "print('hi')\n")
+    (workspace.root / "manifest.json").write_text("{not valid json")
+    repo.save_execution(task.id, workspace_path=str(workspace.root), verdict={"ok": True, "reason": "x"})
+
+    response = client.post(
+        f"/tasks/{task.id}/promote", json={"name": "broken_manifest_workflow", "description": ""}
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]
+    assert WorkflowRepository(session).get("broken_manifest_workflow") is None
+
+
+def test_a_missing_attempt_number_is_a_409(client, session, tmp_path):
+    """An attempts entry marked ok but with no "attempt" key — malformed, not
+    impossible, since this bundle's own bytes are written by untrusted code
+    that a compromised or buggy runner could still hand to promote()."""
+    repo = TaskRepository(session)
+    task = repo.create(project="demo", title="attempt-less manifest", source_message_ids=[])
+    workspace = Workspace.create(tmp_path, task.id)
+    (workspace.inputs_dir / "dataset.csv").write_text("ticker\nAAA\n")
+    workspace.write_params(inputs={"dataset": "dataset.csv"}, output="deliverable/output.csv", seed=1)
+    workspace.write_generator(1, "print('hi')\n")
+    workspace.write_manifest(
+        {
+            "task_id": task.id,
+            "spec": {"operation": "summary_stats", "output_format": "csv"},
+            "attempts": [{"ok": True}],  # no "attempt" key
+            "verdict": {"ok": True, "reason": "x"},
+        }
+    )
+    repo.save_execution(task.id, workspace_path=str(workspace.root), verdict={"ok": True, "reason": "x"})
+
+    response = client.post(
+        f"/tasks/{task.id}/promote", json={"name": "attemptless_workflow", "description": ""}
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]
+    assert WorkflowRepository(session).get("attemptless_workflow") is None
+
+
+def test_malformed_params_json_is_a_409(client, session, tmp_path):
+    repo = TaskRepository(session)
+    task = repo.create(project="demo", title="broken params", source_message_ids=[])
+    workspace = Workspace.create(tmp_path, task.id)
+    (workspace.inputs_dir / "dataset.csv").write_text("ticker\nAAA\n")
+    (workspace.inputs_dir / "params.json").write_text("not json at all")
+    workspace.write_generator(1, "print('hi')\n")
+    workspace.write_manifest(
+        {
+            "task_id": task.id,
+            "spec": {"operation": "summary_stats", "output_format": "csv"},
+            "attempts": [{"attempt": 1, "ok": True}],
+            "verdict": {"ok": True, "reason": "x"},
+        }
+    )
+    repo.save_execution(task.id, workspace_path=str(workspace.root), verdict={"ok": True, "reason": "x"})
+
+    response = client.post(
+        f"/tasks/{task.id}/promote", json={"name": "broken_params_workflow", "description": ""}
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]
+    assert WorkflowRepository(session).get("broken_params_workflow") is None
+
+
+def test_non_utf8_source_is_a_409(client, session, tmp_path):
+    repo = TaskRepository(session)
+    task = repo.create(project="demo", title="binary garbage source", source_message_ids=[])
+    workspace = Workspace.create(tmp_path, task.id)
+    (workspace.inputs_dir / "dataset.csv").write_text("ticker\nAAA\n")
+    workspace.write_params(inputs={"dataset": "dataset.csv"}, output="deliverable/output.csv", seed=1)
+    (workspace.generator_dir / "attempt_1.py").write_bytes(b"\xff\xfe\x00not utf-8 at all\x80")
+    workspace.write_manifest(
+        {
+            "task_id": task.id,
+            "spec": {"operation": "summary_stats", "output_format": "csv"},
+            "attempts": [{"attempt": 1, "ok": True}],
+            "verdict": {"ok": True, "reason": "x"},
+        }
+    )
+    repo.save_execution(task.id, workspace_path=str(workspace.root), verdict={"ok": True, "reason": "x"})
+
+    response = client.post(
+        f"/tasks/{task.id}/promote", json={"name": "binary_source_workflow", "description": ""}
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]
+    assert WorkflowRepository(session).get("binary_source_workflow") is None
+
+
+# --- Minor 8: a CRLF source must be hashed and stored byte-for-byte ----------
+
+def test_a_crlf_source_is_promoted_byte_for_byte(client, session, tmp_path):
+    """read_text() applies universal-newline translation: a CRLF source read
+    that way is silently promoted, hashed and replayed as LF, so
+    source_sha256 would attest bytes that never existed on disk — against
+    WorkflowRow's own docstring promising byte-for-byte source."""
+    repo = TaskRepository(session)
+    task = repo.create(project="demo", title="crlf source", source_message_ids=[])
+    workspace = Workspace.create(tmp_path, task.id)
+    (workspace.inputs_dir / "dataset.csv").write_text("ticker\nAAA\n")
+    workspace.write_params(inputs={"dataset": "dataset.csv"}, output="deliverable/output.csv", seed=1)
+    crlf_source = b"import sys\r\nprint('hi')\r\n"
+    (workspace.generator_dir / "attempt_1.py").write_bytes(crlf_source)
+    workspace.write_manifest(
+        {
+            "task_id": task.id,
+            "spec": {"operation": "summary_stats", "output_format": "csv"},
+            "attempts": [{"attempt": 1, "ok": True}],
+            "verdict": {"ok": True, "reason": "x"},
+        }
+    )
+    repo.save_execution(task.id, workspace_path=str(workspace.root), verdict={"ok": True, "reason": "x"})
+
+    response = client.post(
+        f"/tasks/{task.id}/promote", json={"name": "crlf_source_workflow", "description": ""}
+    )
+
+    assert response.status_code == 200
+    row = WorkflowRepository(session).get("crlf_source_workflow")
+    # The stored source keeps its \r\n line endings...
+    assert row.source == crlf_source.decode("utf-8")
+    assert "\r\n" in row.source
+    # ...and the hash attests those exact bytes, not an LF-normalized copy.
+    import hashlib
+
+    assert row.source_sha256 == hashlib.sha256(crlf_source).hexdigest()
+
+
+# --- Minor 3: role order must be pinned by a NON-alphabetical fixture ---------
+
+def test_role_order_pins_insertion_order_not_alphabetical(session, tmp_path):
+    """The golden conversation's roles ("bloomberg universe", "factset") are
+    already alphabetical, so test_the_roles_come_from_the_binding_that_actually_ran
+    cannot fail under a `sorted()` regression in promote(). This fixture's roles
+    are deliberately out of alphabetical order ("zulu" before "alpha"), so only
+    genuine insertion-order preservation makes it pass."""
+    task, workspace = _minimal_passing_bundle(session, tmp_path, inputs={"zulu": "z.csv", "alpha": "a.csv"})
+
+    from ley_khaa.api.app import _contained
+
+    row = promote(
+        session,
+        task_id=task.id,
+        name="reverse_order_roles",
+        description="",
+        root=workspace.root,
+        contained=_contained,
+    )
+
+    assert [r["role"] for r in row.inputs] == ["zulu", "alpha"]
+
+
+# --- Minor 6: the name regex must not accept a trailing newline --------------
+
+def test_a_trailing_newline_in_the_name_is_rejected_by_the_promote_guard(session, tmp_path):
+    """`.match()` anchored with a trailing `$` matches just before a trailing
+    newline in Python's `re` module, so 'universe_check\\n' was previously
+    accepted. This exercises promote()'s own guard directly — the path a
+    caller that bypasses the API schema (Finding 7) still hits — so name
+    validation runs before any file is touched."""
+    from ley_khaa.api.app import _contained
+
+    # Matched on the message, not just the exception type: without this, a
+    # buggy regex that lets the newline through would still raise
+    # NotPromotable further down (no bundle at `tmp_path`) for an unrelated
+    # reason, and the test would pass without ever exercising the name check.
+    with pytest.raises(NotPromotable, match="workflow name"):
+        promote(
+            session,
+            task_id="irrelevant",
+            name="universe_check\n",
+            description="",
+            root=tmp_path,
+            contained=_contained,
+        )
+
+
+# --- Finding 7: a malformed NAME is 422 (schema), never 409 ------------------
+
+def test_a_malformed_workflow_name_is_a_422_not_a_409(client, session):
+    task = _run_the_golden_conversation(client)
+
+    response = client.post(f"/tasks/{task['id']}/promote", json={"name": "Not Valid!", "description": ""})
+
+    assert response.status_code == 422
+    assert WorkflowRepository(session).get("Not Valid!") is None
+
+
+def test_a_trailing_newline_workflow_name_is_a_422_via_the_api(client, session):
+    task = _run_the_golden_conversation(client)
+
+    response = client.post(
+        f"/tasks/{task['id']}/promote", json={"name": "universe_check\n", "description": ""}
+    )
+
+    assert response.status_code == 422
