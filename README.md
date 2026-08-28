@@ -30,7 +30,9 @@ model. A proven bundle can be **promoted** from the dashboard into a permanent, 
 the next matching request replays that code instead of synthesizing, judged by the same validator.
 **Task memory** remembers the spec that satisfied a request and skips the interpreter on a repeat.
 Both match on a free, deterministic fingerprint first and fall back to one cheap, confidence-gated
-model call only on a miss — so the same request asked twice now costs no model call at all. See
+model call only on a miss — so the same request asked twice is interpreted and executed with no
+model call at all. That covers interpretation, matching and execution; it does not cover intake —
+relevance filtering and crystallization run on every message regardless, caches or not. See
 [The two caches](#the-two-caches) below.
 
 | Phase | Tag | Scope | State |
@@ -41,8 +43,6 @@ model call only on a miss — so the same request asked twice now costs no model
 | 3 | `v0.4.0` | Synthesis-first executor, validator, Output Bundle | ✅ shipped |
 | 4 | `v0.5.0` | **Workflow registry** + **task memory** | ✅ shipped |
 | — | `v1.0.0` | Definition of done (spec §11) | 🎯 target |
-
-Phases 2–4 are an indicative grouping of the spec's components, not yet broken down into written plans.
 
 Design spec: [`docs/superpowers/specs/2026-08-18-ley-khaa-design.md`](docs/superpowers/specs/2026-08-18-ley-khaa-design.md).
 Phase plans: [`docs/superpowers/plans/`](docs/superpowers/plans/).
@@ -144,13 +144,19 @@ Two learned fast paths sit in front of the model, each short-circuiting one expe
 - **The workflow registry** remembers proven generator code. A matched request runs that frozen
   source in the same sandbox, judged by the same validator, and skips synthesis entirely.
 
-Chained, the same request asked twice costs **no model call at all** the second time: memory recalls
-the spec, the registry replays the code, and both matchers try a free, deterministic fingerprint
-match first. Only a miss there costs one cheap, confidence-gated model call — and that call is
-**fingerprint-only offline**: with no `ANTHROPIC_API_KEY`, `HeuristicLLM` always answers "no match"
-for both, so a repeat still hits with the same wording but a paraphrase does not. Both caches degrade
-the same way — a miss just costs the normal path (interpret again, synthesize again) — never a wrong
-answer served with false confidence.
+Chained, the same request asked twice is **interpreted and executed with no model call at all** the
+second time: memory recalls the spec, the registry replays the code, and both matchers try a free,
+deterministic fingerprint match first. Only a miss there costs one cheap, confidence-gated model
+call — and that call is **fingerprint-only offline**: with no `ANTHROPIC_API_KEY`, `HeuristicLLM`
+always answers "no match" for both, so a repeat still hits with the same wording but a paraphrase
+does not. Both caches degrade the same way — a miss just costs the normal path (interpret again,
+synthesize again) — never a wrong answer served with false confidence.
+
+That "no model call" claim is scoped to interpretation, matching and execution — the two caches sit
+downstream of intake. `Orchestrator.ingest` calls the relevance filter and the crystallizer on every
+message unconditionally, cache hit or not, so a user asking the same thing twice in the actual chat
+still spends those two calls on the second ask; only the interpret-and-execute step behind them
+becomes free.
 
 A cached run is validated exactly like a synthesized one: same sandbox, same validator, same
 escalation on failure. A workflow that fails is quarantined (blocked from future matches until a
@@ -166,8 +172,9 @@ that copy auditable.
 On a fresh `docker compose up`, the registry ships with two seeds — `set_difference` (two csv
 inputs, xlsx output) and `summary_stats` (one csv input, csv output) — installed before the seeded
 demo conversation is replayed. That demo asks to compare Bloomberg against FactSet as Excel, which
-is exactly `set_difference`'s shape, so **the seeded demo now takes the registry fast path** instead
-of synthesizing. Anything else still synthesizes — the registry is a cache for known shapes, not the
+is exactly `set_difference`'s shape. The demo task itself lands parked at `awaiting_approval` and
+runs nothing at startup — but when it is approved, that run takes the registry fast path instead of
+synthesizing. Anything else still synthesizes — the registry is a cache for known shapes, not the
 only path.
 
 Memory never remembers input *files* — only input *names*. A remembered spec's `inputs` are re-resolved
@@ -190,7 +197,7 @@ cd frontend && npm install && npm run dev
 ## Develop
 
 ```bash
-cd backend  && python -m pytest -q   # 528 tests
+cd backend  && python -m pytest -q   # 529 tests
 cd frontend && npm test              # 37 tests (vitest)
 cd frontend && npm run typecheck     # `npm run build` is transpile-only; this is the real check
 ```

@@ -54,8 +54,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
   how many times it's been seen; a bundle panel note when the deliverable replayed a registry
   workflow instead of being synthesized.
 - `backend/tests/test_caches_end_to_end.py` (§9): the phase's headline claim as a test — the same
-  request asked twice makes zero model calls the second time and (for a csv deliverable) produces
-  byte-identical output; a request no seed knows still synthesizes.
+  request asked twice is interpreted and executed with zero model calls the second time and (for a
+  csv deliverable) produces byte-identical output; a request no seed knows still synthesizes; and
+  the seeded demo conversation itself takes the registry fast path once approved.
 
 ### Changed
 - **`inputs/params.json` is now the only contract a generator script may use for its input and

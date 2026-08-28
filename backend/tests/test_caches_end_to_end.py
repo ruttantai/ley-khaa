@@ -116,9 +116,26 @@ def test_a_request_with_no_match_still_synthesizes(seeded_registry):
     synthesis lane and still succeeds."""
     session = seeded_registry
 
-    result, llm = _run_to_done(session, "export the holdings as csv", conversation_id="conv-3")
+    result, _llm = _run_to_done(session, "export the holdings as csv", conversation_id="conv-3")
 
     assert result.state == TaskState.DONE.value, result.execution_verdict
     manifest = json.loads((Path(result.workspace_path) / "manifest.json").read_text())
     assert manifest["lane"] == "synthesis"
-    assert llm.calls  # the model actually did the work here
+    # llm.calls alone would pass on the interpreter call too; the synthesis
+    # credit is what actually distinguishes this from the registry lane.
+    assert manifest["models"]["synthesis"] is not None
+
+
+def test_the_seeded_demo_conversation_takes_the_registry_fast_path(seeded_registry, client):
+    """Pins the README claim: the seeds are installed before the demo
+    conversation is replayed (app.py's lifespan does the same, in the same
+    order), and the demo's request — compare Bloomberg against FactSet, as
+    Excel — is exactly set_difference's shape. Mirrors
+    test_executor_end_to_end.py's golden-conversation helper."""
+    client.post("/simulate/messy_universe_check")
+    task = client.get("/tasks").json()[0]
+    done = client.post(f"/tasks/{task['id']}/mode", json={"mode": "auto"}).json()
+
+    assert done["state"] == "done", done
+    manifest = json.loads((Path(done["workspace_path"]) / "manifest.json").read_text())
+    assert manifest["lane"] == "registry"
