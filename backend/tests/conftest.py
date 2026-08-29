@@ -1,5 +1,6 @@
 import os
 import tempfile
+import threading
 
 os.environ["LEY_KHAA_DISABLE_STARTUP"] = "1"
 os.environ["LEY_KHAA_LLM"] = "heuristic"
@@ -33,6 +34,22 @@ def session():
         bind=test_engine, autoflush=False, expire_on_commit=False, future=True
     )
     s = TestingSession()
+    # The dispatcher opens a session per unit of work and closes it; this one is
+    # shared with the test that yields it, so it must survive.
+    s._ley_khaa_shared = True
+    # This fixture's StaticPool hands out the SAME raw sqlite3 connection to
+    # every caller, and the dispatcher tests genuinely run two projects'
+    # dispatch work in two OS threads at once (that is what "concurrent across
+    # projects" means). A bare sqlite3 connection is not safe for concurrent
+    # cursor use from multiple threads even with check_same_thread=False — it
+    # corrupts (sqlite3.InterfaceError: bad parameter or other API misuse) or
+    # silently lets two callers "win" the same atomic claim. A real deployment
+    # never hits this: SessionLocal() hands each unit of work its own
+    # connection from a real pool. So this lock exists only for this shared
+    # fixture, keyed off it via the same _ley_khaa_shared-style attribute the
+    # dispatcher already checks — production sessions never carry it, so
+    # production dispatch stays fully concurrent.
+    s._ley_khaa_lock = threading.Lock()
     try:
         yield s
     finally:
