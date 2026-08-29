@@ -197,6 +197,20 @@ class TaskRepository:
                 lease_attempts=TaskRow.lease_attempts
                 + case((TaskRow.lease_owner.is_(None), 0), else_=1),
             )
+            # synchronize_session="auto" (the default) tries the "evaluate"
+            # strategy first: re-check this WHERE clause in Python against any
+            # already-loaded copy of this row in the identity map (e.g. the one
+            # next_runnable() just loaded on the same session). SQLite has no
+            # native tz-aware datetime type, so a value written as aware and
+            # then re-read comes back naive — Python then refuses to compare
+            # it against the aware `moment` above ("can't compare offset-naive
+            # and offset-aware datetimes"). Postgres returns real tz-aware
+            # timestamps, so this never bites in production. "fetch" keeps the
+            # identity map in sync the way callers rely on (a SELECT for the
+            # matched ids, then setting attributes from .values() directly)
+            # without re-evaluating the WHERE clause in Python, sidestepping
+            # the mismatch rather than juggling naive/aware conversions.
+            .execution_options(synchronize_session="fetch")
         )
         self.session.commit()
         return result.rowcount == 1
@@ -215,6 +229,8 @@ class TaskRepository:
             update(TaskRow)
             .where(TaskRow.id == task_id, TaskRow.lease_owner == owner)
             .values(lease_expires_at=moment + timedelta(seconds=ttl_seconds))
+            # Same naive/aware sqlite mismatch as claim_lease above.
+            .execution_options(synchronize_session="fetch")
         )
         self.session.commit()
         return result.rowcount == 1

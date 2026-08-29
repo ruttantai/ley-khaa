@@ -1,6 +1,5 @@
 import os
 import tempfile
-import threading
 
 os.environ["LEY_KHAA_DISABLE_STARTUP"] = "1"
 os.environ["LEY_KHAA_LLM"] = "heuristic"
@@ -37,23 +36,49 @@ def session():
     # The dispatcher opens a session per unit of work and closes it; this one is
     # shared with the test that yields it, so it must survive.
     s._ley_khaa_shared = True
-    # This fixture's StaticPool hands out the SAME raw sqlite3 connection to
-    # every caller, and the dispatcher tests genuinely run two projects'
-    # dispatch work in two OS threads at once (that is what "concurrent across
-    # projects" means). A bare sqlite3 connection is not safe for concurrent
-    # cursor use from multiple threads even with check_same_thread=False — it
-    # corrupts (sqlite3.InterfaceError: bad parameter or other API misuse) or
-    # silently lets two callers "win" the same atomic claim. A real deployment
-    # never hits this: SessionLocal() hands each unit of work its own
-    # connection from a real pool. So this lock exists only for this shared
-    # fixture, keyed off it via the same _ley_khaa_shared-style attribute the
-    # dispatcher already checks — production sessions never carry it, so
-    # production dispatch stays fully concurrent.
-    s._ley_khaa_lock = threading.Lock()
     try:
         yield s
     finally:
         s.close()
+
+
+@pytest.fixture
+def session_factory(tmp_path):
+    """Hand out genuinely independent sessions over a file-backed sqlite
+    database.
+
+    The `session` fixture above shares ONE physical connection (via
+    StaticPool over an in-memory database) across every caller, which is
+    fine for tests that touch the database from a single thread. The
+    dispatcher's own tests need the opposite: two dispatcher workers
+    genuinely running in two OS threads at once (`asyncio.to_thread`) must
+    each get their own real connection, the way `SessionLocal` does against
+    Postgres in production — a shared in-memory connection is not safe for
+    that (concurrent cursor use on one sqlite3 connection corrupts, even
+    with check_same_thread=False). A file-backed database gives every
+    `session_factory()` call its own connection to the same file, so
+    SQLite's own locking — not test-only Python machinery — is what
+    arbitrates concurrent access.
+
+    Deliberately named `session_factory` and placed here rather than local
+    to test_dispatcher.py: Task 15's lost-update test needs exactly this
+    fixture, and should reuse it rather than grow a second file-backed
+    factory beside it.
+    """
+    db_path = tmp_path / "dispatcher-test.db"
+    engine = create_engine(
+        f"sqlite:///{db_path}",
+        # A busy writer (two dispatchers racing a claim) should wait briefly
+        # for the lock rather than raise "database is locked" immediately.
+        connect_args={"timeout": 30},
+        future=True,
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
+    try:
+        yield Session
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture
