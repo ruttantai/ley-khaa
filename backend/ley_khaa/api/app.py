@@ -21,6 +21,7 @@ from ..domain.states import InvalidTransition
 from ..executor.workspace import MANIFEST_NAME, Workspace
 from ..intake.simulator import Simulator
 from ..llm.factory import build_llm
+from ..orchestrator.dispatcher import Dispatcher
 from ..orchestrator.orchestrator import ForeignReplyTarget, Orchestrator
 from ..persistence.candidate_repository import CandidateRepository
 from ..persistence.memory_repository import MemoryRepository
@@ -68,13 +69,24 @@ def _sweep_once() -> int:
     try:
         orchestrator = build_orchestrator(session)
         promoted = len(orchestrator.sweep())
-        # Also re-drive tasks that stalled mid-flight. This is what retries an
-        # interpretation that hit a transport failure: the task sits in CLASSIFIED
-        # and nothing else would ever pick it up.
-        orchestrator.advance_stalled()
+        if settings.dispatch_mode == "inline":
+            # In workers mode the dispatcher owns re-driving, and it does so
+            # under a lease. Driving here as well would run a second lane over
+            # a task a worker already holds.
+            orchestrator.advance_stalled()
         return promoted
     finally:
         session.close()
+
+
+def _drive_task(session: Session, task_id: str) -> None:
+    """What the dispatcher does with a leased task: exactly what every release
+    before 0.6.0 did inline."""
+    build_orchestrator(session).driver.advance(task_id)
+
+
+def build_dispatcher() -> Dispatcher:
+    return Dispatcher(SessionLocal, drive=_drive_task)
 
 
 async def _periodic_sweeper(interval: float, sweep: Callable[[], int] = _sweep_once) -> None:
@@ -122,13 +134,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         session.close()
 
     app.state.sweeper = asyncio.create_task(_periodic_sweeper(settings.sweep_interval_seconds))
+    app.state.dispatcher = None
+    if settings.dispatch_mode == "workers":
+        app.state.dispatcher = asyncio.create_task(
+            build_dispatcher().run_forever(settings.sweep_interval_seconds)
+        )
     try:
         yield
     finally:
-        app.state.sweeper.cancel()
-        with suppress(asyncio.CancelledError):
-            await app.state.sweeper
+        for task in (app.state.sweeper, app.state.dispatcher):
+            if task is None:
+                continue
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
         app.state.sweeper = None
+        app.state.dispatcher = None
 
 
 app = FastAPI(title="ley-khaa", lifespan=lifespan)

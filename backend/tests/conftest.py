@@ -5,6 +5,9 @@ os.environ["LEY_KHAA_DISABLE_STARTUP"] = "1"
 os.environ["LEY_KHAA_LLM"] = "heuristic"
 os.environ["LEY_KHAA_DEBOUNCE_SECONDS"] = "0"
 os.environ["LEY_KHAA_SANDBOX"] = "subprocess"
+# The existing suite asserts on tasks that have already run. Workers mode is
+# covered on its own terms in test_dispatcher.py and test_concurrency.py.
+os.environ["LEY_KHAA_DISPATCH"] = "inline"
 # Otherwise every test that executes a task writes a bundle into ./task-workspaces
 # in whatever directory pytest was invoked from.
 os.environ.setdefault("LEY_KHAA_WORKSPACE_ROOT", tempfile.mkdtemp(prefix="ley-khaa-tests-"))

@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from ..autonomy.engine import recommend
 from ..autonomy.modes import AutonomyMode
+from ..config import settings
 from ..domain.states import WAITING as _WAITING
 from ..domain.states import InvalidTransition, TaskState
 from ..executor.runner import ExecutionRunner
@@ -88,6 +89,21 @@ class TaskDriver:
         logger.warning("task %s hit the step ceiling; leaving it where it is", task_id)
         return self.repo.get(task_id)
 
+    def hand_off(self, task_id: str) -> TaskRow:
+        """Carry on after something made this task runnable.
+
+        Inline mode drives it here, on the caller's thread — the behaviour every
+        release before 0.6.0 had. In workers mode the task is now runnable and
+        the dispatcher will lease it, so this returns immediately: an HTTP
+        request must not block through two Opus calls and a sandbox run.
+
+        advance() itself is unchanged and is what the dispatcher calls. The split
+        is only about who does the driving, never about what driving means.
+        """
+        if settings.dispatch_mode == "inline":
+            return self.advance(task_id)
+        return self.repo.get(task_id)
+
     # --- human actions ----------------------------------------------------
 
     def approve(self, task_id: str) -> TaskRow:
@@ -95,7 +111,7 @@ class TaskDriver:
             task_id, expected=TaskState.AWAITING_APPROVAL, target=TaskState.EXECUTING
         ):
             raise InvalidTransition(f"task {task_id} is not awaiting approval")
-        return self.advance(task_id)
+        return self.hand_off(task_id)
 
     def reject(self, task_id: str, reason: str = "rejected by the human") -> TaskRow:
         row = self.repo.get(task_id)
@@ -130,7 +146,7 @@ class TaskDriver:
             self.repo.claim(
                 task_id, expected=TaskState.AWAITING_APPROVAL, target=TaskState.INTERPRETED
             )
-        return self.advance(task_id)
+        return self.hand_off(task_id)
 
     def edit_spec(self, task_id: str, patch: dict) -> TaskRow:
         row = self.repo.get(task_id)
@@ -154,7 +170,7 @@ class TaskDriver:
         # interpreter would overwrite the human's correction with the model's
         # original reading.
         self.repo.claim(task_id, expected=state, target=TaskState.INTERPRETED)
-        return self.advance(task_id)
+        return self.hand_off(task_id)
 
     # --- automatic steps --------------------------------------------------
 

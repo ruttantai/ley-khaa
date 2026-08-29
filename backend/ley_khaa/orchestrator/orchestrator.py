@@ -182,7 +182,7 @@ class Orchestrator:
                 expected=TaskState.NEEDS_CLARIFICATION,
                 target=TaskState.CLASSIFIED,
             )
-            self.driver.advance(task.id)
+            self.driver.hand_off(task.id)
             result.task_ids.append(task.id)
         # A reply to a task that is not currently asking anything is still worth
         # keeping — it is context for the next interpretation — but it does not
@@ -243,7 +243,7 @@ class Orchestrator:
         # The driver owns everything from here: interpret, score, and either park
         # for a human or (on Auto) run through. The orchestrator's job ends at
         # turning a settled candidate into a task.
-        self.driver.advance(task.id)
+        self.driver.hand_off(task.id)
         return task.id
 
     def _route(self, candidate: CandidateRow) -> str:
