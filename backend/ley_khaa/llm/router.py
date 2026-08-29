@@ -20,6 +20,7 @@ class Stage(str, Enum):
     REGISTRY_MATCH = "registry_match"
     MEMORY_MATCH = "memory_match"
     PROJECT_ROUTE = "project_route"
+    AMENDMENT_MATCH = "amendment_match"
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,9 @@ _POLICY: dict[Stage, dict[str, str]] = {
     # Exists to decide where work goes, not to do the work. Haiku at both
     # complexities, like the other two matchers.
     Stage.PROJECT_ROUTE: {"routine": HAIKU, "hard": HAIKU},
+    # Exists to name a candidate, not to do the work. Haiku at both
+    # complexities, like the other matchers of this shape.
+    Stage.AMENDMENT_MATCH: {"routine": HAIKU, "hard": HAIKU},
 }
 
 _MAX_TOKENS: dict[Stage, int] = {
@@ -60,6 +64,8 @@ _MAX_TOKENS: dict[Stage, int] = {
     Stage.MEMORY_MATCH: 1024,
     # A name, a float and one sentence.
     Stage.PROJECT_ROUTE: 1024,
+    # A name, a float and one sentence.
+    Stage.AMENDMENT_MATCH: 1024,
 }
 
 

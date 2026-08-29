@@ -145,6 +145,22 @@ class TaskRepository:
         self.session.refresh(row)
         return row.clarification_rounds
 
+    def active_in_project(self, project: str) -> list[TaskRow]:
+        """Tasks in this project that are not finished.
+
+        Deliberately includes AWAITING_APPROVAL and NEEDS_CLARIFICATION: a task
+        parked in front of a person is exactly the one a follow-up message is
+        most likely to be amending.
+        """
+        finished = [s.value for s in TERMINAL]
+        return list(
+            self.session.scalars(
+                select(TaskRow)
+                .where(TaskRow.project == project, TaskRow.state.not_in(finished))
+                .order_by(TaskRow.created_at)
+            )
+        )
+
     def list_by_state(self, state: TaskState) -> list[TaskRow]:
         return list(
             self.session.scalars(
