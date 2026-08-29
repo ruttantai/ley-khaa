@@ -53,6 +53,22 @@ _ALLOWED: dict[TaskState, set[TaskState]] = {
 }
 
 
+# Where a task comes to rest on its own: finished, or a human owes it something.
+# Lives here rather than in the driver because the dispatcher needs the same
+# answer, and two copies of this set would drift.
+WAITING: frozenset[TaskState] = frozenset(
+    {
+        TaskState.AWAITING_APPROVAL,
+        TaskState.NEEDS_CLARIFICATION,
+        TaskState.DONE,
+        TaskState.FAILED,
+    }
+)
+
+# Nothing moves a task out of these.
+TERMINAL: frozenset[TaskState] = frozenset({TaskState.DONE, TaskState.FAILED})
+
+
 class InvalidTransition(Exception):
     pass
 

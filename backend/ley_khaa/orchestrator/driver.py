@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from ..autonomy.engine import recommend
 from ..autonomy.modes import AutonomyMode
+from ..domain.states import WAITING as _WAITING
 from ..domain.states import InvalidTransition, TaskState
 from ..executor.runner import ExecutionRunner
 from ..executor.sandbox import SandboxUnavailable
@@ -21,14 +22,6 @@ from ..persistence.repository import TaskRepository
 from ..persistence.workflow_repository import WorkflowRepository
 
 logger = logging.getLogger(__name__)
-
-# Where a task comes to rest on its own: finished, or a human owes it something.
-_WAITING = {
-    TaskState.AWAITING_APPROVAL,
-    TaskState.NEEDS_CLARIFICATION,
-    TaskState.DONE,
-    TaskState.FAILED,
-}
 
 # Each pass performs at most one transition, so this only has to exceed the
 # longest automatic run (received → classified → interpreted → executing →

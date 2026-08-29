@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import case, or_, select, update
 from sqlalchemy.orm import Session
 
-from ..domain.states import TaskState, ensure_transition
+from ..domain.states import TERMINAL, WAITING, TaskState, ensure_transition
 from ..interpreter.spec import TaskSpec
 from .orm import TaskRow
 
@@ -163,3 +163,103 @@ class TaskRepository:
         row.familiarity = familiarity
         self.session.commit()
         return row
+
+    # --- the lease that makes this table the queue (spec §3.2) --------------
+
+    def claim_lease(
+        self, task_id: str, *, owner: str, ttl_seconds: int, now: datetime | None = None
+    ) -> bool:
+        """Take the lease on a task. True if we won it.
+
+        Wins only when the lease is free or has EXPIRED — an unexpired lease
+        means another worker is genuinely mid-flight, and stealing it would run
+        two lanes over one workspace, which is exactly what advance_stalled()
+        excluded EXECUTING to avoid.
+
+        The CASE is load-bearing: lease_attempts counts reclaims of an expired
+        lease, never ordinary claims. Incrementing unconditionally would count
+        every hand-off between states, so a healthy task would trip the attempt
+        cap just by making normal progress.
+        """
+        moment = now or datetime.now(timezone.utc)
+        result = self.session.execute(
+            update(TaskRow)
+            .where(
+                TaskRow.id == task_id,
+                or_(
+                    TaskRow.lease_owner.is_(None),
+                    TaskRow.lease_expires_at < moment,
+                ),
+            )
+            .values(
+                lease_owner=owner,
+                lease_expires_at=moment + timedelta(seconds=ttl_seconds),
+                lease_attempts=TaskRow.lease_attempts
+                + case((TaskRow.lease_owner.is_(None), 0), else_=1),
+            )
+        )
+        self.session.commit()
+        return result.rowcount == 1
+
+    def heartbeat_lease(
+        self, task_id: str, *, owner: str, ttl_seconds: int, now: datetime | None = None
+    ) -> bool:
+        """Push the expiry out while work is still in flight.
+
+        Guarded on ownership: a worker whose lease already expired and was taken
+        over must not be able to extend it back out from under its successor.
+        A False here tells the caller it has lost the task and must stop.
+        """
+        moment = now or datetime.now(timezone.utc)
+        result = self.session.execute(
+            update(TaskRow)
+            .where(TaskRow.id == task_id, TaskRow.lease_owner == owner)
+            .values(lease_expires_at=moment + timedelta(seconds=ttl_seconds))
+        )
+        self.session.commit()
+        return result.rowcount == 1
+
+    def release_lease(self, task_id: str, *, owner: str) -> bool:
+        """Hand the task back. Guarded on ownership for the same reason as the
+        heartbeat: releasing a lease you no longer hold would hand a live task
+        to a third worker."""
+        result = self.session.execute(
+            update(TaskRow)
+            .where(TaskRow.id == task_id, TaskRow.lease_owner == owner)
+            .values(lease_owner=None, lease_expires_at=None)
+        )
+        self.session.commit()
+        return result.rowcount == 1
+
+    # --- what is waiting to run --------------------------------------------
+
+    def _runnable_where(self, moment: datetime):
+        """A task is runnable when nothing else is driving it and nobody is
+        waiting on a human: state is neither terminal nor human-waiting, and the
+        lease is free or expired."""
+        blocked = [s.value for s in WAITING | TERMINAL]
+        return (
+            TaskRow.state.not_in(blocked),
+            or_(TaskRow.lease_owner.is_(None), TaskRow.lease_expires_at < moment),
+        )
+
+    def runnable_projects(self, now: datetime | None = None) -> list[str]:
+        moment = now or datetime.now(timezone.utc)
+        rows = self.session.scalars(
+            select(TaskRow.project)
+            .where(*self._runnable_where(moment))
+            .group_by(TaskRow.project)
+            .order_by(TaskRow.project)
+        )
+        return list(rows)
+
+    def next_runnable(self, project: str, now: datetime | None = None) -> TaskRow | None:
+        """The oldest runnable task in a project. FIFO: urgency-based reordering
+        is deliberately out of scope (spec §7) because urgency lives in the spec,
+        which is only known after the task has already been dequeued."""
+        moment = now or datetime.now(timezone.utc)
+        return self.session.scalars(
+            select(TaskRow)
+            .where(TaskRow.project == project, *self._runnable_where(moment))
+            .order_by(TaskRow.created_at)
+        ).first()
