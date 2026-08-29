@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
@@ -107,7 +107,15 @@ class WorkflowRow(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str] = mapped_column(String, unique=True, index=True)
-    description: Mapped[str] = mapped_column(String, default="")
+    # server_default is text("''"), not the plain string "": Alembic's
+    # autogenerate comparator renders a bare Python string default as
+    # unquoted literal SQL, which for a non-empty string still ends up
+    # matching the (quoted) reflected default after its own quote-stripping —
+    # but for an empty string there is nothing left to strip, so raw ""
+    # compares unequal to the DB's reflected `''` and false-positives as
+    # drift. A pre-quoted text() default sidesteps that; the emitted DDL
+    # (`DEFAULT ''`) is identical either way.
+    description: Mapped[str] = mapped_column(String, default="", server_default=text("''"))
     # Normalized operation strings that match this workflow. Grows by one every
     # time the model matcher finds a phrasing that then passes validation.
     operation_aliases: Mapped[list] = mapped_column(JSON, default=list)
@@ -116,7 +124,8 @@ class WorkflowRow(Base):
     inputs: Mapped[list] = mapped_column(JSON, default=list)
     source: Mapped[str] = mapped_column(String)
     source_sha256: Mapped[str] = mapped_column(String)
-    origin: Mapped[str] = mapped_column(String, default="promoted")  # seed | promoted
+    # seed | promoted
+    origin: Mapped[str] = mapped_column(String, default="promoted", server_default="promoted")
     promoted_from_task_id: Mapped[str | None] = mapped_column(String, nullable=True)
     promoted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     runs_ok: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
@@ -148,9 +157,12 @@ class MemoryRow(Base):
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    project: Mapped[str] = mapped_column(String, index=True, default="default")
+    project: Mapped[str] = mapped_column(
+        String, index=True, default="default", server_default="default"
+    )
     fingerprint: Mapped[str] = mapped_column(String, index=True)
-    intent: Mapped[str] = mapped_column(String, default="")
+    # See WorkflowRow.description above for why this is text("''") and not "".
+    intent: Mapped[str] = mapped_column(String, default="", server_default=text("''"))
     spec: Mapped[dict] = mapped_column(JSON)
     source_task_id: Mapped[str] = mapped_column(String)
     times_seen: Mapped[int] = mapped_column(Integer, default=1, server_default="1")

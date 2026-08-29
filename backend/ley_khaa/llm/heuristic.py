@@ -71,7 +71,8 @@ so a fresh clone with no ANTHROPIC_API_KEY still produces a genuine bundle.
 import csv
 import json
 
-_params = json.load(open("inputs/params.json", encoding="utf-8"))
+with open("inputs/params.json", encoding="utf-8") as _handle:
+    _params = json.load(_handle)
 # Ordered: params.json is written in spec-input order (never sorted — see
 # write_params), and dicts preserve insertion order, so INPUTS[0]/[1] land as
 # the same left/right operands _SET_DIFFERENCE was given.

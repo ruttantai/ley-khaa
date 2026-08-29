@@ -332,9 +332,9 @@ def _contained(root: Path, candidate: Path) -> Path | None:
     "deliverable/out.csv")` is one line inside it. A symlink planted anywhere
     under the bundle — including inside a directory that is itself a
     symlink — resolves outside root and is rejected here exactly like a
-    "../.." traversal is. Every route that reads bundle contents (the
-    listing, the file viewer, the deliverable download, the zip download)
-    must run every candidate path through this before touching it.
+    "../.." traversal is. Every path that touches bundle contents — every
+    route, and every helper a route delegates to, such as registry/promote.py
+    — must run every candidate path through this before touching it.
     """
     resolved = candidate.resolve()
     if not resolved.is_relative_to(root.resolve()):
