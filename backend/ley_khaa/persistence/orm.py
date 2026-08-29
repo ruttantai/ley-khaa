@@ -44,6 +44,18 @@ class TaskRow(Base):
     remembered_from_task_id: Mapped[str | None] = mapped_column(String, nullable=True)
     familiarity: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
+    # --- the lease that makes this table the queue (spec §3.2) --------------
+    # A worker holds a task by writing its id here with an expiry it heartbeats.
+    # Only an EXPIRED lease is reclaimable, which is what distinguishes "a
+    # worker is busy with this" from "the worker holding this died".
+    lease_owner: Mapped[str | None] = mapped_column(String, nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Counts RECLAIMS of an expired lease, never ordinary claims — see
+    # TaskRepository.claim_lease. A task driven normally ends its life at 0.
+    lease_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
     @property
     def effective_mode(self) -> str | None:
         """The mode actually in force. Computed, never stored, so a human's
@@ -93,6 +105,14 @@ class CandidateRow(Base):
     task_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    # --- a parked amendment proposal (spec §3.9) ---------------------------
+    # Set only while this candidate sits in AWAITING_TRIAGE. amends_task_id is
+    # the task the detector thinks this request modifies; the reason is the
+    # model's own sentence, shown to the human who decides.
+    amends_task_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    amendment_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    amendment_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class WorkflowRow(Base):
@@ -168,3 +188,47 @@ class MemoryRow(Base):
     times_seen: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class ProjectRow(Base):
+    """A workstream tasks are routed into (spec §5.4).
+
+    `description` is not decoration: it is the only thing stage-2 routing has to
+    reason over, so a project with an empty description is unroutable by the
+    model and reachable only by an explicit binding. POST /projects says so.
+    """
+
+    __tablename__ = "projects"
+
+    name: Mapped[str] = mapped_column(String, primary_key=True)
+    display_name: Mapped[str] = mapped_column(String, default="", server_default=text("''"))
+    description: Mapped[str] = mapped_column(String, default="", server_default=text("''"))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class ProjectBindingRow(Base):
+    """Which project a channel, a client, or one conversation belongs to.
+
+    conversation_id is "" — NOT NULL — when the binding covers a whole client.
+    SQL treats NULLs as distinct, so a nullable column here would let two
+    client-wide bindings for the same client both exist and turn
+    "most specific wins" into "whichever row the database returned first".
+    """
+
+    __tablename__ = "project_bindings"
+    __table_args__ = (
+        UniqueConstraint("source", "client", "conversation_id", name="uq_binding_scope"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    source: Mapped[str] = mapped_column(String, index=True)
+    client: Mapped[str] = mapped_column(String, index=True)
+    conversation_id: Mapped[str] = mapped_column(String, default="", server_default=text("''"))
+    project: Mapped[str] = mapped_column(String, index=True)
+    # "seed" | "manual" | "model" — the last is what the learning rule writes,
+    # and it is what makes a stage-2 decision auditable after the fact.
+    created_by_stage: Mapped[str] = mapped_column(
+        String, default="manual", server_default="manual"
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
