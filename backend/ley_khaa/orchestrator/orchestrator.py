@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -12,9 +13,13 @@ from ..persistence.candidate_repository import CandidateRepository
 from ..persistence.memory_repository import MemoryRepository
 from ..persistence.message_repository import MessageRepository
 from ..persistence.orm import CandidateRow, MessageRow
+from ..persistence.project_repository import DEFAULT_PROJECT, ProjectRepository
 from ..persistence.repository import TaskRepository
 from ..persistence.workflow_repository import WorkflowRepository
+from ..projects.router import ProjectRouter
 from .driver import TaskDriver
+
+logger = logging.getLogger(__name__)
 
 
 class ForeignReplyTarget(Exception):
@@ -52,6 +57,7 @@ class Orchestrator:
         gate: ReadinessGate | None = None,
         workflows: WorkflowRepository | None = None,
         memories: MemoryRepository | None = None,
+        projects: ProjectRepository | None = None,
     ) -> None:
         self.repo = repo
         self.messages = messages
@@ -64,6 +70,8 @@ class Orchestrator:
             repo, llm=llm, messages=messages, candidates=candidates,
             workflows=workflows, memories=memories,
         )
+        self.projects = projects
+        self.router = ProjectRouter(projects, llm) if projects is not None else None
 
     def ingest(self, raw: dict, *, promote: bool = True) -> IntakeResult:
         row = self.gateway.accept(raw)
@@ -226,7 +234,7 @@ class Orchestrator:
         if not self.candidates.claim_for_promotion(candidate.id):
             return None
         task = self.repo.create(
-            project="default",
+            project=self._route(candidate),
             title=candidate.title,
             source_message_ids=list(candidate.message_ids),
             candidate_id=candidate.id,
@@ -237,6 +245,33 @@ class Orchestrator:
         # turning a settled candidate into a task.
         self.driver.advance(task.id)
         return task.id
+
+    def _route(self, candidate: CandidateRow) -> str:
+        """Which project this candidate's work belongs to (spec §5.4).
+
+        source and client live on the MESSAGES, not on the candidate — the
+        candidate only knows its conversation. A candidate with no messages
+        cannot be routed and goes to the default project rather than taking
+        intake down with an IndexError.
+        """
+        if self.router is None:
+            return DEFAULT_PROJECT
+        messages = self.messages.get_many(list(candidate.message_ids or []))
+        if not messages:
+            return DEFAULT_PROJECT
+        first = messages[0]
+        decision = self.router.route(
+            source=first.source,
+            client=first.client,
+            conversation_id=candidate.conversation_id,
+            title=candidate.title,
+            summary=candidate.summary,
+        )
+        logger.info(
+            "task from candidate %s routed to %s by %s (%s)",
+            candidate.id, decision.project, decision.stage, decision.reason,
+        )
+        return decision.project
 
     def advance_stalled(self) -> list[str]:
         """Re-drive every task that is mid-flight but not waiting on a human.

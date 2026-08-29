@@ -25,8 +25,10 @@ from ..orchestrator.orchestrator import ForeignReplyTarget, Orchestrator
 from ..persistence.candidate_repository import CandidateRepository
 from ..persistence.memory_repository import MemoryRepository
 from ..persistence.message_repository import MessageRepository
+from ..persistence.project_repository import ProjectRepository
 from ..persistence.repository import TaskRepository
 from ..persistence.workflow_repository import DuplicateWorkflow, WorkflowRepository
+from ..projects.seeds import ensure_default_project
 from ..registry.promote import NotPromotable, promote
 from ..registry.seeds import ensure_seed_workflows
 from .schemas import (
@@ -56,6 +58,7 @@ def build_orchestrator(session: Session) -> Orchestrator:
         gate=ReadinessGate(settings.crystallizer_debounce_seconds),
         workflows=WorkflowRepository(session),
         memories=MemoryRepository(session),
+        projects=ProjectRepository(session),
     )
 
 
@@ -110,6 +113,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # The registry ships with two proven workflows so a fresh clone can show
         # the fast path before anyone has promoted anything.
         ensure_seed_workflows(session)
+        # Every task must land in a project that exists, including the very
+        # first one on a fresh clone.
+        ensure_default_project(session)
         if not repo.list():
             Simulator(build_orchestrator(session)).replay("messy_universe_check")
     finally:

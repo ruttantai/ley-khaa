@@ -5,6 +5,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
 
 ## [Unreleased]
 
+### Added
+- Routing at promotion (§5.4): `Orchestrator._promote` now routes each candidate to a real
+  project instead of hardcoding `"default"`. `ProjectRouter` (a `projects` keyword argument on
+  `Orchestrator`, wired in `build_orchestrator`) checks for an existing binding first — free — and
+  falls back to one model call, gated at confidence 0.8, only on a miss; a miss, an unroutable
+  candidate (no messages), or no router at all still produces a task in `default` rather than
+  dropping the request. `projects/seeds.py::ensure_default_project` installs the `default` project
+  idempotently at startup, beside `ensure_seed_workflows`, so a fresh clone always has somewhere for
+  the first task to land.
+
 ## [0.5.0] — 2026-08-28
 
 ### Added
@@ -41,8 +51,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
   a passing verdict.
 - `MemoryMatcher`, the same two-stage shape as the registry: an exact fingerprint hit costs no model
   call; a miss gets one cheap Haiku call at the same 0.8 confidence floor; null is always a legal
-  answer, scoped by `TaskRow.project`, which is `"default"` for every task until §5.4 project
-  routing lands — so today that scoping is structural, not yet a separation between clients.
+  answer, scoped by `TaskRow.project` — as of Phase 5's routing (see Unreleased), that project is
+  assigned per client, so this scoping is a real separation between clients' memory, not merely
+  structural.
 - `TaskDriver`: a recognised repeat skips the interpreter entirely and reuses the remembered spec's
   shape — `source_message_ids` re-pointed at this task's own messages, and `inputs` re-resolved
   against this task's own attachments/catalog at execution time, never the remembered task's files.
