@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from ..domain.states import TaskState
 from ..interpreter.spec import TaskSpec
 from .modes import AutonomyMode
 
@@ -139,3 +140,58 @@ def _risk_label(risk: float) -> str:
 
 def _clamp(value: float) -> float:
     return round(min(1.0, max(0.0, value)), 4)
+
+
+# --- folding an amendment (spec §3.8) -------------------------------------
+# Past these states a task owns a live sandbox workspace and a half-written
+# bundle. Folding would mutate work already in flight, so these ALWAYS go to a
+# human — this is a structural fact about the executor, not a threshold, and it
+# is checked before any scoring so no tuning can reach past it.
+PAST_NO_RETURN: frozenset[TaskState] = frozenset(
+    {TaskState.EXECUTING, TaskState.VALIDATING}
+)
+
+# Folding is destructive in one direction: a separate request folded into a task
+# is no longer separate. Auto needs more than the detector's own floor.
+_AUTO_FOLD_CONFIDENCE = 0.9
+
+
+@dataclass(frozen=True)
+class FoldDecision:
+    fold: bool
+    reason: str
+
+
+def recommend_fold(
+    *,
+    mode: AutonomyMode | None,
+    detector_confidence: float,
+    target_state: TaskState,
+    target_missing_fields: list[str],
+) -> FoldDecision:
+    """Should this amendment be folded in without asking?
+
+    Pure and deterministic, like recommend(). The dial governs the decision; the
+    guard above governs the dial.
+    """
+    if target_state in PAST_NO_RETURN:
+        return FoldDecision(
+            fold=False,
+            reason=f"the task is already under way ({target_state.value}) — asking first",
+        )
+    if mode is not AutonomyMode.AUTO:
+        label = mode.value if mode is not None else "unscored"
+        return FoldDecision(fold=False, reason=f"the task is in {label} — asking first")
+    if target_missing_fields:
+        return FoldDecision(
+            fold=False,
+            reason=f"the task still has {len(target_missing_fields)} unknown field(s) — asking first",
+        )
+    if detector_confidence < _AUTO_FOLD_CONFIDENCE:
+        return FoldDecision(
+            fold=False,
+            reason=f"only {detector_confidence:.0%} sure this is an amendment — asking first",
+        )
+    return FoldDecision(
+        fold=True, reason=f"{detector_confidence:.0%} sure, and the task is in Auto — folding it in"
+    )
