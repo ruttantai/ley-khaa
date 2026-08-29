@@ -5,6 +5,7 @@ class CandidateState(str, Enum):
     FORMING = "forming"
     CRYSTALLIZING = "crystallizing"
     READY = "ready"
+    AWAITING_TRIAGE = "awaiting_triage"
     PROMOTED = "promoted"
     ABANDONED = "abandoned"
 
@@ -37,6 +38,14 @@ _ALLOWED: dict[CandidateState, set[CandidateState]] = {
         CandidateState.READY,
         CandidateState.CRYSTALLIZING,
         CandidateState.FORMING,
+        CandidateState.PROMOTED,
+        CandidateState.ABANDONED,
+        CandidateState.AWAITING_TRIAGE,
+    },
+    # A candidate whose amendment proposal is waiting on a human. Reachable only
+    # from READY, and it ends the same two ways any candidate ends: PROMOTED (the
+    # human folded it or ran it separately) or ABANDONED.
+    CandidateState.AWAITING_TRIAGE: {
         CandidateState.PROMOTED,
         CandidateState.ABANDONED,
     },

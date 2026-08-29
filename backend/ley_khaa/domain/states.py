@@ -28,14 +28,20 @@ _ALLOWED: dict[TaskState, set[TaskState]] = {
         TaskState.NEEDS_CLARIFICATION,
         TaskState.FAILED,
     },
+    # Folding an amendment re-interprets the task over its enlarged message set,
+    # so both of these lead back to CLASSIFIED. EXECUTING and VALIDATING
+    # deliberately do NOT: a task with a live sandbox workspace is past the
+    # point where its inputs can change (autonomy/engine.py::PAST_NO_RETURN).
     TaskState.INTERPRETED: {
         TaskState.AWAITING_APPROVAL,
         TaskState.EXECUTING,
+        TaskState.CLASSIFIED,
         TaskState.FAILED,
     },
     TaskState.AWAITING_APPROVAL: {
         TaskState.EXECUTING,
         TaskState.INTERPRETED,
+        TaskState.CLASSIFIED,
         TaskState.NEEDS_CLARIFICATION,
         TaskState.FAILED,
     },

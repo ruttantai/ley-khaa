@@ -110,6 +110,28 @@ class TaskRepository:
         self.session.refresh(row)
         return row
 
+    def fold_into(
+        self, task_id: str, *, message_ids: list[str], expected: TaskState
+    ) -> bool:
+        """Merge an amendment's messages into a task and send it back to be
+        re-interpreted. True if we won the race.
+
+        Conditional on `expected` — the state observed when the fold was decided
+        — because the target can move on in between. A loser must change NOTHING:
+        the claim therefore comes first, and the messages are appended only after
+        it wins. Appending first would leave a foreign message on a task that is
+        already executing, where nothing will ever re-read it.
+
+        This is the same shape as _route_reply's answered-clarification path: the
+        amendment is re-INTERPRETED over the enlarged message set, never stapled
+        onto the old spec.
+        """
+        if not self.claim(task_id, expected=expected, target=TaskState.CLASSIFIED):
+            return False
+        self.append_source_messages(task_id, message_ids)
+        self.set_open_question(task_id, None)
+        return True
+
     def record_failure(self, task_id: str, reason: str) -> TaskRow:
         row = self._row(task_id)
         row.failure_reason = reason
