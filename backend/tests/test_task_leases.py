@@ -148,3 +148,22 @@ def test_next_runnable_is_fifo_within_a_project(session):
     first = _task(repo, project="acme")
     _task(repo, project="acme")
     assert repo.next_runnable("acme").id == first.id
+
+
+def test_leased_task_id_survives_sqlites_naive_round_trip(session_factory):
+    """A regression guard for a real bug: DateTime(timezone=True) round-trips
+    NAIVE through SQLite, so comparing a freshly-read lease_expires_at against
+    an aware `now` in Python raises TypeError. The shared `session` fixture
+    cannot catch this — its identity map still holds the AWARE value
+    claim_lease wrote in Python, so the row is never actually re-read from
+    SQLite's storage. A second, independent session/connection over the same
+    file forces a genuine read, the way a real HTTP request would.
+    """
+    write = session_factory()
+    writer = TaskRepository(write)
+    task = _task(writer, project="acme")
+    assert writer.claim_lease(task.id, owner="w1", ttl_seconds=60) is True
+    write.close()
+
+    reader = TaskRepository(session_factory())
+    assert reader.leased_task_id("acme") == task.id

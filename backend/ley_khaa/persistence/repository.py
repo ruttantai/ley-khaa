@@ -111,7 +111,12 @@ class TaskRepository:
         return row
 
     def fold_into(
-        self, task_id: str, *, message_ids: list[str], expected: TaskState
+        self,
+        task_id: str,
+        *,
+        message_ids: list[str],
+        expected: TaskState,
+        now: datetime | None = None,
     ) -> bool:
         """Merge an amendment's messages into a task and send it back to be
         re-interpreted. True if we won the race.
@@ -137,9 +142,28 @@ class TaskRepository:
         absent from the domain transition table (it is not a transition at
         all), so claim()'s ensure_transition would raise on it; _claim_same_state
         below is the CAS this case needs instead.
+
+        That branch changes no state, which matters: every OTHER branch here
+        wins mutual exclusion against a worker mid-`_interpret` by winning the
+        state change itself — the worker's own CLASSIFIED -> INTERPRETED claim
+        then loses to the fold's claim(expected=X, target=CLASSIFIED), or vice
+        versa. A same-state CAS has no state change to race on, so it would win
+        against a worker that already read CLASSIFIED and is seconds into an
+        LLM call, silently folding a message the in-flight interpretation will
+        never see — the candidate is PROMOTED and terminal, so nothing returns
+        it to triage once that happens. _claim_same_state's lease check is what
+        stands in for the state change here: a task a worker holds is excluded
+        the same way _runnable_where excludes it from being picked up twice.
+
+        This still leaves a narrow window under INLINE dispatch, which never
+        takes a lease at all: two HTTP threads can each observe
+        CLASSIFIED-and-unleased and both proceed. That gap is not closed by
+        this method — closing it needs a lease taken even in inline mode,
+        which is out of scope here.
         """
+        moment = now or datetime.now(timezone.utc)
         if expected is TaskState.CLASSIFIED:
-            won = self._claim_same_state(task_id, TaskState.CLASSIFIED)
+            won = self._claim_same_state(task_id, TaskState.CLASSIFIED, moment)
         elif not can_transition(expected, TaskState.CLASSIFIED):
             # EXECUTING and VALIDATING have no edge back to CLASSIFIED: a task
             # with a live sandbox workspace is past the point where its inputs
@@ -162,20 +186,35 @@ class TaskRepository:
         self.set_open_question(task_id, None)
         return True
 
-    def _claim_same_state(self, task_id: str, state: TaskState) -> bool:
-        """Atomic no-op claim: win only if the row is still in `state`.
+    def _claim_same_state(self, task_id: str, state: TaskState, moment: datetime) -> bool:
+        """Atomic no-op claim: win only if the row is still in `state` AND
+        nobody holds a live lease on it.
 
         Unlike claim(), this asserts nothing about the domain transition
         table — CLASSIFIED -> CLASSIFIED is not a transition, it is
         confirmation that nothing moved the row out from under a caller
-        between its decision and now. fold_into is the only caller today, for
-        a target that has not been interpreted yet and so has no transition
-        for a fold to trigger.
+        between its decision and now. The lease check is not optional: with
+        no state change here to make a fold and an in-flight interpretation
+        mutually exclusive (see fold_into's docstring), the lease is what does
+        that job instead — reusing the same predicate _runnable_where uses,
+        rather than a second hand-written copy that could drift from it.
+        fold_into is the only caller today, for a target that has not been
+        interpreted yet and so has no transition for a fold to trigger.
         """
         result = self.session.execute(
             update(TaskRow)
-            .where(TaskRow.id == task_id, TaskRow.state == state.value)
+            .where(
+                TaskRow.id == task_id,
+                TaskRow.state == state.value,
+                self._lease_free(moment),
+            )
             .values(updated_at=datetime.now(timezone.utc))
+            # Same naive/aware sqlite mismatch as claim_lease above: the WHERE
+            # clause now compares lease_expires_at against `moment`, so the
+            # default "evaluate" sync strategy would try that comparison in
+            # Python against an already-loaded row and can raise. "fetch"
+            # keeps the identity map in sync without re-evaluating in Python.
+            .execution_options(synchronize_session="fetch")
         )
         self.session.commit()
         return result.rowcount == 1
@@ -335,6 +374,16 @@ class TaskRepository:
 
     # --- what is waiting to run --------------------------------------------
 
+    def _lease_free(self, moment: datetime):
+        """True when nobody holds a live lease on the row — free, or expired.
+
+        The single source of truth for this predicate: every caller that needs
+        "is anyone driving this row right now" — _runnable_where, and
+        _claim_same_state's fold-vs-in-flight-interpretation guard — reuses
+        this rather than hand-writing a second copy that could drift from it.
+        """
+        return or_(TaskRow.lease_owner.is_(None), TaskRow.lease_expires_at < moment)
+
     def _runnable_where(self, moment: datetime):
         """A task is runnable when nothing else is driving it and nobody is
         waiting on a human: state is neither terminal nor human-waiting, and the
@@ -342,7 +391,7 @@ class TaskRepository:
         blocked = [s.value for s in WAITING | TERMINAL]
         return (
             TaskRow.state.not_in(blocked),
-            or_(TaskRow.lease_owner.is_(None), TaskRow.lease_expires_at < moment),
+            self._lease_free(moment),
         )
 
     def runnable_projects(self, now: datetime | None = None) -> list[str]:
@@ -382,4 +431,24 @@ class TaskRepository:
             select(TaskRow)
             .where(TaskRow.project == project, *self._runnable_where(moment))
             .order_by(TaskRow.created_at)
+        ).first()
+
+    def leased_task_id(self, project: str, now: datetime | None = None) -> str | None:
+        """The task in this project currently held by a live lease, if any.
+
+        The comparison against `now` must stay in SQL rather than be done on
+        already-loaded Python attributes: DateTime(timezone=True) round-trips
+        NAIVE through SQLite (same hazard claim_lease's docstring covers), so
+        `row.lease_expires_at > now` raises TypeError in Python the moment
+        lease_expires_at was read fresh from the database rather than pulled
+        from a session's identity map. A plain SELECT has SQLite do the
+        comparison itself and never hits that mismatch.
+        """
+        moment = now or datetime.now(timezone.utc)
+        return self.session.scalars(
+            select(TaskRow.id).where(
+                TaskRow.project == project,
+                TaskRow.lease_owner.isnot(None),
+                TaskRow.lease_expires_at > moment,
+            )
         ).first()

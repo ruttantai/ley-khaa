@@ -231,17 +231,13 @@ def list_projects(session: Session = Depends(get_session)) -> list[ProjectOut]:
     now = datetime.now(timezone.utc)
     out: list[ProjectOut] = []
     for project in projects.active():
-        rows = [t for t in repo.list() if t.project == project.name]
-        leased = next(
-            (
-                t.id
-                for t in rows
-                if t.lease_owner is not None
-                and t.lease_expires_at is not None
-                and t.lease_expires_at > now
-            ),
-            None,
-        )
+        # The lease-live comparison is done in SQL, not on rows loaded here in
+        # Python: DateTime(timezone=True) round-trips naive through SQLite, so
+        # comparing an already-loaded row's lease_expires_at against an aware
+        # `now` in Python raises TypeError the moment it was read fresh from
+        # the database rather than pulled from a session's identity map — see
+        # TaskRepository.leased_task_id's docstring.
+        leased = repo.leased_task_id(project.name, now=now)
         queued = repo.runnable_count(project.name, now=now)
         out.append(
             ProjectOut(

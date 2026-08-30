@@ -1,5 +1,8 @@
+from datetime import datetime, timedelta, timezone
+
 from ley_khaa.crystallizer.candidate import CandidateState
 from ley_khaa.domain.states import TaskState
+from ley_khaa.persistence.orm import TaskRow
 from ley_khaa.persistence.project_repository import ProjectRepository
 from ley_khaa.persistence.repository import TaskRepository
 from ley_khaa.projects.seeds import ensure_default_project
@@ -46,14 +49,32 @@ def test_creating_a_duplicate_project_is_a_conflict(client, session):
 
 
 def test_the_project_queue_is_in_fifo_order(client, session):
+    """FIFO is by created_at, not by insertion order, and the queue is
+    filtered to its own project — both deliberately exercised here rather
+    than left true by coincidence.
+
+    SQLite returns rows in insertion (rowid) order when nothing orders them,
+    so `first` and `second` are given created_at values that DISAGREE with
+    the order they were created in: a route that dropped order_by(created_at)
+    would otherwise pass this by accident. A task in a second project is
+    also created, so a route that dropped its project filter is caught too.
+    """
     ensure_default_project(session)
     ProjectRepository(session).create("acme", description="Acme's books")
+    ProjectRepository(session).create("globex", description="Globex's books")
     repo = TaskRepository(session)
     first = repo.create(project="acme", title="first", source_message_ids=[])
     second = repo.create(project="acme", title="second", source_message_ids=[])
+    other_project = repo.create(project="globex", title="not acme's", source_message_ids=[])
+
+    now = datetime.now(timezone.utc)
+    session.get(TaskRow, first.id).created_at = now
+    session.get(TaskRow, second.id).created_at = now - timedelta(minutes=5)
+    session.commit()
 
     ids = [t["id"] for t in client.get("/projects/acme/queue").json()]
-    assert ids == [first.id, second.id]
+    assert ids == [second.id, first.id], "FIFO is by created_at, not insertion order"
+    assert other_project.id not in ids, "the queue must be filtered to its own project"
 
 
 def _parked(session):

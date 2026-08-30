@@ -108,6 +108,39 @@ def test_fold_into_a_not_yet_interpreted_task_just_appends(session):
     assert TaskState(row.state) is TaskState.CLASSIFIED
 
 
+def test_fold_into_a_classified_target_loses_if_it_moved_on(session):
+    """The distinguishing behaviour _claim_same_state exists for: winning
+    requires the row to STILL be in CLASSIFIED, not just to have been there
+    when the caller looked. Replacing the guard with `return True`
+    unconditionally passes every other fold_into test — this is the one that
+    catches it."""
+    task = _task(session, TaskState.CLASSIFIED)
+    repo = TaskRepository(session)
+    repo.claim(task.id, expected=TaskState.CLASSIFIED, target=TaskState.INTERPRETED)
+
+    assert repo.fold_into(task.id, message_ids=["m2"], expected=TaskState.CLASSIFIED) is False
+    row = repo.get(task.id)
+    assert row.source_message_ids == ["m1"], "a lost fold must not append messages"
+    assert TaskState(row.state) is TaskState.INTERPRETED
+
+
+def test_fold_into_a_classified_target_loses_while_a_worker_holds_it(session):
+    """A same-state CAS has no state change to make it mutually exclusive
+    with an in-flight interpretation the way every other fold_into branch
+    is (see fold_into's docstring), so the lease has to do that job instead.
+    Winning here would silently fold a message the in-flight _interpret call
+    never sees — the candidate is PROMOTED and terminal by that point, so
+    nothing would ever return it to triage."""
+    task = _task(session, TaskState.CLASSIFIED)
+    repo = TaskRepository(session)
+    assert repo.claim_lease(task.id, owner="w1", ttl_seconds=60) is True
+
+    assert repo.fold_into(task.id, message_ids=["m2"], expected=TaskState.CLASSIFIED) is False
+    row = repo.get(task.id)
+    assert row.source_message_ids == ["m1"], "a lost fold must not append messages"
+    assert TaskState(row.state) is TaskState.CLASSIFIED
+
+
 def test_fold_into_loses_when_the_task_has_already_moved(session):
     """The race the spec names: the target can move between the decision and the
     fold. The loser must change nothing at all."""
