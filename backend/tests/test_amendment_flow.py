@@ -161,3 +161,45 @@ def test_a_fold_that_loses_the_race_returns_the_candidate_to_triage(session, stu
     raced = orchestrator.repo.get(target.id)
     assert "m2" not in raced.source_message_ids
     assert TaskState(raced.state) is TaskState.EXECUTING
+
+
+def test_a_parked_amendment_does_not_wedge_the_rest_of_the_conversation(
+    session, stub_execution
+):
+    """The whole conversation must keep working after one amendment is parked.
+
+    A candidate in AWAITING_TRIAGE is already handled as far as stage B is
+    concerned. When it was missing from TERMINAL_STATES it stayed rendered as an
+    ACTIVE candidate in the stage-B prompt, so the model re-reported the same
+    candidate_key on the next message and upsert hit
+    ensure_transition(AWAITING_TRIAGE -> READY), which is forbidden. Parking is
+    the COMMON outcome, so one parked amendment made every later message in that
+    conversation raise.
+
+    Driven through ingest() rather than the engine directly so the failure is the
+    real one: HeuristicLLM re-reports the parked candidate's key verbatim, because
+    the key is derived from the first message the candidate owns.
+    """
+    orchestrator = _orchestrator(session)
+    target = _running_task(orchestrator, mode=AutonomyMode.SUGGEST)
+    orchestrator.amendments = _Detector(
+        AmendmentProposal(task_id=target.id, confidence=0.95, reason="r")
+    )
+
+    second = orchestrator.ingest(
+        {"conversation_id": "C1", "text": "also compare the credit book against custody"}
+    )
+    parked = orchestrator.candidates.get(second.candidates[0].id)
+    assert CandidateState(parked.state) is CandidateState.AWAITING_TRIAGE, "setup: not parked"
+
+    # The third message. Before the fix this raised InvalidCandidateTransition.
+    third = orchestrator.ingest(
+        {"conversation_id": "C1", "text": "and pull the fx exposure report too"}
+    )
+
+    still_parked = orchestrator.candidates.get(parked.id)
+    assert CandidateState(still_parked.state) is CandidateState.AWAITING_TRIAGE
+    # The parked candidate is retired, so the new request forms a candidate of
+    # its own rather than being swallowed into the one waiting on a human.
+    assert third.candidates, "the third message formed no candidate at all"
+    assert all(c.id != parked.id for c in third.candidates)

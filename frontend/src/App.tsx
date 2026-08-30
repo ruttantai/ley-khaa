@@ -6,9 +6,13 @@ import TaskDetail from "./TaskDetail";
 import Triage from "./Triage";
 import { fetchCandidates, fetchTasks, type Candidate, type Task } from "./api";
 
-// promoted and abandoned candidates are done: a promoted one is already listed
-// below as a Task, so leaving them under "Forming" grew a permanent pile.
-const TERMINAL_STATES = ["promoted", "abandoned"];
+// Candidates that are done forming, and so do not belong under "Forming":
+// a promoted one is already listed below as a Task, an abandoned one is over,
+// and an awaiting_triage one is shown above in the Triage tray. Leaving any of
+// them here grew a permanent pile — and for awaiting_triage it also listed the
+// same candidate twice on one screen. Mirrors the backend's TERMINAL_STATES
+// (ley_khaa/crystallizer/candidate.py).
+const TERMINAL_STATES = ["promoted", "abandoned", "awaiting_triage"];
 
 export default function App() {
   const [tasks, setTasks] = useState<Task[]>([]);

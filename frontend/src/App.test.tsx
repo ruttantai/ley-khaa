@@ -137,3 +137,22 @@ test("renders the projects view and the triage tray", async () => {
   expect(await screen.findByText("Acme")).toBeTruthy();
   expect(await screen.findByText("flag mismatched totals")).toBeTruthy();
 });
+
+test("a parked amendment is listed in the Triage tray only, not under Forming", async () => {
+  // Same candidate, both endpoints: GET /triage renders it as a decision to
+  // make, GET /candidates still lists the row. Before awaiting_triage joined
+  // TERMINAL_STATES the page showed it twice — once as a decision, once as
+  // something still forming.
+  stubApi(
+    [
+      candidate("awaiting_triage", "flag mismatched totals"),
+      candidate("crystallizing", "Universe reconciliation"),
+    ],
+    [],
+    [project()],
+    [triageItem()],
+  );
+  render(<App />);
+  await waitFor(() => expect(screen.getByText("Universe reconciliation")).toBeTruthy());
+  expect(screen.getAllByText("flag mismatched totals")).toHaveLength(1);
+});
