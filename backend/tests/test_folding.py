@@ -96,6 +96,18 @@ def test_fold_into_appends_messages_and_reopens_the_task(session):
     assert row.open_question is None
 
 
+def test_fold_into_a_not_yet_interpreted_task_just_appends(session):
+    """A target still in CLASSIFIED has not been interpreted yet, so there is
+    nothing for a fold to re-trigger — it stays in CLASSIFIED, not stuck
+    because CLASSIFIED -> CLASSIFIED is absent from the transition table."""
+    task = _task(session, TaskState.CLASSIFIED)
+    repo = TaskRepository(session)
+    assert repo.fold_into(task.id, message_ids=["m2"], expected=TaskState.CLASSIFIED) is True
+    row = repo.get(task.id)
+    assert row.source_message_ids == ["m1", "m2"]
+    assert TaskState(row.state) is TaskState.CLASSIFIED
+
+
 def test_fold_into_loses_when_the_task_has_already_moved(session):
     """The race the spec names: the target can move between the decision and the
     fold. The loser must change nothing at all."""

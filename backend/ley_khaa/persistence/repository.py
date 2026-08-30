@@ -129,8 +129,18 @@ class TaskRepository:
         False therefore covers two losses, and the caller treats them alike
         because the recovery is the same: the target is no longer in `expected`,
         or `expected` is itself a state no fold may touch.
+
+        `expected is CLASSIFIED` is its own case, not covered by can_transition:
+        a task still in CLASSIFIED has not been interpreted yet, so there is
+        nothing to re-trigger — appending the message is enough, and the row
+        stays exactly where it is. CLASSIFIED -> CLASSIFIED is deliberately
+        absent from the domain transition table (it is not a transition at
+        all), so claim()'s ensure_transition would raise on it; _claim_same_state
+        below is the CAS this case needs instead.
         """
-        if not can_transition(expected, TaskState.CLASSIFIED):
+        if expected is TaskState.CLASSIFIED:
+            won = self._claim_same_state(task_id, TaskState.CLASSIFIED)
+        elif not can_transition(expected, TaskState.CLASSIFIED):
             # EXECUTING and VALIDATING have no edge back to CLASSIFIED: a task
             # with a live sandbox workspace is past the point where its inputs
             # can change. Reaching one is a lost race, not a programmer error —
@@ -144,11 +154,31 @@ class TaskRepository:
             # only a check this close to the claim closes the window, since the
             # target can enter EXECUTING after any caller-side look.
             return False
-        if not self.claim(task_id, expected=expected, target=TaskState.CLASSIFIED):
+        else:
+            won = self.claim(task_id, expected=expected, target=TaskState.CLASSIFIED)
+        if not won:
             return False
         self.append_source_messages(task_id, message_ids)
         self.set_open_question(task_id, None)
         return True
+
+    def _claim_same_state(self, task_id: str, state: TaskState) -> bool:
+        """Atomic no-op claim: win only if the row is still in `state`.
+
+        Unlike claim(), this asserts nothing about the domain transition
+        table — CLASSIFIED -> CLASSIFIED is not a transition, it is
+        confirmation that nothing moved the row out from under a caller
+        between its decision and now. fold_into is the only caller today, for
+        a target that has not been interpreted yet and so has no transition
+        for a fold to trigger.
+        """
+        result = self.session.execute(
+            update(TaskRow)
+            .where(TaskRow.id == task_id, TaskRow.state == state.value)
+            .values(updated_at=datetime.now(timezone.utc))
+        )
+        self.session.commit()
+        return result.rowcount == 1
 
     def record_failure(self, task_id: str, reason: str) -> TaskRow:
         row = self._row(task_id)
@@ -324,6 +354,24 @@ class TaskRepository:
             .order_by(TaskRow.project)
         )
         return list(rows)
+
+    def runnable_count(self, project: str, now: datetime | None = None) -> int:
+        """How many tasks in this project are waiting for a worker.
+
+        A leased task is excluded: it is being worked on, and the dashboard
+        reports it as in-flight instead. Counting it in both places would make
+        one task look like two.
+        """
+        moment = now or datetime.now(timezone.utc)
+        return len(
+            list(
+                self.session.scalars(
+                    select(TaskRow.id).where(
+                        TaskRow.project == project, *self._runnable_where(moment)
+                    )
+                )
+            )
+        )
 
     def next_runnable(self, project: str, now: datetime | None = None) -> TaskRow | None:
         """The oldest runnable task in a project. FIFO: urgency-based reordering

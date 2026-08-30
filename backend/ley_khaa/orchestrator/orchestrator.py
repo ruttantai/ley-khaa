@@ -45,6 +45,10 @@ class IntakeResult:
     task_ids: list[str] = field(default_factory=list)
     # Set when this message answered an existing task instead of forming a candidate.
     replied_to_task_id: str | None = None
+    # Which project the routing decision (in _promote) landed the work in.
+    # None when no candidate reached promotion this call (still debouncing, or
+    # this was a reply, which never routes).
+    project: str | None = None
 
 
 class Orchestrator:
@@ -115,7 +119,7 @@ class Orchestrator:
         now = datetime.now(timezone.utc)
         for candidate in candidates:
             if self.gate.should_emit(candidate, last_message_at=last_at, now=now):
-                task_id = self._promote(candidate)
+                task_id = self._promote(candidate, result=result)
                 if task_id is not None:
                     result.task_ids.append(task_id)
         return result
@@ -228,7 +232,9 @@ class Orchestrator:
                     task_ids.append(task_id)
         return task_ids
 
-    def _promote(self, candidate: CandidateRow) -> str | None:
+    def _promote(
+        self, candidate: CandidateRow, *, result: IntakeResult | None = None
+    ) -> str | None:
         """Turn a settled candidate into work: a new task, a fold into a running
         one, or a decision parked for a human.
 
@@ -242,8 +248,15 @@ class Orchestrator:
         proposal exists. The cost is that a caller who then loses the race has
         paid for a routing call; the claims still guarantee exactly one of them
         creates work.
+
+        `result`, when given, is stamped with the routed project — the caller's
+        IntakeResult, filled in here rather than by re-routing (which could,
+        for the model-backed router, answer differently on a second call and
+        report a project the task was never actually created in).
         """
         project = self._route(candidate)
+        if result is not None:
+            result.project = project
         proposal = self.amendments.detect(
             project=project, title=candidate.title, summary=candidate.summary
         )
@@ -314,13 +327,26 @@ class Orchestrator:
     # --- human triage actions ----------------------------------------------
 
     def fold(self, candidate_id: str) -> str | None:
-        """Fold a parked candidate into the task it amends."""
+        """Fold a parked candidate into the task it amends.
+
+        None covers two cases, both a 409 at the route rather than a 404:
+        the candidate has no amends_task_id (it was never parked on an
+        amendment decision), or its target row is gone (the task it amends
+        has moved on — e.g. deleted — since it was parked). Both are "this
+        candidate is not answerable right now", not "the candidate is
+        unknown" — that KeyError is reserved for a genuinely unknown
+        candidate id, below. This also matches separate(), which is already
+        correct: it claims first, and claim_for_fold's AWAITING_TRIAGE WHERE
+        clause returns False -> None -> 409 for the same "not parked" case.
+        """
         candidate = self.candidates.get(candidate_id)
         if candidate is None:
             raise KeyError(candidate_id)
-        target = self.repo.get(candidate.amends_task_id or "")
+        if not candidate.amends_task_id:
+            return None
+        target = self.repo.get(candidate.amends_task_id)
         if target is None:
-            raise KeyError(candidate.amends_task_id)
+            return None
         return self._fold(candidate, target, claim=self.candidates.claim_for_fold)
 
     def separate(self, candidate_id: str) -> str | None:

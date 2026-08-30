@@ -5,6 +5,7 @@ import logging
 import zipfile
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -15,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from ..autonomy.modes import AutonomyMode
 from ..config import settings
+from ..crystallizer.candidate import CandidateState
 from ..crystallizer.gate import ReadinessGate
 from ..db import SessionLocal, run_migrations
 from ..domain.states import InvalidTransition
@@ -40,10 +42,13 @@ from .schemas import (
     MessageIn,
     MessageOut,
     ModeIn,
+    ProjectIn,
+    ProjectOut,
     PromoteIn,
     RejectIn,
     SpecPatchIn,
     TaskOut,
+    TriageOut,
     WorkflowOut,
 )
 
@@ -209,12 +214,124 @@ def post_message(body: MessageIn, session: Session = Depends(get_session)) -> In
         conversation_id=result.conversation_id,
         candidate_ids=[c.id for c in result.candidates],
         task_ids=result.task_ids,
+        project=result.project,
+        queued=settings.dispatch_mode == "workers" and bool(result.task_ids),
     )
 
 
 @app.get("/candidates", response_model=list[CandidateOut])
 def list_candidates(session: Session = Depends(get_session)) -> list[CandidateOut]:
     return [CandidateOut.model_validate(c) for c in CandidateRepository(session).list_all()]
+
+
+@app.get("/projects", response_model=list[ProjectOut])
+def list_projects(session: Session = Depends(get_session)) -> list[ProjectOut]:
+    projects = ProjectRepository(session)
+    repo = TaskRepository(session)
+    now = datetime.now(timezone.utc)
+    out: list[ProjectOut] = []
+    for project in projects.active():
+        rows = [t for t in repo.list() if t.project == project.name]
+        leased = next(
+            (
+                t.id
+                for t in rows
+                if t.lease_owner is not None
+                and t.lease_expires_at is not None
+                and t.lease_expires_at > now
+            ),
+            None,
+        )
+        queued = repo.runnable_count(project.name, now=now)
+        out.append(
+            ProjectOut(
+                name=project.name,
+                display_name=project.display_name,
+                description=project.description,
+                active=project.active,
+                queue_depth=queued,
+                in_flight=leased,
+            )
+        )
+    return out
+
+
+@app.post("/projects", response_model=ProjectOut, status_code=201)
+def create_project(body: ProjectIn, session: Session = Depends(get_session)) -> ProjectOut:
+    if not body.description.strip():
+        # A project with no description is invisible to stage-2 routing, so
+        # creating one silently would produce a project nothing can ever route
+        # into. Refuse it here rather than let it look like it works.
+        raise HTTPException(
+            status_code=422,
+            detail="a project needs a description — it is what routing reasons over",
+        )
+    projects = ProjectRepository(session)
+    if projects.get(body.name) is not None:
+        raise HTTPException(status_code=409, detail=f"project {body.name!r} already exists")
+    row = projects.create(
+        body.name, display_name=body.display_name, description=body.description
+    )
+    return ProjectOut(
+        name=row.name,
+        display_name=row.display_name,
+        description=row.description,
+        active=row.active,
+        queue_depth=0,
+        in_flight=None,
+    )
+
+
+@app.get("/projects/{name}/queue", response_model=list[TaskOut])
+def project_queue(name: str, session: Session = Depends(get_session)) -> list[TaskOut]:
+    return [
+        TaskOut.model_validate(t) for t in TaskRepository(session).list() if t.project == name
+    ]
+
+
+@app.get("/triage", response_model=list[TriageOut])
+def list_triage(session: Session = Depends(get_session)) -> list[TriageOut]:
+    candidates = CandidateRepository(session)
+    repo = TaskRepository(session)
+    out: list[TriageOut] = []
+    for row in candidates.list_by_state(CandidateState.AWAITING_TRIAGE):
+        target = repo.get(row.amends_task_id or "")
+        out.append(
+            TriageOut(
+                candidate_id=row.id,
+                title=row.title,
+                summary=row.summary,
+                amends_task_id=row.amends_task_id or "",
+                # A target that vanished is still worth showing: the human needs
+                # to see the parked request, not a 500.
+                amends_task_title=target.title if target else "(task not found)",
+                reason=row.amendment_reason or "",
+                confidence=row.amendment_confidence or 0.0,
+            )
+        )
+    return out
+
+
+@app.post("/candidates/{candidate_id}/fold", response_model=TaskOut)
+def fold_candidate(candidate_id: str, session: Session = Depends(get_session)) -> TaskOut:
+    task_id = build_orchestrator(session).fold(candidate_id)
+    if task_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="this candidate is not waiting on an amendment decision, "
+                   "or the task it amends has moved on",
+        )
+    return TaskOut.model_validate(TaskRepository(session).get(task_id))
+
+
+@app.post("/candidates/{candidate_id}/separate", response_model=TaskOut)
+def separate_candidate(candidate_id: str, session: Session = Depends(get_session)) -> TaskOut:
+    task_id = build_orchestrator(session).separate(candidate_id)
+    if task_id is None:
+        raise HTTPException(
+            status_code=409, detail="this candidate is not waiting on an amendment decision"
+        )
+    return TaskOut.model_validate(TaskRepository(session).get(task_id))
 
 
 @app.get("/conversations/{conversation_id}/messages", response_model=list[MessageOut])

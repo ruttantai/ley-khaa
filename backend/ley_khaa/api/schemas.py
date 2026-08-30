@@ -37,6 +37,11 @@ class IntakeOut(BaseModel):
     conversation_id: str
     candidate_ids: list[str]
     task_ids: list[str]
+    # Where the work went, and whether it is waiting for a worker rather than
+    # already done. Before 0.6.0 the caller could infer both from the task it got
+    # back; in workers mode there is nothing finished to infer from.
+    project: str | None = None
+    queued: bool = False
 
 
 class CandidateOut(BaseModel):
@@ -139,6 +144,33 @@ class PromoteIn(BaseModel):
     # reserved for a state conflict in the bundle's own content.
     name: str = Field(pattern=NAME_PATTERN)
     description: str = ""
+
+
+class ProjectIn(BaseModel):
+    name: str
+    display_name: str = ""
+    description: str = ""
+
+
+class ProjectOut(BaseModel):
+    name: str
+    display_name: str
+    description: str
+    active: bool
+    # Runnable tasks waiting for a worker. A leased task is being worked on and
+    # is reported in in_flight instead, so the two never double-count.
+    queue_depth: int
+    in_flight: str | None
+
+
+class TriageOut(BaseModel):
+    candidate_id: str
+    title: str
+    summary: str
+    amends_task_id: str
+    amends_task_title: str
+    reason: str
+    confidence: float
 
 
 class WorkflowOut(BaseModel):
