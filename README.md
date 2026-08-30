@@ -25,7 +25,13 @@ generator code, exact inputs, seeded manifest — so any result can be audited a
 
 ## Status
 
-**v0.5.0 — the workflow registry and task memory.** Two learned caches now sit in front of the
+**v0.6.0 — project routing, per-project queues, and amendment detection.** Every task now lands in
+a **project**, decided by a two-stage router at promotion time; each project drains through its own
+concurrent, per-project worker instead of one shared lane; and a follow-up message that modifies a
+task already under way is detected and either folded in automatically or parked for a human to
+decide. See [Projects and queues](#projects-and-queues) below.
+
+**v0.5.0 — the workflow registry and task memory.** Two learned caches sit in front of the
 model. A proven bundle can be **promoted** from the dashboard into a permanent, frozen workflow;
 the next matching request replays that code instead of synthesizing, judged by the same validator.
 **Task memory** remembers the spec that satisfied a request and skips the interpreter on a repeat.
@@ -42,6 +48,7 @@ relevance filtering and crystallization run on every message regardless, caches 
 | 2 | `v0.3.0` | Interpreter + **Autonomy engine** + human-in-the-loop | ✅ shipped |
 | 3 | `v0.4.0` | Synthesis-first executor, validator, Output Bundle | ✅ shipped |
 | 4 | `v0.5.0` | **Workflow registry** + **task memory** | ✅ shipped |
+| 5 | `v0.6.0` | **Project routing**, per-project queues, **amendment detection** | ✅ shipped |
 | — | `v1.0.0` | Definition of done (spec §11) | 🎯 target |
 
 Design spec: [`docs/superpowers/specs/2026-08-18-ley-khaa-design.md`](docs/superpowers/specs/2026-08-18-ley-khaa-design.md).
@@ -59,19 +66,37 @@ docker compose up
 > ask. A fresh clone needs nothing.
 
 - Dashboard: http://localhost:5173
-- API: http://localhost:8000
+- API: http://localhost:8000 (this list is the full route table — see `backend/ley_khaa/api/app.py`
+  if it ever drifts)
   - `GET /health`
   - `GET /tasks`, `GET /tasks/{id}`
-  - `POST /messages` — ingest one message through the full pipeline
+  - `POST /messages` — ingest one message through the full pipeline; returns which
+    `project` the resulting task(s) landed in and whether it's `queued` (in the default
+    `workers` mode the call returns as soon as a task exists, not once it's finished)
   - `GET /candidates` — task candidates and their state
+  - `GET /projects` — every active project, its queue depth, and the task (if any) currently leased
+  - `POST /projects` — create a project; needs a non-empty description, since that's what stage-2
+    routing reasons over — an empty one would be unroutable by construction
+  - `GET /projects/{name}/queue` — every task in one project
+  - `GET /triage` — candidates parked as a possible amendment to an active task, awaiting a human
+    decision (see [Amendments](#amendments))
+  - `POST /candidates/{id}/fold` — fold a parked candidate into the task it amends
+  - `POST /candidates/{id}/separate` — promote a parked candidate as its own task instead
   - `GET /conversations/{id}/messages`
   - `POST /simulate/{name}` — replay a synthetic conversation fixture
   - `POST /candidates/sweep` — re-check ready candidates against the debounce gate
-  - `POST /tasks/{id}/approve` — run an approved task through to completion
+  - `POST /tasks/{id}/approve` — release a parked task to run; in the default `workers` mode
+    this transitions it and returns, and the dispatcher runs it (under `inline` it runs to
+    completion on the calling thread)
   - `POST /tasks/{id}/reject` — fail a parked task with a reason
   - `POST /tasks/{id}/mode` — override the autonomy mode (or clear the override)
   - `PATCH /tasks/{id}/spec` — edit the interpreted spec inline; re-scores the recommendation
   - `POST /tasks/{id}/answer` — answer a clarifying question; re-enters as a real message
+  - `GET /tasks/{id}/bundle` — how the deliverable was produced: sandbox, model, per-attempt
+    verdicts and sha256
+  - `GET /tasks/{id}/bundle/file?path=` — one file out of the bundle, path-traversal guarded
+  - `GET /tasks/{id}/bundle/deliverable` — the deliverable file itself
+  - `GET /tasks/{id}/bundle/download` — the whole bundle, zipped
   - `POST /tasks/{id}/promote` — freeze a passed bundle's winning script into a workflow
   - `GET /registry` — every cached workflow: origin, aliases, hash, run counts, quarantine state
   - `POST /registry/{name}/unquarantine` — clear a workflow blocked by a failed cached run
@@ -140,9 +165,13 @@ Two learned fast paths sit in front of the model, each short-circuiting one expe
 
 - **Task memory** remembers the `TaskSpec` that satisfied a request, keyed on a fingerprint of the
   request's own text (stopwords stripped, tokens sorted, so word order and politeness don't split a
-  repeat). A recognised repeat skips the interpreter entirely.
+  repeat). A recognised repeat skips the interpreter entirely. Scoped by `TaskRow.project` — see
+  [Projects and queues](#projects-and-queues) for what that scoping is and isn't worth once routing
+  is in the picture.
 - **The workflow registry** remembers proven generator code. A matched request runs that frozen
-  source in the same sandbox, judged by the same validator, and skips synthesis entirely.
+  source in the same sandbox, judged by the same validator, and skips synthesis entirely. Unlike
+  memory, the registry has no project scoping at all — a promoted workflow is a global capability,
+  matchable from any project.
 
 Chained, the same request asked twice is **interpreted and executed with no model call at all** the
 second time: memory recalls the spec, the registry replays the code, and both matchers try a free,
@@ -181,6 +210,86 @@ Memory never remembers input *files* — only input *names*. A remembered spec's
 against the task that reused it, against its own attachments and catalog, every time; last week's
 spec cannot quietly reuse last week's file.
 
+### Projects and queues
+
+A **project** (`GET /projects`, `ProjectRow`) is a named, described client or workstream — `name`,
+`display_name`, `description`, `active`. It exists so one client's work queues, gets driven, and (see
+[The two caches](#the-two-caches)) is remembered separately from another's. Every clone starts with
+exactly one project, `default`, seeded idempotently at startup — a fresh clone, or a task that
+routing can't confidently place, always has somewhere to land.
+
+**Routing decides a task's project at promotion**, the moment a candidate becomes a task — not
+before, and never again afterwards: nothing re-routes an existing task, and moving one between
+projects has no API. `ProjectRouter` is the same two-stage shape as the workflow registry and task
+memory matchers:
+
+1. **A free lookup first.** If this message's source/client/conversation already has a binding —
+   written by a previous stage-2 match, see below — that project wins for free, no model call.
+2. **One confidence-gated model call on a miss.** The model is shown the request and every active
+   project that has a description (a project with no description, like `default`, is unroutable by
+   stage 2 by construction — reachable only via an explicit binding) and names one, or null. Below
+   confidence 0.8, or on any model or transport failure, the task goes to `default` rather than
+   guessing — a null routing decision costs a human sorting one task; a wrong one puts a client's
+   request in another client's queue.
+
+**A confident stage-2 match writes a binding** for that conversation, so every later message in it
+routes free from then on — the same learning rule the registry and memory matchers follow, applied
+to routing instead of matching.
+
+Routing assigns a project **per client**, so memory's project scoping (see
+[The two caches](#the-two-caches)) becomes a real boundary between clients wherever a binding
+exists. It is not blanket client isolation: anything that never routes — an unrouted source, a miss,
+a project with no description — still shares `default`, and so does its memory.
+
+**Each project drains through its own worker, concurrently with every other project's**, proven by
+`backend/tests/test_concurrency.py`'s barrier test: two projects' workers are made to block until
+both have arrived, which only passes if both are genuinely running at once. Within one project,
+tasks are driven strictly FIFO, one at a time. **Concurrent is not the same as unbounded
+throughput**, and the drain rate is worth knowing before reading this as a queue that empties fast:
+a worker takes exactly **one** task per tick and does not loop, so a project drains one task per
+tick — and the next tick is a whole `LEY_KHAA_SWEEP_SECONDS` (default 15s) later. A tick also waits
+for every project it started before the next one begins, so the slowest project sets the pace for
+all of them: four instant tasks queued behind a project whose own tasks take 1.5s each drain in
+~6s even with the interval removed entirely. This is a known divergence from spec §3.3's "on return
+it releases the lease and loops", deferred deliberately — see
+[the Phase 5 backlog](docs/superpowers/specs/2026-08-28-phase-5-backlog.md).
+
+Queue reordering by urgency is not built: urgency lives in the `TaskSpec`, which is only known
+after a task has already been interpreted and dequeued.
+
+Two dispatch modes, `LEY_KHAA_DISPATCH=inline|workers` (default `workers`, what `docker compose up`
+runs):
+
+- **`workers`** (default) — a background async `Dispatcher` gives every project with runnable work
+  its own worker, up to `LEY_KHAA_MAX_PROJECTS` (default 4) at once. Each task is driven only under
+  a **lease** (`LEY_KHAA_LEASE_TTL`, default 120s, heartbeated every `LEY_KHAA_LEASE_HEARTBEAT`,
+  default 30s), so a worker that dies mid-flight is recoverable: once its lease expires, another
+  worker can reclaim the row rather than the task staying stuck. `LEY_KHAA_MAX_LEASE_ATTEMPTS`
+  (default 3) caps how many times a task can be reclaimed before it is failed visibly as poison,
+  rather than being retried forever at cost.
+- **`inline`** — every task is driven synchronously on the calling thread, no lease taken. This is a
+  real supported mode, not a test shim: it is what the whole test suite pins, and it is the right
+  choice for a single-operator run where nothing else is contending for a task.
+
+### Amendments
+
+A follow-up message can modify a task that is already under way instead of starting a new one —
+"actually, make that a PDF" while the original request is still running. `AmendmentDetector` runs
+the same two-stage shape again: a free check for whether the project has any active task at all
+(almost always the fast "no" for a brand-new request), then one confidence-gated model call naming
+which active task, if any, the new request modifies.
+
+A detected amendment isn't folded in blindly — `recommend_fold` (the autonomy dial's fold decision)
+asks for all of: the target task in `AUTO` mode, not already in a state that has committed resources
+(`EXECUTING`/`VALIDATING`), no outstanding missing fields on the target's spec, and detector
+confidence at least 0.9 (higher than the 0.8 detection floor, since folding is destructive — a request
+folded in is no longer separate). Failing any of those parks the candidate for a human, visible on
+the dashboard's **Triage** tray (`GET /triage`) and resolved with `POST /candidates/{id}/fold` or
+`POST /candidates/{id}/separate`.
+
+**Amendment detection is within a project only** — a follow-up that lands in a different project is
+always a new task, never matched against another project's work.
+
 ### Local dev (no Docker)
 
 The backend reads `DATABASE_URL`, so it runs on SQLite with no Postgres:
@@ -197,8 +306,8 @@ cd frontend && npm install && npm run dev
 ## Develop
 
 ```bash
-cd backend  && python -m pytest -q   # 529 tests
-cd frontend && npm test              # 37 tests (vitest)
+cd backend  && python -m pytest -q   # 632 tests
+cd frontend && npm test              # 48 tests (vitest)
 cd frontend && npm run typecheck     # `npm run build` is transpile-only; this is the real check
 ```
 
@@ -206,21 +315,24 @@ The sandbox contract tests run against a real container, so build the image once
 (`docker build -t ley-khaa-sandbox backend/sandbox`) or every `[docker]` parameter skips.
 
 **On Docker Desktop alternatives (Colima, Rancher, Lima):** the VM usually mounts only `$HOME`,
-while pytest's `tmp_path` lives under `/private/var/folders/...` on macOS. A bundle created there
-is invisible inside the VM, so the docker-parametrized tests fail with a misleading
+while pytest's `tmp_path` lives under `/private/var/folders/...` on macOS by default. A bundle
+created there is invisible inside the VM, so the docker-parametrized tests fail with a misleading
 `No such file or directory` naming a path that plainly exists on the host. Point `TMPDIR`
-somewhere under `$HOME` for the run:
+somewhere under `$HOME` — and create that directory first: if it doesn't exist yet, pytest silently
+falls back to `/private/tmp` instead of erroring, so the failure you see becomes an equally
+misleading "can't open file" instead.
 
 ```bash
-TMPDIR="$HOME/.leykhaa-tmp" python -m pytest -q
+mkdir -p "$HOME/tmp" && TMPDIR="$HOME/tmp" python -m pytest -q
 ```
 
 ## Stack
 
 Python 3.12 · FastAPI · Pydantic v2 · SQLAlchemy · Postgres (SQLite for dev/test) · custom
-synchronous state-machine orchestrator (with a background sweeper for the debounce gate) ·
-tiered model router (Claude Haiku ↔ Opus, with a deterministic `HeuristicLLM` stand-in when no
-API key is set) · React · Vite · Tailwind · Docker Compose.
+synchronous state-machine orchestrator (with a background sweeper for the debounce gate and an
+async, lease-based, per-project dispatcher for the task queue) · tiered model router (Claude Haiku
+↔ Opus, with a deterministic `HeuristicLLM` stand-in when no API key is set) · React · Vite ·
+Tailwind · Docker Compose.
 
 ## Conventions
 

@@ -1,12 +1,18 @@
 import { useEffect, useState } from "react";
 import Candidates from "./Candidates";
+import Projects from "./Projects";
 import Registry from "./Registry";
 import TaskDetail from "./TaskDetail";
+import Triage from "./Triage";
 import { fetchCandidates, fetchTasks, type Candidate, type Task } from "./api";
 
-// promoted and abandoned candidates are done: a promoted one is already listed
-// below as a Task, so leaving them under "Forming" grew a permanent pile.
-const TERMINAL_STATES = ["promoted", "abandoned"];
+// Candidates that are done forming, and so do not belong under "Forming":
+// a promoted one is already listed below as a Task, an abandoned one is over,
+// and an awaiting_triage one is shown above in the Triage tray. Leaving any of
+// them here grew a permanent pile — and for awaiting_triage it also listed the
+// same candidate twice on one screen. Mirrors the backend's TERMINAL_STATES
+// (ley_khaa/crystallizer/candidate.py).
+const TERMINAL_STATES = ["promoted", "abandoned", "awaiting_triage"];
 
 export default function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -29,7 +35,12 @@ export default function App() {
       <h1 className="text-2xl font-bold mb-6">ley-khaa</h1>
       {error && <p className="text-red-600">{error}</p>}
 
-      <h2 className="text-lg font-semibold mb-2">Forming</h2>
+      <h2 className="text-lg font-semibold mb-2">Projects</h2>
+      <Projects />
+
+      <Triage />
+
+      <h2 className="text-lg font-semibold mb-2 mt-8">Forming</h2>
       <Candidates items={candidates.filter((c) => !TERMINAL_STATES.includes(c.state))} />
 
       <h2 className="text-lg font-semibold mb-2 mt-8">Tasks</h2>

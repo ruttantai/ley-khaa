@@ -9,7 +9,7 @@ import hashlib
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from .orm import WorkflowRow
@@ -79,25 +79,67 @@ class WorkflowRepository:
         return row
 
     def record_success(self, name: str, *, learned_alias: str | None = None) -> WorkflowRow:
-        row = self._row(name)
-        row.runs_ok += 1
-        row.last_used_at = _now()
-        if learned_alias and learned_alias not in (row.operation_aliases or []):
-            # Reassign rather than append: a JSON column mutated in place is not
-            # always seen as dirty by SQLAlchemy, and the alias would be lost on
-            # commit — the learning loop failing silently.
-            row.operation_aliases = list(row.operation_aliases or []) + [learned_alias]
+        """Count a successful run, and learn the phrasing that found it.
+
+        The counter is an atomic UPDATE rather than a read-modify-write: the
+        dispatcher runs projects in parallel, so two cached runs of the same
+        workflow can interleave and a Python-side increment loses one of them.
+
+        The alias list cannot be incremented, so it is a compare-and-swap on the
+        value we read, retried once. A lost retry costs one extra Haiku call the
+        next time that phrasing appears; it never corrupts the list.
+        """
+        self.session.execute(
+            update(WorkflowRow)
+            .where(WorkflowRow.name == name)
+            .values(runs_ok=WorkflowRow.runs_ok + 1, last_used_at=_now())
+        )
         self.session.commit()
-        self.session.refresh(row)
-        return row
+
+        if learned_alias:
+            for _ in range(2):
+                row = self._row(name)
+                current = list(row.operation_aliases or [])
+                if learned_alias in current:
+                    break
+                result = self.session.execute(
+                    update(WorkflowRow)
+                    .where(
+                        WorkflowRow.name == name,
+                        WorkflowRow.operation_aliases == current,
+                    )
+                    .values(operation_aliases=current + [learned_alias])
+                )
+                self.session.commit()
+                if result.rowcount == 1:
+                    break
+                self.session.expire(row)
+
+        # Bulk UPDATE bypasses the unit of work: it does not touch the
+        # identity map, so the caller's own in-session copy of this row (if
+        # one was already loaded) still shows the pre-update values until
+        # something expires it. expire() this one row, not expire_all() —
+        # the caller's session is shared with the rest of a request's
+        # read/write cycle (runner.py re-reads a TaskRow right after this
+        # call returns), and blanket-expiring every unrelated object in it
+        # for a write this method makes to one WorkflowRow is collateral
+        # damage, not a requirement.
+        cached = self.get(name)
+        if cached is not None:
+            self.session.expire(cached)
+        return self._row(name)
 
     def record_failure(self, name: str) -> WorkflowRow:
-        row = self._row(name)
-        row.runs_failed += 1
-        row.quarantined = True
+        self.session.execute(
+            update(WorkflowRow)
+            .where(WorkflowRow.name == name)
+            .values(runs_failed=WorkflowRow.runs_failed + 1, quarantined=True)
+        )
         self.session.commit()
-        self.session.refresh(row)
-        return row
+        cached = self.get(name)
+        if cached is not None:
+            self.session.expire(cached)
+        return self._row(name)
 
     def unquarantine(self, name: str) -> WorkflowRow:
         row = self._row(name)

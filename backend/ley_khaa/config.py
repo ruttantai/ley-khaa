@@ -27,6 +27,20 @@ class Settings:
     # Set under compose so DockerSandbox mounts the named volume by name; a
     # sibling container cannot bind-mount the backend's own container paths.
     workspace_volume: str | None = os.getenv("LEY_KHAA_WORKSPACE_VOLUME") or None
+    # "workers" runs tasks on the background dispatcher; "inline" drives them on
+    # the calling thread, which is what every test and a single-operator CLI run
+    # wants. See spec §3.4 — inline is a real supported mode, not a test shim.
+    dispatch_mode: str = os.getenv("LEY_KHAA_DISPATCH", "workers")
+    # How long a worker's claim on a task stays valid without a heartbeat. Long
+    # enough that a slow sandbox run is not mistaken for a dead worker.
+    lease_ttl_seconds: int = int(os.getenv("LEY_KHAA_LEASE_TTL", "120"))
+    lease_heartbeat_seconds: int = int(os.getenv("LEY_KHAA_LEASE_HEARTBEAT", "30"))
+    # How many projects may run at once. Each one is a full lane: two Opus calls
+    # and a sandbox run.
+    max_concurrent_projects: int = int(os.getenv("LEY_KHAA_MAX_PROJECTS", "4"))
+    # Past this many reclaims of an expired lease, a task is poison and fails
+    # visibly rather than being re-run forever.
+    max_lease_attempts: int = int(os.getenv("LEY_KHAA_MAX_LEASE_ATTEMPTS", "3"))
 
 
 settings = Settings()

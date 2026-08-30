@@ -59,7 +59,7 @@ def test_a_risky_task_parks_for_a_human(session):
 
 def test_a_human_pinned_mode_beats_the_recommendation(session, stub_execution):
     repo, driver, task = _setup(session, [_spec(recipient="boss")])
-    repo.set_override(task.id, AutonomyMode.AUTO.value)
+    repo.set_override(task.id, AutonomyMode.AUTO.value, expected=TaskState.RECEIVED)
     assert driver.advance(task.id).state == TaskState.DONE.value
 
 

@@ -5,6 +5,8 @@ from pydantic import ValidationError
 
 from ..autonomy.engine import recommend
 from ..autonomy.modes import AutonomyMode
+from ..config import settings
+from ..domain.states import WAITING as _WAITING
 from ..domain.states import InvalidTransition, TaskState
 from ..executor.runner import ExecutionRunner
 from ..executor.sandbox import SandboxUnavailable
@@ -21,14 +23,6 @@ from ..persistence.repository import TaskRepository
 from ..persistence.workflow_repository import WorkflowRepository
 
 logger = logging.getLogger(__name__)
-
-# Where a task comes to rest on its own: finished, or a human owes it something.
-_WAITING = {
-    TaskState.AWAITING_APPROVAL,
-    TaskState.NEEDS_CLARIFICATION,
-    TaskState.DONE,
-    TaskState.FAILED,
-}
 
 # Each pass performs at most one transition, so this only has to exceed the
 # longest automatic run (received → classified → interpreted → executing →
@@ -95,6 +89,21 @@ class TaskDriver:
         logger.warning("task %s hit the step ceiling; leaving it where it is", task_id)
         return self.repo.get(task_id)
 
+    def hand_off(self, task_id: str) -> TaskRow:
+        """Carry on after something made this task runnable.
+
+        Inline mode drives it here, on the caller's thread — the behaviour every
+        release before 0.6.0 had. In workers mode the task is now runnable and
+        the dispatcher will lease it, so this returns immediately: an HTTP
+        request must not block through two Opus calls and a sandbox run.
+
+        advance() itself is unchanged and is what the dispatcher calls. The split
+        is only about who does the driving, never about what driving means.
+        """
+        if settings.dispatch_mode == "inline":
+            return self.advance(task_id)
+        return self.repo.get(task_id)
+
     # --- human actions ----------------------------------------------------
 
     def approve(self, task_id: str) -> TaskRow:
@@ -102,7 +111,7 @@ class TaskDriver:
             task_id, expected=TaskState.AWAITING_APPROVAL, target=TaskState.EXECUTING
         ):
             raise InvalidTransition(f"task {task_id} is not awaiting approval")
-        return self.advance(task_id)
+        return self.hand_off(task_id)
 
     def reject(self, task_id: str, reason: str = "rejected by the human") -> TaskRow:
         row = self.repo.get(task_id)
@@ -129,7 +138,18 @@ class TaskDriver:
             # mode_override on finished (or mid-flight) work is not a
             # correction, it's silent data loss.
             raise InvalidTransition(f"task {task_id} cannot change mode from {row.state}")
-        self.repo.set_override(task_id, mode.value if mode is not None else None)
+        if not self.repo.set_override(
+            task_id, mode.value if mode is not None else None, expected=state
+        ):
+            # The check above and the write are two statements, so the task can
+            # leave `state` in between — a dispatcher worker approving it, a
+            # second tab rejecting it. Unconditional, the write landed anyway:
+            # the mode a human chose for work that was still pending ended up
+            # stamped on work that had already run. Reporting the loss (a 409 at
+            # the route) is the only honest answer — the instruction did not take.
+            raise InvalidTransition(
+                f"task {task_id} moved on from {state.value} before the mode change applied"
+            )
         row = self.repo.get(task_id)
         if TaskState(row.state) is TaskState.AWAITING_APPROVAL:
             # Send it back through the gate so the new mode is actually applied.
@@ -137,7 +157,7 @@ class TaskDriver:
             self.repo.claim(
                 task_id, expected=TaskState.AWAITING_APPROVAL, target=TaskState.INTERPRETED
             )
-        return self.advance(task_id)
+        return self.hand_off(task_id)
 
     def edit_spec(self, task_id: str, patch: dict) -> TaskRow:
         row = self.repo.get(task_id)
@@ -161,14 +181,18 @@ class TaskDriver:
         # interpreter would overwrite the human's correction with the model's
         # original reading.
         self.repo.claim(task_id, expected=state, target=TaskState.INTERPRETED)
-        return self.advance(task_id)
+        return self.hand_off(task_id)
 
     # --- automatic steps --------------------------------------------------
 
     def _classify(self, row: TaskRow) -> bool:
         # Classification already happened: the crystallizer decided this was a
         # real work request before it became a Task. The state is kept because
-        # §5.9 names it and project routing will hang off it in Phase 0.5.0.
+        # §5.9 names it. Project routing (§5.4, shipped in the routing/queues/
+        # amendments phase) turned out not to hang off it: Orchestrator._promote
+        # decides the project via _route() before TaskRepository.create, so a
+        # task is already routed the moment it — and this CLASSIFIED state —
+        # first exist.
         return self.repo.claim(row.id, expected=TaskState.RECEIVED, target=TaskState.CLASSIFIED)
 
     def _interpret(self, row: TaskRow) -> bool:
@@ -181,12 +205,16 @@ class TaskDriver:
             spec = TaskSpec.model_validate(remembered.spec).model_copy(
                 update={"source_message_ids": list(row.source_message_ids or [])}
             )
-            self.repo.save_memory_hit(
-                row.id,
-                source_task_id=remembered.source_task_id,
-                familiarity=remembered.times_seen,
-            )
-            return self._after_spec(row, spec)
+            won = self._after_spec(row, spec)
+            if won:
+                # Same ordering rule: attribution belongs to the caller that
+                # actually took the task down the remembered path.
+                self.repo.save_memory_hit(
+                    row.id,
+                    source_task_id=remembered.source_task_id,
+                    familiarity=remembered.times_seen,
+                )
+            return won
 
         try:
             spec = self.interpreter.interpret(row)
@@ -230,22 +258,37 @@ class TaskDriver:
     def _after_spec(self, row: TaskRow, spec: TaskSpec) -> bool:
         """Everything that happens once a spec exists, however it was obtained.
 
-        Extracted so the remembered path and the interpreted path cannot drift:
-        a remembered spec with missing_fields must still stop and ask.
-        """
-        self.repo.save_spec(row.id, spec)
-        if spec.missing_fields and (row.clarification_rounds or 0) < _MAX_CLARIFICATION_ROUNDS:
-            self.repo.set_open_question(row.id, _question_for(spec.missing_fields))
-            return self.repo.claim(
-                row.id, expected=TaskState.CLASSIFIED, target=TaskState.NEEDS_CLARIFICATION
-            )
+        The claim comes FIRST. Writing the spec before winning the transition
+        left a task that lost the race carrying a spec for a path it never took
+        — the same inversion c043c46 fixed in reject(), and backlog item 6.
+        _remember already gets this right and is the model followed here.
 
-        # Either the spec is complete, or we have asked enough times. The gaps
-        # stay visible in spec.missing_fields; we simply stop asking about them.
-        self.repo.set_open_question(row.id, None)
-        return self.repo.claim(
-            row.id, expected=TaskState.CLASSIFIED, target=TaskState.INTERPRETED
+        This trades one race for a narrower one, and does not eliminate it:
+        the claim and save_spec commit are two separate transactions, so
+        between them the row is briefly INTERPRETED (or NEEDS_CLARIFICATION)
+        with spec still None — the old bug was a spec without the state; this
+        is a state without the spec. A reader landing in that exact window
+        would hit TaskSpec.model_validate(None). Closing it for real needs the
+        claim and the write in one transaction, which is out of scope here.
+        The window is narrow in practice: workers mode only lets a leased
+        task's owner drive it further (_runnable_where excludes leased rows),
+        advance_stalled is inline-only, there is no I/O between the two
+        commits, and the next sweep self-heals a task caught mid-gap — but the
+        gap is real, not merely theoretical, and is left open rather than
+        silently assumed away.
+        """
+        asking = bool(spec.missing_fields) and (
+            (row.clarification_rounds or 0) < _MAX_CLARIFICATION_ROUNDS
         )
+        target = TaskState.NEEDS_CLARIFICATION if asking else TaskState.INTERPRETED
+        if not self.repo.claim(row.id, expected=TaskState.CLASSIFIED, target=target):
+            return False
+
+        self.repo.save_spec(row.id, spec)
+        self.repo.set_open_question(
+            row.id, _question_for(spec.missing_fields) if asking else None
+        )
+        return True
 
     def _gate(self, row: TaskRow) -> bool:
         spec = TaskSpec.model_validate(row.spec)
@@ -265,8 +308,20 @@ class TaskDriver:
         # effective_mode is only meaningful once the recommendation is stored, and
         # a human override set earlier must still beat what we just computed.
         # save_recommendation returns the updated row, so no second read is needed.
-        # (A concurrent override arriving mid-scoring is not reachable while the
-        # orchestrator is synchronous; per-project concurrency is Phase 0.5.0.)
+        #
+        # `updated` is read before the claim below, so an override committing in
+        # between would not be reflected in `effective`. No override CAN commit
+        # in that window: TaskRepository.set_override writes under
+        # `WHERE state = <the state override() observed>`, and override() only
+        # ever observes a state in _ACTIONABLE (AWAITING_APPROVAL,
+        # NEEDS_CLARIFICATION). This method runs only on a task in INTERPRETED —
+        # _STEPS dispatches on the row's state and the claim below re-checks it —
+        # and a task is in exactly one state, so any override racing this pass
+        # matches zero rows and is reported to its caller as a 409 rather than
+        # silently lost. That is the whole of the guarantee: it says nothing
+        # about an override that commits BEFORE this pass reads the row (which
+        # is correctly honoured) or AFTER the claim (which re-enters scoring via
+        # override()'s own AWAITING_APPROVAL -> INTERPRETED claim).
         effective = updated.effective_mode
         target = (
             TaskState.EXECUTING

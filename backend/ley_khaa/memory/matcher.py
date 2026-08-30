@@ -53,11 +53,12 @@ class MemoryMatcher:
         if exact is not None:
             return exact
 
-        # Scoped by TaskRow.project, which is "default" for every task until
-        # §5.4 project routing lands (orchestrator.py's only call to
-        # TaskRepository.create hardcodes it). So today this scoping is
-        # structural, not yet a separation between clients: every client's
-        # memory is in the same project and is recallable by any of them.
+        # Scoped by TaskRow.project, which Phase 5's router now sets per client
+        # (projects/router.py). Memory is scoped and the registry is global on
+        # purpose: a remembered TaskSpec carries `recipient` and is reused
+        # wholesale, so sharing one across clients misdelivers work — whereas a
+        # workflow is code, identified by the sha256 of its source and bound
+        # positionally to each run's own inputs, so it carries no client data.
         known = self.memories.for_project(project)
         if not known:
             return None

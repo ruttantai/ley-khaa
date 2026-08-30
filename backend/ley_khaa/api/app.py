@@ -5,6 +5,7 @@ import logging
 import zipfile
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -15,18 +16,22 @@ from sqlalchemy.orm import Session
 
 from ..autonomy.modes import AutonomyMode
 from ..config import settings
+from ..crystallizer.candidate import CandidateState
 from ..crystallizer.gate import ReadinessGate
 from ..db import SessionLocal, run_migrations
 from ..domain.states import InvalidTransition
 from ..executor.workspace import MANIFEST_NAME, Workspace
 from ..intake.simulator import Simulator
 from ..llm.factory import build_llm
+from ..orchestrator.dispatcher import Dispatcher
 from ..orchestrator.orchestrator import ForeignReplyTarget, Orchestrator
 from ..persistence.candidate_repository import CandidateRepository
 from ..persistence.memory_repository import MemoryRepository
 from ..persistence.message_repository import MessageRepository
+from ..persistence.project_repository import ProjectRepository
 from ..persistence.repository import TaskRepository
 from ..persistence.workflow_repository import DuplicateWorkflow, WorkflowRepository
+from ..projects.seeds import ensure_default_project
 from ..registry.promote import NotPromotable, promote
 from ..registry.seeds import ensure_seed_workflows
 from .schemas import (
@@ -37,10 +42,13 @@ from .schemas import (
     MessageIn,
     MessageOut,
     ModeIn,
+    ProjectIn,
+    ProjectOut,
     PromoteIn,
     RejectIn,
     SpecPatchIn,
     TaskOut,
+    TriageOut,
     WorkflowOut,
 )
 
@@ -56,6 +64,7 @@ def build_orchestrator(session: Session) -> Orchestrator:
         gate=ReadinessGate(settings.crystallizer_debounce_seconds),
         workflows=WorkflowRepository(session),
         memories=MemoryRepository(session),
+        projects=ProjectRepository(session),
     )
 
 
@@ -65,13 +74,24 @@ def _sweep_once() -> int:
     try:
         orchestrator = build_orchestrator(session)
         promoted = len(orchestrator.sweep())
-        # Also re-drive tasks that stalled mid-flight. This is what retries an
-        # interpretation that hit a transport failure: the task sits in CLASSIFIED
-        # and nothing else would ever pick it up.
-        orchestrator.advance_stalled()
+        if settings.dispatch_mode == "inline":
+            # In workers mode the dispatcher owns re-driving, and it does so
+            # under a lease. Driving here as well would run a second lane over
+            # a task a worker already holds.
+            orchestrator.advance_stalled()
         return promoted
     finally:
         session.close()
+
+
+def _drive_task(session: Session, task_id: str) -> None:
+    """What the dispatcher does with a leased task: exactly what every release
+    before 0.6.0 did inline."""
+    build_orchestrator(session).driver.advance(task_id)
+
+
+def build_dispatcher() -> Dispatcher:
+    return Dispatcher(SessionLocal, drive=_drive_task)
 
 
 async def _periodic_sweeper(interval: float, sweep: Callable[[], int] = _sweep_once) -> None:
@@ -100,7 +120,11 @@ async def _periodic_sweeper(interval: float, sweep: Callable[[], int] = _sweep_o
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if settings.disable_startup:
+        # Both background tasks are declared here, not just the sweeper: a test
+        # that asks "is the dispatcher running?" must get None rather than
+        # AttributeError when startup is disabled.
         app.state.sweeper = None
+        app.state.dispatcher = None
         yield
         return
     run_migrations()
@@ -110,19 +134,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # The registry ships with two proven workflows so a fresh clone can show
         # the fast path before anyone has promoted anything.
         ensure_seed_workflows(session)
+        # Every task must land in a project that exists, including the very
+        # first one on a fresh clone.
+        ensure_default_project(session)
         if not repo.list():
             Simulator(build_orchestrator(session)).replay("messy_universe_check")
     finally:
         session.close()
 
     app.state.sweeper = asyncio.create_task(_periodic_sweeper(settings.sweep_interval_seconds))
+    app.state.dispatcher = None
+    if settings.dispatch_mode == "workers":
+        app.state.dispatcher = asyncio.create_task(
+            build_dispatcher().run_forever(settings.sweep_interval_seconds)
+        )
     try:
         yield
     finally:
-        app.state.sweeper.cancel()
-        with suppress(asyncio.CancelledError):
-            await app.state.sweeper
+        for task in (app.state.sweeper, app.state.dispatcher):
+            if task is None:
+                continue
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
         app.state.sweeper = None
+        app.state.dispatcher = None
 
 
 app = FastAPI(title="ley-khaa", lifespan=lifespan)
@@ -182,12 +218,120 @@ def post_message(body: MessageIn, session: Session = Depends(get_session)) -> In
         conversation_id=result.conversation_id,
         candidate_ids=[c.id for c in result.candidates],
         task_ids=result.task_ids,
+        project=result.project,
+        queued=settings.dispatch_mode == "workers" and bool(result.task_ids),
     )
 
 
 @app.get("/candidates", response_model=list[CandidateOut])
 def list_candidates(session: Session = Depends(get_session)) -> list[CandidateOut]:
     return [CandidateOut.model_validate(c) for c in CandidateRepository(session).list_all()]
+
+
+@app.get("/projects", response_model=list[ProjectOut])
+def list_projects(session: Session = Depends(get_session)) -> list[ProjectOut]:
+    projects = ProjectRepository(session)
+    repo = TaskRepository(session)
+    now = datetime.now(timezone.utc)
+    out: list[ProjectOut] = []
+    for project in projects.active():
+        # The lease-live comparison is done in SQL, not on rows loaded here in
+        # Python: DateTime(timezone=True) round-trips naive through SQLite, so
+        # comparing an already-loaded row's lease_expires_at against an aware
+        # `now` in Python raises TypeError the moment it was read fresh from
+        # the database rather than pulled from a session's identity map — see
+        # TaskRepository.leased_task_id's docstring.
+        leased = repo.leased_task_id(project.name, now=now)
+        queued = repo.runnable_count(project.name, now=now)
+        out.append(
+            ProjectOut(
+                name=project.name,
+                display_name=project.display_name,
+                description=project.description,
+                active=project.active,
+                queue_depth=queued,
+                in_flight=leased,
+            )
+        )
+    return out
+
+
+@app.post("/projects", response_model=ProjectOut, status_code=201)
+def create_project(body: ProjectIn, session: Session = Depends(get_session)) -> ProjectOut:
+    if not body.description.strip():
+        # A project with no description is invisible to stage-2 routing, so
+        # creating one silently would produce a project nothing can ever route
+        # into. Refuse it here rather than let it look like it works.
+        raise HTTPException(
+            status_code=422,
+            detail="a project needs a description — it is what routing reasons over",
+        )
+    projects = ProjectRepository(session)
+    if projects.get(body.name) is not None:
+        raise HTTPException(status_code=409, detail=f"project {body.name!r} already exists")
+    row = projects.create(
+        body.name, display_name=body.display_name, description=body.description
+    )
+    return ProjectOut(
+        name=row.name,
+        display_name=row.display_name,
+        description=row.description,
+        active=row.active,
+        queue_depth=0,
+        in_flight=None,
+    )
+
+
+@app.get("/projects/{name}/queue", response_model=list[TaskOut])
+def project_queue(name: str, session: Session = Depends(get_session)) -> list[TaskOut]:
+    return [
+        TaskOut.model_validate(t) for t in TaskRepository(session).list() if t.project == name
+    ]
+
+
+@app.get("/triage", response_model=list[TriageOut])
+def list_triage(session: Session = Depends(get_session)) -> list[TriageOut]:
+    candidates = CandidateRepository(session)
+    repo = TaskRepository(session)
+    out: list[TriageOut] = []
+    for row in candidates.list_by_state(CandidateState.AWAITING_TRIAGE):
+        target = repo.get(row.amends_task_id or "")
+        out.append(
+            TriageOut(
+                candidate_id=row.id,
+                title=row.title,
+                summary=row.summary,
+                amends_task_id=row.amends_task_id or "",
+                # A target that vanished is still worth showing: the human needs
+                # to see the parked request, not a 500.
+                amends_task_title=target.title if target else "(task not found)",
+                reason=row.amendment_reason or "",
+                confidence=row.amendment_confidence or 0.0,
+            )
+        )
+    return out
+
+
+@app.post("/candidates/{candidate_id}/fold", response_model=TaskOut)
+def fold_candidate(candidate_id: str, session: Session = Depends(get_session)) -> TaskOut:
+    task_id = build_orchestrator(session).fold(candidate_id)
+    if task_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="this candidate is not waiting on an amendment decision, "
+                   "or the task it amends has moved on",
+        )
+    return TaskOut.model_validate(TaskRepository(session).get(task_id))
+
+
+@app.post("/candidates/{candidate_id}/separate", response_model=TaskOut)
+def separate_candidate(candidate_id: str, session: Session = Depends(get_session)) -> TaskOut:
+    task_id = build_orchestrator(session).separate(candidate_id)
+    if task_id is None:
+        raise HTTPException(
+            status_code=409, detail="this candidate is not waiting on an amendment decision"
+        )
+    return TaskOut.model_validate(TaskRepository(session).get(task_id))
 
 
 @app.get("/conversations/{conversation_id}/messages", response_model=list[MessageOut])

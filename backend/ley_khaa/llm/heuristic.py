@@ -8,6 +8,8 @@ from ..crystallizer.relevance import RelevanceVerdict
 from ..executor.synthesizer import SynthesizedScript
 from ..interpreter.spec import TaskSpec
 from ..memory.models import MemoryDecision
+from ..orchestrator.amendment import AmendmentChoice
+from ..projects.models import ProjectChoice
 from ..registry.models import RegistryDecision
 from .router import ModelChoice
 
@@ -187,6 +189,17 @@ class HeuristicLLM:
         if output_format is MemoryDecision:
             # Fingerprint-only offline, for the same reason as RegistryDecision.
             return MemoryDecision(memory_id=None, confidence=0.0, reason="offline: no model match")
+        if output_format is ProjectChoice:
+            # Offline routing is bindings-only by design, for the same reason
+            # RegistryDecision is fingerprint-only: a regex has not understood
+            # which client's work this is, and guessing would put one client's
+            # request in another's queue. Everything unbound goes to `default`.
+            return ProjectChoice(project=None, confidence=0.0, reason="offline: no model routing")
+        if output_format is AmendmentChoice:
+            # A regex cannot tell "also flag duplicates" (an amendment) from
+            # "also run the credit book" (a new request), and folding a separate
+            # request into a running task LOSES it. Offline, everything is new.
+            return AmendmentChoice(task_id=None, confidence=0.0, reason="offline: no detection")
         raise NotImplementedError(f"HeuristicLLM has no rule for {output_format.__name__}")
 
     def _relevance(self, user: str) -> RelevanceVerdict:

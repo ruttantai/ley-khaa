@@ -5,14 +5,26 @@ class CandidateState(str, Enum):
     FORMING = "forming"
     CRYSTALLIZING = "crystallizing"
     READY = "ready"
+    AWAITING_TRIAGE = "awaiting_triage"
     PROMOTED = "promoted"
     ABANDONED = "abandoned"
 
 
-# PROMOTED and ABANDONED are terminal: a candidate in one of them is done being
-# reported on and must never be resurrected.
+# "Already handled" for the crystallizer: a candidate in one of these is done
+# being reported on and must never be resurrected. This is a wider set than the
+# two states with no outgoing transitions, and deliberately so. AWAITING_TRIAGE
+# still has somewhere to go (a human folds it or runs it separately), but stage B
+# has nothing left to say about it: the request is captured and a decision is
+# parked. Leaving it out left the parked candidate rendered as ACTIVE in the
+# stage-B prompt, so the model re-reported the same candidate_key, and upsert hit
+# ensure_transition(AWAITING_TRIAGE -> READY) — which _ALLOWED forbids. One
+# parked amendment then made every later message in that conversation raise.
 TERMINAL_STATES: frozenset[str] = frozenset(
-    {CandidateState.PROMOTED.value, CandidateState.ABANDONED.value}
+    {
+        CandidateState.PROMOTED.value,
+        CandidateState.ABANDONED.value,
+        CandidateState.AWAITING_TRIAGE.value,
+    }
 )
 
 
@@ -37,6 +49,14 @@ _ALLOWED: dict[CandidateState, set[CandidateState]] = {
         CandidateState.READY,
         CandidateState.CRYSTALLIZING,
         CandidateState.FORMING,
+        CandidateState.PROMOTED,
+        CandidateState.ABANDONED,
+        CandidateState.AWAITING_TRIAGE,
+    },
+    # A candidate whose amendment proposal is waiting on a human. Reachable only
+    # from READY, and it ends the same two ways any candidate ends: PROMOTED (the
+    # human folded it or ran it separately) or ABANDONED.
+    CandidateState.AWAITING_TRIAGE: {
         CandidateState.PROMOTED,
         CandidateState.ABANDONED,
     },

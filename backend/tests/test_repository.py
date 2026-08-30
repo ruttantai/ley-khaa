@@ -72,11 +72,55 @@ def test_effective_mode_prefers_the_human_override(session):
     task = _task(repo)
     repo.save_recommendation(task.id, mode="suggest", confidence=0.4, risk=0.7, reason="r")
     assert repo.get(task.id).effective_mode == "suggest"
-    repo.set_override(task.id, "auto")
+    assert repo.set_override(task.id, "auto", expected=TaskState.RECEIVED)
     assert repo.get(task.id).effective_mode == "auto"
     # Clearing the override falls back to the recommendation rather than sticking.
-    repo.set_override(task.id, None)
+    assert repo.set_override(task.id, None, expected=TaskState.RECEIVED)
     assert repo.get(task.id).effective_mode == "suggest"
+
+
+def test_set_override_refuses_a_task_that_has_left_the_expected_state(session):
+    """mode_override is a compare-and-set, not a plain attribute write.
+
+    As an unconditional read-modify-write it had no WHERE at all, so a caller
+    that decided while the task was in one state stamped the human's mode onto
+    whatever state the task had reached by the time the write landed.
+    """
+    repo = TaskRepository(session)
+    task = _task(repo)
+    repo.claim(task.id, expected=TaskState.RECEIVED, target=TaskState.CLASSIFIED)
+
+    assert repo.set_override(task.id, "auto", expected=TaskState.RECEIVED) is False
+    assert repo.get(task.id).mode_override is None, "the lost write landed anyway"
+
+    # The other direction: it is a guard, not a blanket refusal. Naming the
+    # state the task is actually in still wins, so a test that only ever
+    # asserted False above would pass against a set_override that wrote nothing.
+    assert repo.set_override(task.id, "auto", expected=TaskState.CLASSIFIED) is True
+    assert repo.get(task.id).mode_override == "auto"
+
+
+def test_no_override_can_commit_while_a_task_is_being_scored(session):
+    """This is what closes the _gate race (see driver.py::_gate's comment).
+
+    _gate reads the row, decides EXECUTING vs AWAITING_APPROVAL from it, and
+    only then claims out of INTERPRETED. An override committing inside that
+    window was invisible to the decision but visible in the record afterwards —
+    so a human's "do not run this unattended" could be ignored by the very pass
+    that then ran it, while the row afterwards showed the override in force.
+
+    It can no longer commit there: override() only ever observes a state in
+    _ACTIONABLE and writes under WHERE state = that state, and a task being
+    scored is in INTERPRETED, which is neither of them.
+    """
+    repo = TaskRepository(session)
+    task = _task(repo)
+    repo.claim(task.id, expected=TaskState.RECEIVED, target=TaskState.CLASSIFIED)
+    repo.claim(task.id, expected=TaskState.CLASSIFIED, target=TaskState.INTERPRETED)
+
+    for actionable in (TaskState.AWAITING_APPROVAL, TaskState.NEEDS_CLARIFICATION):
+        assert repo.set_override(task.id, "copilot", expected=actionable) is False
+    assert repo.get(task.id).mode_override is None
 
 
 def test_append_source_messages_does_not_duplicate(session):
