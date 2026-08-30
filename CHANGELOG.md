@@ -5,6 +5,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-30
+
 ### Added
 - Routing at promotion (§5.4): `Orchestrator._promote` now routes each candidate to a real
   project instead of hardcoding `"default"`. `ProjectRouter` (a `projects` keyword argument on
@@ -41,13 +43,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
   that parks the candidate in a new `AWAITING_TRIAGE` state for a human. `TaskRepository.fold_into`
   merges the amendment's messages into the target and sends it back to `CLASSIFIED` for
   re-interpretation over the enlarged message set, never stapling onto the old spec.
-- Triage API and dashboard: `GET /triage` lists parked amendment candidates; `POST
-  /candidates/{id}/fold` and `POST /candidates/{id}/separate` resolve one, backed by the same
-  `_fold` path the automatic route uses. The dashboard's Triage tray surfaces these.
-- Projects API and dashboard: `GET /projects` (name, description, `active`, queue depth, the task
-  currently leased if any), `POST /projects` (refuses an empty description, since that is what
-  stage-2 routing reasons over), `GET /projects/{name}/queue`. The dashboard's Projects view lists
-  them.
+- Triage API and dashboard: `GET /triage` lists parked amendment candidates. `POST
+  /candidates/{id}/fold` resolves one, backed by the same `_fold` path the automatic route uses;
+  `POST /candidates/{id}/separate` resolves the other way, promoting the candidate as its own task
+  via `TaskRepository.create` — it never touches `_fold`. The dashboard's Triage tray surfaces
+  these.
+- Projects API and dashboard: `GET /projects` (name, display_name, description, `active`, queue
+  depth, the task currently leased if any), `POST /projects` (refuses an empty description, since
+  that is what stage-2 routing reasons over), `GET /projects/{name}/queue`. The dashboard's
+  Projects view lists them.
 
 ### Changed
 - `WorkflowRepository.record_success`/`record_failure` switched from a Python-side

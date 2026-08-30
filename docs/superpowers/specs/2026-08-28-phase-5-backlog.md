@@ -73,10 +73,11 @@ this is not a false statement — but it is undesigned, arrived at by default ra
 decision.
 
 Settle it when §5.4 project routing lands, because that is the change that makes scoping mean
-something. Note that today every task is created with `project="default"` — hardcoded at
-`orchestrator/orchestrator.py`, the only `TaskRepository.create` call site — so there is exactly one
-project and memory is shared across every client. Phase 4's CHANGELOG and matcher comment now say
-this plainly; they previously claimed client isolation the code did not provide.
+something. Note that, at the time of writing (the close of Phase 4), every task is created with
+`project="default"` — hardcoded at `orchestrator/orchestrator.py`, the only `TaskRepository.create`
+call site — so there is exactly one project and memory is shared across every client. Phase 4's
+CHANGELOG and matcher comment said this plainly as of that same point; they previously claimed
+client isolation the code did not provide.
 
 **When project routing lands, re-read that claim first.** The moment tasks stop all being
 `"default"`, the remembered spec's `recipient` field becomes a real cross-client concern: a spec is
@@ -136,8 +137,8 @@ a fresh backlog item since the docstring already carries it.
 None of these are suspected bugs; each was verified correct by reading or direct execution during
 review. They are places where a regression would not turn anything red.
 
-- **No downgrade test for any migration** (`0001`–`0004`). Verified by reading only: LIFO column
-  drops, native SQLite `DROP COLUMN`.
+- **No downgrade test for any migration** (`0001`–`0006`). Verified by reading only: LIFO column
+  drops, native SQLite `DROP COLUMN`; `0006`'s `alter_column` to/from JSONB likewise unexercised.
 - `fingerprint_candidates`' empty-operation early return (`registry/fingerprint.py`).
 - Case-insensitive suffix matching in `bind()` (`registry/binder.py`).
 - `confidence == CONFIDENCE_FLOOR` exactly, as a match — only floor − 0.01 is pinned, as a miss.
@@ -152,7 +153,9 @@ review. They are places where a regression would not turn anything red.
 - `PromoteControl`'s Cancel clears `error` but not `name` / `description`, so reopening shows stale
   input.
 - `Registry`'s `load` is redefined every render (no `useCallback`).
-- Both frontend test files now mix `test(...)` and `it(...)`.
+- `BundlePanel.test.tsx` and `TaskDetail.test.tsx` mix `test(...)` and `it(...)`. Of the 7
+  frontend test files that exist now (`Projects.test.tsx` and `Triage.test.tsx` added this
+  phase), the rest use `test(...)` consistently.
 
 ## 9. No Postgres lane in CI, and the whole suite is SQLite-only
 

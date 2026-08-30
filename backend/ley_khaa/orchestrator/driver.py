@@ -177,7 +177,11 @@ class TaskDriver:
     def _classify(self, row: TaskRow) -> bool:
         # Classification already happened: the crystallizer decided this was a
         # real work request before it became a Task. The state is kept because
-        # §5.9 names it and project routing will hang off it in Phase 0.5.0.
+        # §5.9 names it. Project routing (§5.4, shipped in the routing/queues/
+        # amendments phase) turned out not to hang off it: Orchestrator._promote
+        # decides the project via _route() before TaskRepository.create, so a
+        # task is already routed the moment it — and this CLASSIFIED state —
+        # first exist.
         return self.repo.claim(row.id, expected=TaskState.RECEIVED, target=TaskState.CLASSIFIED)
 
     def _interpret(self, row: TaskRow) -> bool:
@@ -293,8 +297,16 @@ class TaskDriver:
         # effective_mode is only meaningful once the recommendation is stored, and
         # a human override set earlier must still beat what we just computed.
         # save_recommendation returns the updated row, so no second read is needed.
-        # (A concurrent override arriving mid-scoring is not reachable while the
-        # orchestrator is synchronous; per-project concurrency is Phase 0.5.0.)
+        # (A concurrent override arriving mid-scoring IS reachable now, in the
+        # default workers mode: this runs on a dispatcher worker thread
+        # (Dispatcher._work_one -> asyncio.to_thread -> driver.advance), while
+        # POST /tasks/{id}/mode is served on FastAPI's own threadpool. An
+        # override committed after save_recommendation's refresh above and
+        # before the claim below is not reflected in `effective` — `updated`
+        # was already read — so this scoring pass can decide EXECUTING vs
+        # AWAITING_APPROVAL as though the override were never set. The claim
+        # below still protects the STATE transition itself, not this decision;
+        # not closed here.)
         effective = updated.effective_mode
         target = (
             TaskState.EXECUTING

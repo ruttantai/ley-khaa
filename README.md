@@ -70,7 +70,9 @@ docker compose up
   if it ever drifts)
   - `GET /health`
   - `GET /tasks`, `GET /tasks/{id}`
-  - `POST /messages` — ingest one message through the full pipeline
+  - `POST /messages` — ingest one message through the full pipeline; returns which
+    `project` the resulting task(s) landed in and whether it's `queued` (in the default
+    `workers` mode the call returns as soon as a task exists, not once it's finished)
   - `GET /candidates` — task candidates and their state
   - `GET /projects` — every active project, its queue depth, and the task (if any) currently leased
   - `POST /projects` — create a project; needs a non-empty description, since that's what stage-2
@@ -161,9 +163,13 @@ Two learned fast paths sit in front of the model, each short-circuiting one expe
 
 - **Task memory** remembers the `TaskSpec` that satisfied a request, keyed on a fingerprint of the
   request's own text (stopwords stripped, tokens sorted, so word order and politeness don't split a
-  repeat). A recognised repeat skips the interpreter entirely.
+  repeat). A recognised repeat skips the interpreter entirely. Scoped by `TaskRow.project` — see
+  [Projects and queues](#projects-and-queues) for what that scoping is and isn't worth once routing
+  is in the picture.
 - **The workflow registry** remembers proven generator code. A matched request runs that frozen
-  source in the same sandbox, judged by the same validator, and skips synthesis entirely.
+  source in the same sandbox, judged by the same validator, and skips synthesis entirely. Unlike
+  memory, the registry has no project scoping at all — a promoted workflow is a global capability,
+  matchable from any project.
 
 Chained, the same request asked twice is **interpreted and executed with no model call at all** the
 second time: memory recalls the spec, the registry replays the code, and both matchers try a free,
@@ -265,7 +271,7 @@ which active task, if any, the new request modifies.
 A detected amendment isn't folded in blindly — `recommend_fold` (the autonomy dial's fold decision)
 asks for all of: the target task in `AUTO` mode, not already in a state that has committed resources
 (`EXECUTING`/`VALIDATING`), no outstanding missing fields on the target's spec, and detector
-confidence above 0.9 (higher than the 0.8 detection floor, since folding is destructive — a request
+confidence at least 0.9 (higher than the 0.8 detection floor, since folding is destructive — a request
 folded in is no longer separate). Failing any of those parks the candidate for a human, visible on
 the dashboard's **Triage** tray (`GET /triage`) and resolved with `POST /candidates/{id}/fold` or
 `POST /candidates/{id}/separate`.
@@ -298,15 +304,16 @@ The sandbox contract tests run against a real container, so build the image once
 (`docker build -t ley-khaa-sandbox backend/sandbox`) or every `[docker]` parameter skips.
 
 **On Docker Desktop alternatives (Colima, Rancher, Lima):** the VM usually mounts only `$HOME`,
-while pytest's `tmp_path` lives under `/private/var/folders/...` on macOS. A bundle created there
-is invisible inside the VM, so the docker-parametrized tests fail with a misleading
+while pytest's `tmp_path` lives under `/private/var/folders/...` on macOS by default. A bundle
+created there is invisible inside the VM, so the docker-parametrized tests fail with a misleading
 `No such file or directory` naming a path that plainly exists on the host. Point `TMPDIR`
-somewhere under `$HOME` for the run:
+somewhere under `$HOME` — and create that directory first: if it doesn't exist yet, pytest silently
+falls back to `/private/tmp` instead of erroring, so the failure you see becomes an equally
+misleading "can't open file" instead.
 
-Docker-parametrized tests need a temp directory Colima can see:
-`mkdir -p "$HOME/tmp" && TMPDIR="$HOME/tmp" python -m pytest -q`. The directory must exist first —
-otherwise pytest silently falls back to `/private/tmp` and the sandbox tests fail with a misleading
-"can't open file".
+```bash
+mkdir -p "$HOME/tmp" && TMPDIR="$HOME/tmp" python -m pytest -q
+```
 
 ## Stack
 
