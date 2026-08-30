@@ -138,7 +138,18 @@ class TaskDriver:
             # mode_override on finished (or mid-flight) work is not a
             # correction, it's silent data loss.
             raise InvalidTransition(f"task {task_id} cannot change mode from {row.state}")
-        self.repo.set_override(task_id, mode.value if mode is not None else None)
+        if not self.repo.set_override(
+            task_id, mode.value if mode is not None else None, expected=state
+        ):
+            # The check above and the write are two statements, so the task can
+            # leave `state` in between — a dispatcher worker approving it, a
+            # second tab rejecting it. Unconditional, the write landed anyway:
+            # the mode a human chose for work that was still pending ended up
+            # stamped on work that had already run. Reporting the loss (a 409 at
+            # the route) is the only honest answer — the instruction did not take.
+            raise InvalidTransition(
+                f"task {task_id} moved on from {state.value} before the mode change applied"
+            )
         row = self.repo.get(task_id)
         if TaskState(row.state) is TaskState.AWAITING_APPROVAL:
             # Send it back through the gate so the new mode is actually applied.
@@ -297,16 +308,20 @@ class TaskDriver:
         # effective_mode is only meaningful once the recommendation is stored, and
         # a human override set earlier must still beat what we just computed.
         # save_recommendation returns the updated row, so no second read is needed.
-        # (A concurrent override arriving mid-scoring IS reachable now, in the
-        # default workers mode: this runs on a dispatcher worker thread
-        # (Dispatcher._work_one -> asyncio.to_thread -> driver.advance), while
-        # POST /tasks/{id}/mode is served on FastAPI's own threadpool. An
-        # override committed after save_recommendation's refresh above and
-        # before the claim below is not reflected in `effective` — `updated`
-        # was already read — so this scoring pass can decide EXECUTING vs
-        # AWAITING_APPROVAL as though the override were never set. The claim
-        # below still protects the STATE transition itself, not this decision;
-        # not closed here.)
+        #
+        # `updated` is read before the claim below, so an override committing in
+        # between would not be reflected in `effective`. No override CAN commit
+        # in that window: TaskRepository.set_override writes under
+        # `WHERE state = <the state override() observed>`, and override() only
+        # ever observes a state in _ACTIONABLE (AWAITING_APPROVAL,
+        # NEEDS_CLARIFICATION). This method runs only on a task in INTERPRETED —
+        # _STEPS dispatches on the row's state and the claim below re-checks it —
+        # and a task is in exactly one state, so any override racing this pass
+        # matches zero rows and is reported to its caller as a 409 rather than
+        # silently lost. That is the whole of the guarantee: it says nothing
+        # about an override that commits BEFORE this pass reads the row (which
+        # is correctly honoured) or AFTER the claim (which re-enters scoring via
+        # override()'s own AWAITING_APPROVAL -> INTERPRETED claim).
         effective = updated.effective_mode
         target = (
             TaskState.EXECUTING

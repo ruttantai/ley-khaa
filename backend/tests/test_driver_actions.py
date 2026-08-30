@@ -146,7 +146,7 @@ def test_overriding_to_suggest_keeps_the_task_parked(session):
     row = messages.add(Message(source="s", client="c", conversation_id="conv-1",
                                author="boss", text="compare bloomberg against factset"))
     task = repo.create(project="default", title="t", source_message_ids=[row.id])
-    repo.set_override(task.id, AutonomyMode.SUGGEST.value)
+    repo.set_override(task.id, AutonomyMode.SUGGEST.value, expected=TaskState.RECEIVED)
     driver = TaskDriver(repo, llm=FakeLLM([_spec()]), messages=messages,
                         candidates=CandidateRepository(session))
 
@@ -159,7 +159,9 @@ def test_overriding_to_suggest_keeps_the_task_parked(session):
 
 def test_clearing_the_override_falls_back_to_the_recommendation(session):
     repo, driver, task = _parked(session, [_spec(recipient="boss")])
-    repo.set_override(task.id, AutonomyMode.SUGGEST.value)
+    repo.set_override(
+        task.id, AutonomyMode.SUGGEST.value, expected=TaskState.AWAITING_APPROVAL
+    )
     driver.override(task.id, None)
     assert repo.get(task.id).effective_mode == AutonomyMode.COPILOT.value
 
@@ -234,3 +236,37 @@ def test_editing_a_task_with_no_spec_yet_is_a_conflict(session):
     fresh = repo.create(project="default", title="t3", source_message_ids=[])
     with pytest.raises(InvalidTransition):
         driver.edit_spec(fresh.id, {"output_format": "csv"})
+
+
+def test_an_override_that_loses_the_race_is_reported_not_silently_applied(
+    session, stub_execution, monkeypatch
+):
+    """override() checks the state and then writes: two statements, one window.
+
+    A dispatcher worker can finish the task in between. Unconditional, the write
+    landed on the finished row — so `mode_override` claimed the human's choice
+    was in force on work that had already run under a different mode. That is
+    worse than losing the instruction, because the record then says it was
+    honoured. The loss must reach the caller (a 409 at the route), not the row.
+    """
+    repo, driver, task = _parked(session, [_spec(recipient="boss")])
+    real = TaskRepository.set_override
+
+    def racing(self, task_id, mode, *, expected):
+        # Injected here because the window is exactly one statement wide.
+        for source, target in (
+            (TaskState.AWAITING_APPROVAL, TaskState.EXECUTING),
+            (TaskState.EXECUTING, TaskState.VALIDATING),
+            (TaskState.VALIDATING, TaskState.DONE),
+        ):
+            self.claim(task_id, expected=source, target=target)
+        return real(self, task_id, mode, expected=expected)
+
+    monkeypatch.setattr(TaskRepository, "set_override", racing)
+
+    with pytest.raises(InvalidTransition):
+        driver.override(task.id, AutonomyMode.AUTO)
+
+    finished = repo.get(task.id)
+    assert TaskState(finished.state) is TaskState.DONE
+    assert finished.mode_override is None, "the mode was stamped on finished work"

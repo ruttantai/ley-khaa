@@ -85,12 +85,34 @@ class TaskRepository:
         self.session.refresh(row)
         return row
 
-    def set_override(self, task_id: str, mode: str | None) -> TaskRow:
-        row = self._row(task_id)
-        row.mode_override = mode
+    def set_override(self, task_id: str, mode: str | None, *, expected: TaskState) -> bool:
+        """Pin (or clear) the human's mode, conditional on the task still being
+        in `expected`. True if we won it.
+
+        Same compare-and-set discipline as claim() and fold_into(), and for a
+        sharper reason than either: mode_override is a human's explicit
+        instruction about whether work may run unattended, so losing the write
+        is worse than losing a state transition. As a plain attribute set it was
+        a read-modify-write over the WHOLE row with no WHERE, which cost both
+        directions of that instruction — an upgrade landed on tasks that had
+        already finished, and a downgrade ("do not run this unattended") could
+        commit while the scoring pass that had already read the old value went
+        on to run the task anyway. The row afterwards showed the override in
+        force, so the audit trail claimed the instruction was active at the
+        moment it was ignored.
+
+        `expected` rather than a hardcoded set of states: the policy about WHICH
+        states a human may change the mode in belongs to TaskDriver (_ACTIONABLE),
+        and the caller passes the state it actually observed, so the guard also
+        catches a move BETWEEN two actionable states.
+        """
+        result = self.session.execute(
+            update(TaskRow)
+            .where(TaskRow.id == task_id, TaskRow.state == expected.value)
+            .values(mode_override=mode, updated_at=datetime.now(timezone.utc))
+        )
         self.session.commit()
-        self.session.refresh(row)
-        return row
+        return result.rowcount == 1
 
     def set_open_question(self, task_id: str, question: str | None) -> TaskRow:
         row = self._row(task_id)
