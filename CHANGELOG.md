@@ -125,9 +125,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
   a passing verdict.
 - `MemoryMatcher`, the same two-stage shape as the registry: an exact fingerprint hit costs no model
   call; a miss gets one cheap Haiku call at the same 0.8 confidence floor; null is always a legal
-  answer, scoped by `TaskRow.project` — as of Phase 5's routing (see Unreleased), that project is
-  assigned per client, so this scoping is a real separation between clients' memory, not merely
-  structural.
+  answer, scoped by `TaskRow.project` — as of Phase 5's routing (see 0.6.0), that project is
+  assigned per client, so this scoping is a real separation between clients' memory wherever a
+  routing binding exists, not merely structural. It is not blanket isolation: anything unrouted
+  still shares `default`, and so does its memory.
 - `TaskDriver`: a recognised repeat skips the interpreter entirely and reuses the remembered spec's
   shape — `source_message_ids` re-pointed at this task's own messages, and `inputs` re-resolved
   against this task's own attachments/catalog at execution time, never the remembered task's files.

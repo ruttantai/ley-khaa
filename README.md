@@ -85,7 +85,9 @@ docker compose up
   - `GET /conversations/{id}/messages`
   - `POST /simulate/{name}` — replay a synthetic conversation fixture
   - `POST /candidates/sweep` — re-check ready candidates against the debounce gate
-  - `POST /tasks/{id}/approve` — run an approved task through to completion
+  - `POST /tasks/{id}/approve` — release a parked task to run; in the default `workers` mode
+    this transitions it and returns, and the dispatcher runs it (under `inline` it runs to
+    completion on the calling thread)
   - `POST /tasks/{id}/reject` — fail a parked task with a reason
   - `POST /tasks/{id}/mode` — override the autonomy mode (or clear the override)
   - `PATCH /tasks/{id}/spec` — edit the interpreted spec inline; re-scores the recommendation
@@ -242,9 +244,18 @@ a project with no description — still shares `default`, and so does its memory
 **Each project drains through its own worker, concurrently with every other project's**, proven by
 `backend/tests/test_concurrency.py`'s barrier test: two projects' workers are made to block until
 both have arrived, which only passes if both are genuinely running at once. Within one project,
-tasks are driven strictly FIFO, one at a time. Queue reordering by urgency is not built: urgency
-lives in the `TaskSpec`, which is only known after a task has already been interpreted and
-dequeued.
+tasks are driven strictly FIFO, one at a time. **Concurrent is not the same as unbounded
+throughput**, and the drain rate is worth knowing before reading this as a queue that empties fast:
+a worker takes exactly **one** task per tick and does not loop, so a project drains one task per
+tick — and the next tick is a whole `LEY_KHAA_SWEEP_SECONDS` (default 15s) later. A tick also waits
+for every project it started before the next one begins, so the slowest project sets the pace for
+all of them: four instant tasks queued behind a project whose own tasks take 1.5s each drain in
+~6s even with the interval removed entirely. This is a known divergence from spec §3.3's "on return
+it releases the lease and loops", deferred deliberately — see
+[the Phase 5 backlog](docs/superpowers/specs/2026-08-28-phase-5-backlog.md).
+
+Queue reordering by urgency is not built: urgency lives in the `TaskSpec`, which is only known
+after a task has already been interpreted and dequeued.
 
 Two dispatch modes, `LEY_KHAA_DISPATCH=inline|workers` (default `workers`, what `docker compose up`
 runs):

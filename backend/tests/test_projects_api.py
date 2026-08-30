@@ -141,8 +141,14 @@ def test_posting_a_message_reports_where_the_work_went(client, session):
         },
     ).json()
     assert "project" in body
-    assert "queued" in body
     assert body["project"] == "default"
+    # The docstring's other half. `"queued" in body` alone was satisfied by
+    # hardcoding queued=True at the route: conftest pins LEY_KHAA_DISPATCH=inline,
+    # where the task was driven on this very request, so the honest answer here is
+    # False — and asserting the VALUE is what makes this test say "whether it was
+    # queued rather than run".
+    assert body["queued"] is False
+    assert body["task_ids"], "nothing was created, so `queued` says nothing either way"
 
 
 def test_folding_a_candidate_that_is_not_parked_is_a_conflict(client, session):

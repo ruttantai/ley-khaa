@@ -225,6 +225,104 @@ the write with no explicit `refresh()` — pinning the identity-map-sync behavio
 comment misdescribed, rather than leaving it to be rediscovered by reading the SQLAlchemy source
 again.
 
+## 11. A project drains one task per tick, and one slow project paces every other
+
+Spec §3.3 describes the worker loop as: *"On return it releases the lease and loops."* It does not.
+`Dispatcher._work_one` (`orchestrator/dispatcher.py`) claims one task, drives it, releases the lease
+and **returns** — no loop — and `tick()` re-derives the runnable projects from scratch on the next
+pass. So a project drains exactly one task per tick, and the next tick is a whole
+`LEY_KHAA_SWEEP_SECONDS` (default 15s) away.
+
+`tick()` also `gather`s every project it started and waits for all of them before returning, so the
+slowest project sets the pace for the rest: measured with the interval pinned to 0 to isolate the
+per-tick cost, four instant tasks queued behind a project whose own tasks take 1.5s each took
+**6.10s** to drain (5 ticks) instead of finishing at once. With the real 15s interval that same
+backlog is a minute of wall clock for four no-ops.
+
+**Deliberately not fixed in the Phase 5 fix wave.** Nothing here is incorrect — the FIFO ordering,
+the lease, the poison cap and the concurrency guarantee all hold — it is a throughput ceiling, and
+changing the dispatcher's shape under merge pressure is exactly the sort of edit that turns a
+correct-but-slow queue into a fast-but-racy one. The README's projects/queues section now states
+the pacing so "each project drains through its own worker" is not read as unbounded throughput.
+
+**Shape of the fix.** Make `_work_one` loop until `_claim_next` returns None, so a project drains
+its whole backlog under one tick, and let each project's lane finish independently of the others
+(`tick()` returning once every lane is *started*, with the gather moved into a per-project task, or
+a long-lived per-project worker task instead of a tick-driven one). Both need the lease heartbeat
+and the max-concurrency semaphore re-checked against the new lifetime, and a test that a fast
+project is no longer paced by a slow one — which is why it is its own piece of work.
+
+## 12. Nothing tests `HeuristicLLM`'s `ProjectChoice` rule, because a blanket `except` launders it
+
+Deleting the `if output_format is ProjectChoice:` branch from `HeuristicLLM.parse`
+(`llm/heuristic.py`) leaves all tests green. `parse` then falls through to its final
+`raise NotImplementedError`, and `ProjectRouter.route`'s `except Exception`
+(`projects/router.py`) catches it and returns the same `_fallback` the deleted rule produced —
+only the `reason` string differs, and nothing asserts on that.
+
+So spec §3.5's stated justification for the rule — *"`HeuristicLLM` gains a deterministic `_route`
+so CI and `docker compose up` stay green with no `ANTHROPIC_API_KEY`"* — is verified by no test at
+all. This is the **fourth** instance of the same pattern in this codebase (Phase 4's registry
+stand-in test asserting *through* a blanket `except Exception`; `MemoryMatcher.recall`; the
+detector's own `except` in `orchestrator/amendment.py`), which is what makes it worth a numbered
+item rather than a footnote: a blanket `except` around a stage that has an offline stand-in makes
+the stand-in untestable by observation of the result alone.
+
+**Shape of the fix.** Assert on the thing the two paths do NOT share. Either pin
+`decision.reason` / `decision.stage` for the offline route (so the laundered `NotImplementedError`
+produces a different, failing reason), or — better, and reusable for the other three — assert that
+`HeuristicLLM.parse` returns a `ProjectChoice` directly, with no router in the way, the way
+`test_heuristic_llm.py` already does for the formats it does cover.
+
+## 13. `ProjectIn.name` accepts anything at all
+
+`POST /projects` validates the description (a project with no description is unroutable by stage 2,
+so the route refuses it) but not the name. `""`, `"  "`, `"../etc"`, `"Default Project!"` and a
+300-character name all return **201**. Its sibling `PromoteIn` validates against a shared
+`NAME_PATTERN` (`api/schemas.py`), so the pattern and the precedent both already exist.
+
+Two concrete costs:
+
+- An empty name becomes a primary key that `GET /projects//queue` cannot address — the row exists
+  and is unreachable through the API that lists it.
+- A whitespace-only name with a real description is offered to stage-2 routing as a project the
+  model can name, so the router can legitimately route work into a project nobody can see.
+
+**Shape of the fix.** Apply `NAME_PATTERN` (or a slug-shaped variant) to `ProjectIn.name` and add
+the length bound, matching `PromoteIn`. Note this is validation only, not a schema change — and
+existing rows created before it, if any, are not retroactively invalid.
+
+## 14. Spec §8's "the whole suite green on both dispatch modes" is unachievable by construction
+
+`backend/tests/conftest.py` sets `os.environ["LEY_KHAA_DISPATCH"] = "inline"` **unconditionally**
+(not `setdefault`), before any application module is imported, so the suite cannot be run in
+`workers` mode at all: `LEY_KHAA_DISPATCH=workers pytest` runs inline. §3.4's weaker wording —
+workers mode covered on its own terms, by `test_dispatcher.py`, `test_concurrency.py` and
+`test_dispatch_modes.py` — is what actually shipped, and is the honest description.
+
+This is a documentation correction, not a code change: making the pin a `setdefault` would let a
+`workers` run happen, but the existing suite asserts throughout on tasks that have already run, so
+that run would fail for reasons that are about the fixtures, not about the code. §8 should be
+corrected to match §3.4.
+
+## 15. `project_queue` and `queue_depth` disagree by design, and nothing says so
+
+Two numbers are shown to a human under the word "queue" and they count different things:
+
+- `GET /projects/{name}/queue` (`api/app.py::project_queue`) returns **every** task in the project,
+  `DONE` and `FAILED` included — it is a project's task list, not its queue.
+- `ProjectOut.queue_depth` is `TaskRepository.runnable_count`, which excludes terminal and
+  human-waiting states **and** the task currently under a live lease (which is reported separately
+  as `in_flight`).
+
+Both are individually correct and each is the right number for its own caller. Neither the field
+name, the route name, nor the README says they differ, so a dashboard showing "queue_depth: 1"
+beside a queue listing of nine rows looks like a bug.
+
+**Shape of the fix.** Cheapest: document it — one sentence in the README's projects/queues section
+and a docstring on `project_queue`. Better: rename the route to `/projects/{name}/tasks` (with
+`/queue` kept as an alias) or give it a `?runnable=true` filter so the two words mean one thing.
+
 ---
 
 ## The process lesson worth carrying into Phase 5
