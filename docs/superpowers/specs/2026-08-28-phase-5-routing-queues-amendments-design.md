@@ -361,5 +361,13 @@ work.
   its states.
 - A killed worker's task is reclaimed once and completes; past the attempt cap it fails visibly.
 - The dashboard shows per-project queues and a triage tray.
-- The whole suite green on both dispatch modes, no skips, no warnings, `docker compose up` and CI
+- The whole suite green with `inline` pinned and workers mode covered on its own terms (the
+  dispatcher, concurrency and lifespan tests), no skips, no warnings, `docker compose up` and CI
   green with no `ANTHROPIC_API_KEY`.
+
+  This corrects an earlier draft of this line, which read "green on both dispatch modes". That is
+  unachievable as the suite is built: `backend/tests/conftest.py` sets `LEY_KHAA_DISPATCH=inline`
+  unconditionally (an assignment, not a `setdefault`), before any app import, so the suite cannot be
+  run in workers mode at all. §3.4's wording — the existing suite on `inline`, the new suite on
+  `workers` — is what shipped, and this line now matches it. Backlog item 14 tracks making the pin
+  overridable if the stronger guarantee is ever wanted.
