@@ -1,7 +1,10 @@
+from sqlalchemy.orm import Session
+
 from ley_khaa.autonomy.modes import AutonomyMode
 from ley_khaa.crystallizer.candidate import CandidateState
 from ley_khaa.domain.states import TaskState
 from ley_khaa.orchestrator.amendment import AmendmentProposal
+from ley_khaa.persistence.repository import TaskRepository
 
 
 class _Detector:
@@ -203,3 +206,70 @@ def test_a_parked_amendment_does_not_wedge_the_rest_of_the_conversation(
     # its own rather than being swallowed into the one waiting on a human.
     assert third.candidates, "the third message formed no candidate at all"
     assert all(c.id != parked.id for c in third.candidates)
+
+
+def test_an_automatic_fold_that_loses_the_race_parks_an_actionable_proposal(
+    session, stub_execution
+):
+    """The AUTOMATIC path's lost race — the human path's is covered above.
+
+    The two reach the same return_to_triage by different claims, and only the
+    human one carries a proposal on the candidate row: claim_for_triage wrote it
+    when the candidate was parked. The automatic path claims via
+    claim_for_promotion, which writes no amends_task_id, no reason and no
+    confidence — so the candidate landed back in the tray naming nothing.
+    GET /triage rendered "an amendment to (task not found) (0% sure) — " and
+    POST /candidates/{id}/fold 409'd forever, because orchestrator.fold() returns
+    None with no amends_task_id. Spec §3.8 says it returns to triage WITH a fresh
+    proposal.
+    """
+    orchestrator = _orchestrator(session)
+    target = _running_task(orchestrator, mode=AutonomyMode.AUTO)
+    candidate = _ready_candidate(orchestrator)
+    proposal = AmendmentProposal(task_id=target.id, confidence=0.95, reason="also flag dupes")
+    orchestrator.amendments = _Detector(proposal)
+
+    # The target moves in the window between the fold decision and fold_into's
+    # conditional write. Injected at the claim because that is where the window
+    # actually is, rather than by stubbing fold_into's answer — and through a
+    # SECOND session on the same engine, the way a dispatcher worker would, so
+    # the orchestrator's own identity map keeps the state it decided on. (One
+    # shared session would synchronize the update onto `target` in place and the
+    # fold would then win, which is a fixture artifact, not the behaviour: every
+    # HTTP request and every dispatcher unit of work gets its own session.)
+    real_claim = orchestrator.candidates.claim_for_promotion
+
+    def racing(candidate_id):
+        other = Session(bind=session.get_bind())
+        try:
+            TaskRepository(other).claim(
+                target.id,
+                expected=TaskState.AWAITING_APPROVAL,
+                target=TaskState.NEEDS_CLARIFICATION,
+            )
+        finally:
+            other.close()
+        return real_claim(candidate_id)
+
+    orchestrator.candidates.claim_for_promotion = racing
+
+    assert orchestrator._promote(candidate) is None
+    assert len(orchestrator.repo.list()) == 1, "a lost fold must not create a task"
+
+    parked = orchestrator.candidates.get(candidate.id)
+    assert CandidateState(parked.state) is CandidateState.AWAITING_TRIAGE
+    assert parked.amends_task_id == target.id
+    assert parked.amendment_confidence == 0.95
+    reason = parked.amendment_reason or ""
+    assert proposal.reason in reason
+    assert "moved on" in reason, "the human is not told what happened"
+
+    # And the tray entry is genuinely actionable: the "Fold in" button now
+    # reaches the task it names instead of 409ing forever. Without this the
+    # assertions above could be satisfied by fields nothing downstream uses.
+    orchestrator.candidates.claim_for_promotion = real_claim
+    # The human arrives on a later request, i.e. a session that has not cached
+    # the pre-race row.
+    session.expire_all()
+    assert orchestrator.fold(candidate.id) == target.id
+    assert "m2" in orchestrator.repo.get(target.id).source_message_ids

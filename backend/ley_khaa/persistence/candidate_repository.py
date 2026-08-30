@@ -171,14 +171,40 @@ class CandidateRepository:
         self.session.refresh(row)
         return row
 
-    def return_to_triage(self, candidate_id: str) -> bool:
+    def return_to_triage(
+        self,
+        candidate_id: str,
+        *,
+        task_id: str | None = None,
+        reason: str | None = None,
+        confidence: float | None = None,
+    ) -> bool:
         """Undo a claim whose fold then lost the race on the target task.
 
         PROMOTED is terminal for a candidate, so this is written as a direct
         state write rather than through ensure_transition: the candidate never
         actually became a task, and leaving it PROMOTED would hide a request
         nobody ever ran.
+
+        The proposal fields are stamped when given, because the AUTOMATIC fold
+        path reaches here through claim_for_promotion, which writes none of them.
+        Without them the candidate landed back in the tray with amends_task_id
+        NULL, which GET /triage renders as "an amendment to (task not found)
+        (0% sure) — " and whose "Fold in" button 409s forever (orchestrator.fold
+        returns None with no amends_task_id). Spec §3.8 says it returns to
+        triage WITH a fresh proposal. The HUMAN fold path already carries these
+        fields from claim_for_triage and passes nothing, leaving them untouched.
         """
+        values: dict = {
+            "state": CandidateState.AWAITING_TRIAGE.value,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        if task_id is not None:
+            values["amends_task_id"] = task_id
+        if reason is not None:
+            values["amendment_reason"] = reason
+        if confidence is not None:
+            values["amendment_confidence"] = confidence
         result = self.session.execute(
             update(CandidateRow)
             .where(
@@ -186,10 +212,7 @@ class CandidateRepository:
                 CandidateRow.state == CandidateState.PROMOTED.value,
                 CandidateRow.task_id.is_(None),
             )
-            .values(
-                state=CandidateState.AWAITING_TRIAGE.value,
-                updated_at=datetime.now(timezone.utc),
-            )
+            .values(**values)
         )
         self.session.commit()
         return result.rowcount == 1

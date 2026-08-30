@@ -24,6 +24,11 @@ from .driver import TaskDriver
 
 logger = logging.getLogger(__name__)
 
+# Appended to the detector's own sentence when an automatic fold loses its race,
+# so the human reading the tray is told what actually happened rather than being
+# shown the reason the fold was attempted.
+_FOLD_LOST_THE_RACE = "the task moved on before it could be folded in — asking first"
+
 
 class ForeignReplyTarget(Exception):
     """`reply_to_task_id` names a task that belongs to a different conversation.
@@ -301,13 +306,28 @@ class Orchestrator:
             logger.info("candidate %s parked as an amendment to %s", candidate.id, target.id)
             return None
 
-        return self._fold(candidate, target, claim=self.candidates.claim_for_promotion)
+        return self._fold(
+            candidate, target, claim=self.candidates.claim_for_promotion, proposal=proposal
+        )
 
-    def _fold(self, candidate: CandidateRow, target: TaskRow, *, claim) -> str | None:
+    def _fold(
+        self,
+        candidate: CandidateRow,
+        target: TaskRow,
+        *,
+        claim,
+        proposal: AmendmentProposal | None = None,
+    ) -> str | None:
         """Merge a candidate into a task. Shared by the automatic and human paths.
 
         The candidate is claimed FIRST: a fold that loses the candidate race must
         not have already changed the target.
+
+        `proposal` is given by the AUTOMATIC path only. The human path's
+        candidate already carries the proposal on its row (claim_for_triage wrote
+        it when the candidate was parked), but the automatic path claims via
+        claim_for_promotion, which writes none of those fields — so a lost race
+        there needs the proposal handed back explicitly. See below.
         """
         if not claim(candidate.id):
             return None
@@ -317,8 +337,20 @@ class Orchestrator:
             expected=TaskState(target.state),
         ):
             # The target moved on. Put the candidate back where a human can see
-            # it rather than dropping the request.
-            self.candidates.return_to_triage(candidate.id)
+            # it rather than dropping the request — and, on the automatic path,
+            # WITH the proposal that sent it here. Spec §3.8: "the candidate
+            # returns to triage with a fresh proposal rather than folding into a
+            # task that is no longer where it was." Without it the tray entry
+            # named no task, said 0% sure, and its only working button was the
+            # one that discards the amendment interpretation.
+            stamp: dict = {}
+            if proposal is not None:
+                stamp = {
+                    "task_id": proposal.task_id,
+                    "reason": f"{proposal.reason} — {_FOLD_LOST_THE_RACE}",
+                    "confidence": proposal.confidence,
+                }
+            self.candidates.return_to_triage(candidate.id, **stamp)
             return None
         self.candidates.attach_task(candidate.id, target.id)
         self.driver.hand_off(target.id)
