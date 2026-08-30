@@ -34,7 +34,6 @@ export default function App() {
       <h2 className="text-lg font-semibold mb-2">Projects</h2>
       <Projects />
 
-      <h2 className="text-lg font-semibold mb-2 mt-8">Needs a decision</h2>
       <Triage />
 
       <h2 className="text-lg font-semibold mb-2 mt-8">Forming</h2>

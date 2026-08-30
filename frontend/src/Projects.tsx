@@ -6,7 +6,13 @@ export default function Projects() {
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(
-    () => fetchProjects().then(setProjects).catch((e) => setError(String(e))),
+    () =>
+      fetchProjects()
+        .then((p) => {
+          setProjects(p);
+          setError(null);
+        })
+        .catch((e) => setError(String(e))),
     [],
   );
 

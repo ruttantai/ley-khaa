@@ -1,7 +1,7 @@
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "./App";
-import type { Task } from "./api";
+import type { Project, Task, TriageItem } from "./api";
 
 const candidate = (state: string, title: string) => ({
   id: `c-${state}`,
@@ -47,21 +47,58 @@ const task = (overrides: Partial<Task> = {}): Task => ({
   ...overrides,
 });
 
-function stubApi(candidates: unknown[], workflows: unknown[] = []) {
+const project = (overrides: Partial<Project> = {}): Project => ({
+  name: "acme",
+  display_name: "Acme",
+  description: "d",
+  active: true,
+  queue_depth: 1,
+  in_flight: null,
+  ...overrides,
+});
+
+// Deliberately not "compare universes" or anything else the task fixture
+// above uses — App.test.tsx's other assertions query by exact task title,
+// and a triage fixture that collided with it would make those queries
+// ambiguous the same way the catch-all bug below once did.
+const triageItem = (overrides: Partial<TriageItem> = {}): TriageItem => ({
+  candidate_id: "c9",
+  title: "flag mismatched totals",
+  summary: "s",
+  amends_task_id: "t9",
+  amends_task_title: "reconcile ledgers",
+  reason: "adds a check",
+  confidence: 0.8,
+  ...overrides,
+});
+
+function stubApi(
+  candidates: unknown[],
+  workflows: unknown[] = [],
+  projects: unknown[] = [project()],
+  triage: unknown[] = [triageItem()],
+) {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (url: string) => {
+    vi.fn(async (url: string, init?: RequestInit) => {
       const u = String(url);
-      // Projects and Triage each poll their own endpoint on mount; routing
-      // them to empty lists here keeps them from being handed task fixtures
-      // (via the catch-all below) and rendering duplicate task titles.
+      const method = init?.method ?? "GET";
+      // Route POST /candidates/{id}/fold|separate before the GET /candidates
+      // listing check below — otherwise a mutation call would match on
+      // "/candidates" and be silently faked as a successful listing fetch,
+      // rather than genuinely exercising (or failing) the mutation.
+      if (method === "POST" && (u.includes("/fold") || u.includes("/separate"))) {
+        return { ok: true, status: 200, json: async () => ({ id: "task-x" }) };
+      }
       const body = u.includes("/candidates")
         ? candidates
         : u.includes("/registry")
           ? workflows
-          : u.includes("/projects") || u.includes("/triage")
-            ? []
-            : [task()];
+          : u.includes("/projects")
+            ? projects
+            : u.includes("/triage")
+              ? triage
+              : [task()];
       return { ok: true, json: async () => body };
     }),
   );
@@ -93,4 +130,10 @@ test("opening a task shows its recommendation", async () => {
   await waitFor(() => expect(screen.getByText("compare universes")).toBeTruthy());
   fireEvent.click(screen.getByText("compare universes"));
   expect(screen.getByText(/I suggest Co-pilot/)).toBeTruthy();
+});
+
+test("renders the projects view and the triage tray", async () => {
+  render(<App />);
+  expect(await screen.findByText("Acme")).toBeTruthy();
+  expect(await screen.findByText("flag mismatched totals")).toBeTruthy();
 });

@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import Triage from "./Triage";
 import type { TriageItem } from "./api";
 
@@ -13,7 +13,10 @@ const ITEM: TriageItem = {
   confidence: 0.92,
 };
 
-beforeEach(() => vi.restoreAllMocks());
+// No beforeEach(vi.restoreAllMocks()) here: this file has no vi.spyOn, and
+// restoreAllMocks() does not undo vi.stubGlobal — each test's stubTriage()
+// call overwrites the global fetch stub anyway (Registry.test.tsx follows
+// the same pattern).
 afterEach(cleanup);
 
 const okJson = (body: unknown, status = 200) => ({ ok: true, status, json: async () => body });
@@ -69,6 +72,10 @@ test("folding calls the API and refreshes", async () => {
   // mutation. Without the refresh the tray keeps showing a decision that
   // has already been made.
   await waitFor(() => expect(triageGetCalls().length).toBe(2));
+  // The refresh's effect must actually be visible on screen, not just
+  // counted: the fold stub models the candidate as no longer awaiting a
+  // decision, so it should be gone from the tray.
+  await waitFor(() => expect(screen.queryByText(/also flag duplicates/)).toBeNull());
 });
 
 test("separating calls the API", async () => {
@@ -87,4 +94,14 @@ test("a failed fold shows the reason instead of silently doing nothing", async (
   render(<Triage />);
   fireEvent.click(await screen.findByRole("button", { name: /fold in/i }));
   expect(await screen.findByText(/moved on/)).toBeTruthy();
+});
+
+test("renders nothing when there is nothing to triage", async () => {
+  const fetchMock = stubTriage([]);
+  const { container } = render(<Triage />);
+  await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+  // Not just "no items shown" — the tray, heading included, must not be on
+  // the page at all when there is nothing to decide.
+  expect(screen.queryByText(/needs a decision/i)).toBeNull();
+  expect(container.firstChild).toBeNull();
 });

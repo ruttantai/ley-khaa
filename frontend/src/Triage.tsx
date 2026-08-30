@@ -14,8 +14,10 @@ export default function Triage() {
     load();
   }, [load]);
 
-  // The tray must disappear when it is empty rather than sit there as a
-  // permanent empty heading — most of the time there is nothing to triage.
+  // The tray owns its own heading (rather than App.tsx rendering it
+  // unconditionally) so that returning null here truly makes the tray
+  // disappear when empty, instead of leaving a permanent empty heading
+  // behind — most of the time there is nothing to triage.
   if (items.length === 0 && !error) return null;
 
   const act = (action: (id: string) => Promise<void>, id: string) =>
@@ -28,6 +30,7 @@ export default function Triage() {
 
   return (
     <div>
+      <h2 className="text-lg font-semibold mb-2 mt-8">Needs a decision</h2>
       {error && <p className="text-red-600 text-sm mb-2">{error}</p>}
       <ul className="space-y-2">
         {items.map((item) => (
