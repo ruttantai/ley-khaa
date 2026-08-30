@@ -52,7 +52,16 @@ function stubApi(candidates: unknown[], workflows: unknown[] = []) {
     "fetch",
     vi.fn(async (url: string) => {
       const u = String(url);
-      const body = u.includes("/candidates") ? candidates : u.includes("/registry") ? workflows : [task()];
+      // Projects and Triage each poll their own endpoint on mount; routing
+      // them to empty lists here keeps them from being handed task fixtures
+      // (via the catch-all below) and rendering duplicate task titles.
+      const body = u.includes("/candidates")
+        ? candidates
+        : u.includes("/registry")
+          ? workflows
+          : u.includes("/projects") || u.includes("/triage")
+            ? []
+            : [task()];
       return { ok: true, json: async () => body };
     }),
   );

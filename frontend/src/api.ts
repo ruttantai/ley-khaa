@@ -154,3 +154,47 @@ export async function deleteWorkflow(name: string): Promise<void> {
   const res = await fetch(`${BASE}/registry/${encodeURIComponent(name)}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`deleteWorkflow failed: ${res.status}`);
 }
+
+export type Project = {
+  name: string;
+  display_name: string;
+  description: string;
+  active: boolean;
+  queue_depth: number;
+  in_flight: string | null;
+};
+
+export type TriageItem = {
+  candidate_id: string;
+  title: string;
+  summary: string;
+  amends_task_id: string;
+  amends_task_title: string;
+  reason: string;
+  confidence: number;
+};
+
+export async function fetchProjects(): Promise<Project[]> {
+  const res = await fetch(`${BASE}/projects`);
+  if (!res.ok) throw new Error(`fetchProjects failed: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchTriage(): Promise<TriageItem[]> {
+  const res = await fetch(`${BASE}/triage`);
+  if (!res.ok) throw new Error(`fetchTriage failed: ${res.status}`);
+  return res.json();
+}
+
+// These deliberately do NOT reuse send(): it discards the response body, and a
+// 409 here carries the only explanation the human gets for why a fold failed.
+async function mutateCandidate(id: string, action: string): Promise<void> {
+  const res = await fetch(`${BASE}/candidates/${id}/${action}`, { method: "POST" });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.detail ?? `${action} failed: ${res.status}`);
+  }
+}
+
+export const foldCandidate = (id: string) => mutateCandidate(id, "fold");
+export const separateCandidate = (id: string) => mutateCandidate(id, "separate");

@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import Candidates from "./Candidates";
+import Projects from "./Projects";
 import Registry from "./Registry";
 import TaskDetail from "./TaskDetail";
+import Triage from "./Triage";
 import { fetchCandidates, fetchTasks, type Candidate, type Task } from "./api";
 
 // promoted and abandoned candidates are done: a promoted one is already listed
@@ -29,7 +31,13 @@ export default function App() {
       <h1 className="text-2xl font-bold mb-6">ley-khaa</h1>
       {error && <p className="text-red-600">{error}</p>}
 
-      <h2 className="text-lg font-semibold mb-2">Forming</h2>
+      <h2 className="text-lg font-semibold mb-2">Projects</h2>
+      <Projects />
+
+      <h2 className="text-lg font-semibold mb-2 mt-8">Needs a decision</h2>
+      <Triage />
+
+      <h2 className="text-lg font-semibold mb-2 mt-8">Forming</h2>
       <Candidates items={candidates.filter((c) => !TERMINAL_STATES.includes(c.state))} />
 
       <h2 className="text-lg font-semibold mb-2 mt-8">Tasks</h2>
