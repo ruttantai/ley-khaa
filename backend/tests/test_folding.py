@@ -1,5 +1,7 @@
 import pytest
 
+from datetime import datetime, timedelta, timezone
+
 from ley_khaa.crystallizer.candidate import CandidateState, InvalidCandidateTransition
 from ley_khaa.domain.states import TaskState, can_transition
 from ley_khaa.persistence.candidate_repository import CandidateRepository
@@ -139,6 +141,64 @@ def test_fold_into_a_classified_target_loses_while_a_worker_holds_it(session):
     row = repo.get(task.id)
     assert row.source_message_ids == ["m1"], "a lost fold must not append messages"
     assert TaskState(row.state) is TaskState.CLASSIFIED
+
+
+def test_fold_into_survives_sqlites_naive_round_trip_against_a_leased_target(session_factory):
+    """The same regression test_leased_task_id_survives_sqlites_naive_round_trip
+    guards, one layer deeper: Orchestrator.fold calls repo.get() on the target
+    BEFORE _fold -> fold_into (orchestrator.py's fold()), loading the row into
+    the request session's identity map with a lease_expires_at that round-
+    tripped NAIVE through SQLite. Without synchronize_session="fetch" on
+    _claim_same_state's update, the default "evaluate" strategy re-checks the
+    lease predicate against that identity-mapped naive value in Python and
+    raises TypeError — exactly what POST /candidates/{id}/fold would do
+    against a leased target. The shared `session` fixture the other CLASSIFIED
+    tests above use cannot catch this: claim_lease there leaves an AWARE value
+    in the identity map, so the comparison never round-trips through SQLite's
+    naive storage at all.
+
+    `target` below MUST stay a live local: Session's identity map holds ORM
+    objects by WEAK reference, so an unassigned `reader.get(task.id)` is
+    garbage-collected the instant the statement ends and the identity map
+    forgets it — which would silently stop exercising the bug this test
+    exists for. Orchestrator.fold's own `target = self.repo.get(...)` keeps
+    exactly this kind of live reference across into fold_into, which is why
+    it hits the identity map on the real route; `target` here does the same.
+    """
+    write = session_factory()
+    task = _task(write, TaskState.CLASSIFIED)
+    writer = TaskRepository(write)
+    assert writer.claim_lease(task.id, owner="w1", ttl_seconds=60) is True
+    write.close()
+
+    read = session_factory()
+    reader = TaskRepository(read)
+    target = reader.get(task.id)  # kept alive, exactly like Orchestrator.fold's `target`
+    assert target is not None
+
+    assert reader.fold_into(task.id, message_ids=["m2"], expected=TaskState.CLASSIFIED) is False
+    row = reader.get(task.id)
+    assert row.source_message_ids == ["m1"], "a lost fold must not append messages"
+
+
+def test_fold_into_treats_an_expired_lease_as_free(session):
+    """Gives fold_into's `now` parameter its one caller: an expired lease must
+    not block a fold the way test_..._while_a_worker_holds_it's live one does,
+    and stating `now` explicitly is what makes that expiry boundary provable
+    rather than implicit in whatever the clock happens to read."""
+    task = _task(session, TaskState.CLASSIFIED)
+    repo = TaskRepository(session)
+    past = datetime.now(timezone.utc) - timedelta(minutes=5)
+    assert repo.claim_lease(task.id, owner="dead-worker", ttl_seconds=30, now=past) is True
+
+    assert repo.fold_into(
+        task.id,
+        message_ids=["m2"],
+        expected=TaskState.CLASSIFIED,
+        now=datetime.now(timezone.utc),
+    ) is True
+    row = repo.get(task.id)
+    assert row.source_message_ids == ["m1", "m2"]
 
 
 def test_fold_into_loses_when_the_task_has_already_moved(session):
