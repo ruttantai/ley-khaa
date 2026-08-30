@@ -247,6 +247,20 @@ class TaskDriver:
         left a task that lost the race carrying a spec for a path it never took
         — the same inversion c043c46 fixed in reject(), and backlog item 6.
         _remember already gets this right and is the model followed here.
+
+        This trades one race for a narrower one, and does not eliminate it:
+        the claim and save_spec commit are two separate transactions, so
+        between them the row is briefly INTERPRETED (or NEEDS_CLARIFICATION)
+        with spec still None — the old bug was a spec without the state; this
+        is a state without the spec. A reader landing in that exact window
+        would hit TaskSpec.model_validate(None). Closing it for real needs the
+        claim and the write in one transaction, which is out of scope here.
+        The window is narrow in practice: workers mode only lets a leased
+        task's owner drive it further (_runnable_where excludes leased rows),
+        advance_stalled is inline-only, there is no I/O between the two
+        commits, and the next sweep self-heals a task caught mid-gap — but the
+        gap is real, not merely theoretical, and is left open rather than
+        silently assumed away.
         """
         asking = bool(spec.missing_fields) and (
             (row.clarification_rounds or 0) < _MAX_CLARIFICATION_ROUNDS

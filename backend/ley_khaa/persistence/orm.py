@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String, UniqueConstraint, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
@@ -138,7 +139,18 @@ class WorkflowRow(Base):
     description: Mapped[str] = mapped_column(String, default="", server_default=text("''"))
     # Normalized operation strings that match this workflow. Grows by one every
     # time the model matcher finds a phrasing that then passes validation.
-    operation_aliases: Mapped[list] = mapped_column(JSON, default=list)
+    #
+    # JSONB on Postgres, not plain JSON: record_success() does a
+    # compare-and-swap (WHERE operation_aliases == current) to avoid a lost
+    # update on this list, and Postgres's `json` type defines no equality
+    # operator at all — that WHERE clause would raise UndefinedFunction on
+    # every call, not just fail to match. `jsonb` has real equality and
+    # preserves array order, so the CAS keeps the exact meaning it has on
+    # SQLite. Falls back to plain JSON on every other dialect (SQLite in
+    # dev/test), where JSON already compares the way the CAS needs.
+    operation_aliases: Mapped[list] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), default=list
+    )
     output_format: Mapped[str] = mapped_column(String)
     # [{"role": "left", "suffixes": [".csv"]}], in the order the script expects.
     inputs: Mapped[list] = mapped_column(JSON, default=list)
