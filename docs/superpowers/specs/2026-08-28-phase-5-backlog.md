@@ -292,7 +292,7 @@ Two concrete costs:
 the length bound, matching `PromoteIn`. Note this is validation only, not a schema change — and
 existing rows created before it, if any, are not retroactively invalid.
 
-## 14. Spec §8's "the whole suite green on both dispatch modes" is unachievable by construction
+## 14. Spec §8's "the whole suite green on both dispatch modes" is unachievable by construction — CLOSED (`34b144e`)
 
 `backend/tests/conftest.py` sets `os.environ["LEY_KHAA_DISPATCH"] = "inline"` **unconditionally**
 (not `setdefault`), before any application module is imported, so the suite cannot be run in
@@ -304,6 +304,10 @@ This is a documentation correction, not a code change: making the pin a `setdefa
 `workers` run happen, but the existing suite asserts throughout on tasks that have already run, so
 that run would fail for reasons that are about the fixtures, not about the code. §8 should be
 corrected to match §3.4.
+
+**Closed by `34b144e`:** §8 now reads "green with `inline` pinned and workers mode covered on its own
+terms", and carries a note recording what the line used to claim and why it was false. The
+`setdefault` change is deliberately still NOT made — the reasoning above stands.
 
 ## 15. `project_queue` and `queue_depth` disagree by design, and nothing says so
 
