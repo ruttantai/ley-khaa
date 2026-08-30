@@ -181,24 +181,36 @@ def test_fold_into_survives_sqlites_naive_round_trip_against_a_leased_target(ses
     assert row.source_message_ids == ["m1"], "a lost fold must not append messages"
 
 
-def test_fold_into_treats_an_expired_lease_as_free(session):
-    """Gives fold_into's `now` parameter its one caller: an expired lease must
-    not block a fold the way test_..._while_a_worker_holds_it's live one does,
-    and stating `now` explicitly is what makes that expiry boundary provable
-    rather than implicit in whatever the clock happens to read."""
+def test_fold_into_honors_the_now_it_is_given(session):
+    """Pins fold_into's `now` parameter itself, not just "an expired lease is
+    free": the SAME lease is checked at two different instants, and only the
+    `now` argument decides which way the fold goes. A `now` still inside the
+    30s window must block it exactly the way a live lease does elsewhere in
+    this file; a `now` placed after expiry must let the same lease through.
+    If fold_into silently used the wall clock instead of the argument, both
+    assertions would happen to pass anyway during any plausible test run --
+    which is exactly the vacuous shape this replaces (the previous version
+    passed `now=datetime.now(timezone.utc)` against a lease expired 4.5
+    minutes earlier: any `now` from "now" back to just past expiry would have
+    produced the same result, so the argument was never actually exercised)."""
     task = _task(session, TaskState.CLASSIFIED)
     repo = TaskRepository(session)
     past = datetime.now(timezone.utc) - timedelta(minutes=5)
-    assert repo.claim_lease(task.id, owner="dead-worker", ttl_seconds=30, now=past) is True
+    assert repo.claim_lease(task.id, owner="w1", ttl_seconds=30, now=past) is True
 
+    # Still inside the 30s lease window as of `past` — the fold must lose.
+    still_live = past + timedelta(seconds=10)
     assert repo.fold_into(
-        task.id,
-        message_ids=["m2"],
-        expected=TaskState.CLASSIFIED,
-        now=datetime.now(timezone.utc),
+        task.id, message_ids=["m2"], expected=TaskState.CLASSIFIED, now=still_live
+    ) is False
+    assert repo.get(task.id).source_message_ids == ["m1"], "a lost fold must not append messages"
+
+    # Past the same lease's expiry — the same lease no longer blocks the fold.
+    after_expiry = past + timedelta(seconds=40)
+    assert repo.fold_into(
+        task.id, message_ids=["m2"], expected=TaskState.CLASSIFIED, now=after_expiry
     ) is True
-    row = repo.get(task.id)
-    assert row.source_message_ids == ["m1", "m2"]
+    assert repo.get(task.id).source_message_ids == ["m1", "m2"]
 
 
 def test_fold_into_loses_when_the_task_has_already_moved(session):
