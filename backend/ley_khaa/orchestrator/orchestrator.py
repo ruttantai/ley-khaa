@@ -408,9 +408,17 @@ class Orchestrator:
         attempt files and the same deliverable/. The persisted verdict would then
         belong to one run and the bundle on disk to the other, and every sweep
         would add another pair of model calls with no attempt ceiling to stop it.
-        A task whose backend died mid-execution therefore stays in EXECUTING and
-        stays visible, rather than being silently re-run at cost; recovering it
-        automatically needs a lease on the row, not a timer.
+
+        Recovering an EXECUTING task now exists, but it is the dispatcher's job,
+        not this method's: in workers mode a task is only ever driven under a
+        lease (`TaskRepository.claim_lease`), and `next_runnable` lets a new
+        worker reclaim a row once that lease expires, which is what makes an
+        abandoned EXECUTING task recoverable without a second lane racing the
+        first. `advance_stalled` itself stays lease-free by design — it is the
+        inline-mode sweep path (`LEY_KHAA_DISPATCH=inline`), where a single
+        process drives every task and there is no lease to hand off — so it
+        still leaves EXECUTING alone and lets a task stuck there stay visible
+        rather than guessing at recovery without a lease to arbitrate it.
         """
         mid_flight = (
             TaskState.RECEIVED,

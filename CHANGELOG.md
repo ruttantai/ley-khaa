@@ -13,7 +13,77 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
   candidate (no messages), or no router at all still produces a task in `default` rather than
   dropping the request. `projects/seeds.py::ensure_default_project` installs the `default` project
   idempotently at startup, beside `ensure_seed_workflows`, so a fresh clone always has somewhere for
-  the first task to land.
+  the first task to land. Routing assigns a project **per client**: memory's existing
+  `TaskRow.project` scoping (0.5.0) is now a real boundary between clients' remembered specs
+  wherever a binding exists — it does not, on its own, isolate every client in general, since
+  anything unrouted (no confident stage-2 match, no description on the candidate project) still
+  shares `default` along with its memory.
+- Per-project concurrent dispatch (§3.3, §5.4): a `Dispatcher` (`orchestrator/dispatcher.py`) gives
+  every project with runnable work its own worker, up to `max_concurrent_projects` (default 4) at
+  once, and drives one project's tasks strictly FIFO. Each task is driven only under a lease
+  (`TaskRepository.claim_lease`/`heartbeat_lease`/`release_lease`, `tasks` gains
+  `lease_owner`/`lease_expires_at`/`lease_attempts`), so a worker that dies mid-flight leaves the task
+  recoverable once the lease expires rather than stuck in `EXECUTING`; a task reclaimed past
+  `max_lease_attempts` (default 3) fails visibly instead of being retried forever.
+  `LEY_KHAA_DISPATCH=inline|workers` (default `workers`) selects the mode — `inline` drives every
+  task synchronously with no lease, which is what the whole test suite pins and a
+  single-operator run wants, and is a supported mode, not a test shim.
+  `test_concurrency.py::test_two_projects_genuinely_run_at_the_same_time` proves, with a barrier two
+  workers must both reach to unblock, that tasks in different projects genuinely run concurrently —
+  a claim only this kind of test can support, since a sleep-based one could pass by accident of
+  timing.
+- Amendment detection (§5.9): `AmendmentDetector` (`orchestrator/amendment.py`), the same two-stage
+  shape as the registry and memory matchers, decides at promotion whether a new request modifies a
+  task already active in its project rather than starting a new one. `recommend_fold`
+  (`autonomy/engine.py`) — the dial's fold decision — folds automatically only when the target is in
+  `AUTO` mode, not already `EXECUTING`/`VALIDATING`, has no missing spec fields, and detection
+  confidence is ≥0.9 (above the 0.8 detection floor, since a fold is destructive); anything short of
+  that parks the candidate in a new `AWAITING_TRIAGE` state for a human. `TaskRepository.fold_into`
+  merges the amendment's messages into the target and sends it back to `CLASSIFIED` for
+  re-interpretation over the enlarged message set, never stapling onto the old spec.
+- Triage API and dashboard: `GET /triage` lists parked amendment candidates; `POST
+  /candidates/{id}/fold` and `POST /candidates/{id}/separate` resolve one, backed by the same
+  `_fold` path the automatic route uses. The dashboard's Triage tray surfaces these.
+- Projects API and dashboard: `GET /projects` (name, description, `active`, queue depth, the task
+  currently leased if any), `POST /projects` (refuses an empty description, since that is what
+  stage-2 routing reasons over), `GET /projects/{name}/queue`. The dashboard's Projects view lists
+  them.
+
+### Changed
+- `WorkflowRepository.record_success`/`record_failure` switched from a Python-side
+  read-modify-write to an atomic `UPDATE` for `runs_ok`/`runs_failed` — real concurrency now that
+  the dispatcher runs projects in parallel could otherwise lose an increment. The alias list, which
+  can't be incremented in SQL, is a compare-and-swap on the value read
+  (`WHERE operation_aliases == current`), retried once; a lost retry costs one extra Haiku call the
+  next time that phrasing appears, never a corrupted list (closes backlog item 5). The CAS's
+  equality predicate raised `UndefinedFunction` on Postgres, whose plain `json` type has no
+  equality operator — invisible to the SQLite-only test suite — so `operation_aliases` moved to
+  `JSON().with_variant(JSONB(), "postgresql")` (Alembic `0006_alias_jsonb`); SQLite and every other
+  dialect keep plain `JSON`, unchanged.
+- `TaskDriver._after_spec` now claims the `CLASSIFIED → {INTERPRETED, NEEDS_CLARIFICATION}`
+  transition before writing the spec, and `save_memory_hit` (in `_interpret`) moves behind its own
+  won claim, mirroring `_remember`'s pre-existing ordering (closes backlog item 6). A task that
+  loses either race now carries no spec, or no memory attribution, for a path it never took, rather
+  than the reverse inversion. This narrows, but does not close, a residual: the claim and the write
+  are still two separate commits, so a reader can land in the gap between them — see
+  `_after_spec`'s docstring for the reachability argument.
+- `tasks` gains `lease_owner`, `lease_expires_at`, `lease_attempts`; `task_candidates` gains
+  `amends_task_id`, `amendment_reason`, `amendment_confidence` (Alembic `0005_routing_queues`, which
+  also creates the `projects` and `project_bindings` tables). `project` on `tasks` is not new — it
+  has existed since Phase 0; this phase is what first writes anything other than `"default"` to it.
+  The candidate `AWAITING_TRIAGE` state is a Python-level enum value on the existing `state` string
+  column, not a schema change.
+
+### Fixed
+- `TaskRepository.fold_into`'s same-state (`CLASSIFIED → CLASSIFIED`) claim path had nothing making
+  it mutually exclusive with a worker mid-interpretation, since it changes no state the way every
+  other fold branch does — a fold could win against a task a worker already held, silently folding
+  in a message the in-flight interpretation would never see while marking the candidate terminal.
+  Fixed by requiring the task's lease to be free or expired too. A narrow window remains under
+  `LEY_KHAA_DISPATCH=inline`, which takes no lease at all; `fold_into`'s docstring states it.
+- `GET /projects` raised a `TypeError` on SQLite whenever a leased task existed: comparing a
+  freshly-read naive `lease_expires_at` against an aware `now` in Python. The comparison moved into
+  SQL (`TaskRepository.leased_task_id`).
 
 ## [0.5.0] — 2026-08-28
 

@@ -66,7 +66,7 @@ This is asymmetric with the project's own stated principle that cached behaviour
 inspectable and revocable. A memory list endpoint plus a delete, and a panel mirroring the Registry
 page, is the obvious shape.
 
-## 4. Settle the memory-vs-registry scoping asymmetry deliberately
+## 4. Settle the memory-vs-registry scoping asymmetry deliberately — CLOSED (`cfe58c4`)
 
 Memory is scoped by `TaskRow.project`; the registry is global. No document claims otherwise, so
 this is not a false statement — but it is undesigned, arrived at by default rather than by
@@ -82,7 +82,15 @@ this plainly; they previously claimed client isolation the code did not provide.
 `"default"`, the remembered spec's `recipient` field becomes a real cross-client concern: a spec is
 reused wholesale, delivery target included.
 
-## 5. Concurrency: workflow counters are read-modify-write
+**Closed by `cfe58c4`** (`feat(orchestrator): route each task into a project at promotion`).
+`Orchestrator._promote` now routes every candidate through `ProjectRouter` instead of hardcoding
+`project="default"`; memory's `TaskRow.project` scoping is a real boundary wherever a routing
+binding exists. It is scoped per client, not a blanket guarantee — see the README's
+[Projects and queues](../../../README.md#projects-and-queues) section for what still shares
+`default`. The `recipient`-reuse concern flagged above is unaddressed and stands as its own risk,
+not reopened by this closure.
+
+## 5. Concurrency: workflow counters are read-modify-write — CLOSED (`327fc18`, hardened `8b2b320`)
 
 `WorkflowRepository.record_success` / `record_failure` (`persistence/workflow_repository.py`) read,
 modify and write `runs_ok` / `runs_failed` / `operation_aliases` with no locking. FastAPI's
@@ -93,7 +101,17 @@ Costs are small — counters are cosmetic, and a lost alias costs one extra Haik
 this was deferred. The fix is an atomic `UPDATE ... SET runs_ok = runs_ok + 1`, and the alias append
 wants the same treatment.
 
-## 6. Ordering: two writes land before the state claim that authorises them
+**Closed by `327fc18`** (`fix(persistence): make workflow counters atomic and claim before
+writing`): `record_success`/`record_failure` switched to an atomic `UPDATE` for `runs_ok`/
+`runs_failed`; the alias list, which can't be incremented, became a compare-and-swap on the value
+read (`WHERE operation_aliases == current`), retried once — a lost retry costs one extra Haiku call,
+never a corrupted list. **Hardened by `8b2b320`**: the CAS predicate raised `UndefinedFunction` on
+Postgres (`json` has no equality operator; SQLite's untyped comparison had masked this), so
+`operation_aliases` moved to `JSON().with_variant(JSONB(), "postgresql")` in migration
+`0006_alias_jsonb.py` — see backlog item 9 below for why this class of bug had no automated coverage
+until it reached review.
+
+## 6. Ordering: two writes land before the state claim that authorises them — CLOSED (`327fc18`)
 
 `save_memory_hit` (`orchestrator/driver.py`) commits before the `CLASSIFIED → INTERPRETED` claim, so
 a task that loses that race permanently carries `remembered_from_task_id` / `familiarity` for a path
@@ -102,6 +120,16 @@ it did not take. It mirrors `save_spec`'s pre-existing ordering, so it is not a 
 
 Worth fixing both together, since they are the same shape and the correct pattern already exists
 two functions away.
+
+**Closed by `327fc18`**: `save_memory_hit` in `_interpret` now moves behind the won claim, following
+`_remember`'s model. `_after_spec` (`orchestrator/driver.py`) was also reordered to claim
+`CLASSIFIED → {INTERPRETED, NEEDS_CLARIFICATION}` before `save_spec` — the same shape, not
+originally named in this item, closed alongside it for the same reason. That reordering trades the
+old spec-without-state inversion for a narrower state-without-spec window between the claim commit
+and the `save_spec` commit; its docstring states the window and why it's narrow in practice
+(workers mode leases the row, `advance_stalled` is inline-only, the next sweep self-heals). Closing
+it for good needs the claim and the writes in one transaction — out of scope here, and not filed as
+a fresh backlog item since the docstring already carries it.
 
 ## 7. Test-coverage gaps carried forward
 
@@ -125,6 +153,74 @@ review. They are places where a regression would not turn anything red.
   input.
 - `Registry`'s `load` is redefined every render (no `useCallback`).
 - Both frontend test files now mix `test(...)` and `it(...)`.
+
+## 9. No Postgres lane in CI, and the whole suite is SQLite-only
+
+`.github/workflows/ci.yml` has no `services` block and no `DATABASE_URL` — the backend job installs
+the package and runs `pytest` with whatever `DATABASE_URL` default the code falls back to.
+`backend/tests/conftest.py` builds every test's schema with `Base.metadata.create_all()` against
+SQLite (`sqlite://` in-memory for the shared `session` fixture, a file-backed `sqlite:///...` for
+`session_factory`). So every dialect-dependent defect is invisible to all 632 tests *and* to CI —
+while `docker compose up`, the demo path, runs Postgres 16 (see `docker-compose.yml`). This is
+exactly what let this phase's `operation_aliases` bug (backlog item 5's hardening, `8b2b320`) reach
+review: `WHERE operation_aliases == current` on a plain `json` column raises `UndefinedFunction` on
+Postgres and works fine on SQLite, and nothing that runs automatically exercises Postgres.
+
+Two further things this same gap hides, both confirmed by hand for this entry:
+
+- **The migration drift guard (`test_migrations_match_the_models`, `test_migrations.py`) also runs
+  on SQLite only.** It upgrades a throwaway `sqlite:///` database to head and diffs it against
+  `Base.metadata` with `compare_metadata`. The `with_variant(JSONB(), "postgresql")` half of
+  `operation_aliases`'s ORM declaration (`persistence/orm.py`) is a Postgres-only branch this guard
+  never dialect-switches into, so it has no automated coverage anywhere — a future edit that broke
+  the Postgres variant specifically (wrong type, a typo in the dialect string) would pass every test
+  and CI both.
+- **`compare_metadata` against a live Postgres shows a pre-existing diff**, independent of this
+  phase's changes: `[('remove_constraint', UniqueConstraint(Column('name', ..., table=<workflows>)))]`
+  — an autogenerate artifact of `unique=True` together with `index=True` on `WorkflowRow.name`
+  (`persistence/orm.py`), not a real schema gap (the unique index it wants removed is the same
+  constraint SQLAlchemy's own comparator is comparing against). Confirmed present running
+  `compare_metadata` at revision `0005_routing_queues` against a real `postgres:16` container, i.e.
+  before `0006_alias_jsonb` existed — so it predates this phase and is not introduced by it, but it
+  is also invisible to the SQLite-only guard that would normally catch drift like this.
+
+**Shape of the fix.** Add a `postgres:16` service to the CI backend job (`services:` + a
+`DATABASE_URL` pointed at it, mirroring `docker-compose.yml`'s `db` service) and run the suite a
+second time against it, or at minimum run `test_migrations_match_the_models` and the
+counter/alias-CAS tests against it. That also gives the pre-existing `UniqueConstraint(workflows.name)`
+autogenerate diff a place to get fixed deliberately (an explicit named constraint in the migration,
+matching what the comparator expects) instead of continuing to pass silently everywhere it is
+currently checked.
+
+## 10. A false comment and a redundant read in `workflow_repository.py`
+
+`WorkflowRepository.record_success` (`persistence/workflow_repository.py`, the comment block just
+before its final `cached = self.get(name)`) justifies an extra `SELECT` plus `session.expire()` with:
+"Bulk UPDATE bypasses the unit of work: it does not touch the identity map, so the caller's own
+in-session copy of this row (if one was already loaded) still shows the pre-update values until
+something expires it." That is not true of SQLAlchemy 2.0's ORM-enabled bulk update: `session.execute
+(update(WorkflowRow)...)` defaults to `synchronize_session="auto"`, which does synchronize matching
+objects already in the identity map (evaluating the criteria in Python where it can, falling back to
+a fetch strategy otherwise) — the premise the comment is defending against does not hold as stated.
+`record_failure` carries the same redundant read with no comment at all.
+
+Removing the `cached = self.get(name); if cached is not None: self.session.expire(cached)` block from
+both methods (and returning `self._row(name)` directly, as they already do at the end) leaves all 632
+tests, including the identity-map-focused tests this phase added for the alias CAS, passing
+unchanged — the extra `SELECT` was defending against a case that either doesn't happen or is already
+handled by `synchronize_session`. It is dead defensive code justified by a false premise, costing one
+extra `SELECT` per `record_success`/`record_failure` call. Verifying that removal is safe beyond "the
+existing tests don't notice" — i.e. actually pinning what the identity map looks like after the bulk
+UPDATE, with and without the expire — is itself worth a test before the removal ships, since the
+comment being wrong about SQLAlchemy's default behavior is exactly the kind of thing "no test failed"
+alone doesn't prove.
+
+**Shape of the fix.** Delete the false comment and the `cached =` / `expire()` lines from both
+methods; add a small test that loads a `WorkflowRow`, calls `record_success`/`record_failure` on it
+through the same session, and asserts the in-session object's `runs_ok`/`runs_failed` already reflect
+the write with no explicit `refresh()` — pinning the identity-map-sync behavior the (now-removed)
+comment misdescribed, rather than leaving it to be rediscovered by reading the SQLAlchemy source
+again.
 
 ---
 
