@@ -2,6 +2,8 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from ..autonomy.engine import recommend_fold
+from ..autonomy.modes import AutonomyMode
 from ..crystallizer.candidate import CandidateState
 from ..crystallizer.engine import Crystallizer
 from ..crystallizer.gate import ReadinessGate
@@ -12,11 +14,12 @@ from ..llm.client import LLMClient
 from ..persistence.candidate_repository import CandidateRepository
 from ..persistence.memory_repository import MemoryRepository
 from ..persistence.message_repository import MessageRepository
-from ..persistence.orm import CandidateRow, MessageRow
+from ..persistence.orm import CandidateRow, MessageRow, TaskRow
 from ..persistence.project_repository import DEFAULT_PROJECT, ProjectRepository
 from ..persistence.repository import TaskRepository
 from ..persistence.workflow_repository import WorkflowRepository
 from ..projects.router import ProjectRouter
+from .amendment import AmendmentDetector, AmendmentProposal
 from .driver import TaskDriver
 
 logger = logging.getLogger(__name__)
@@ -72,6 +75,7 @@ class Orchestrator:
         )
         self.projects = projects
         self.router = ProjectRouter(projects, llm) if projects is not None else None
+        self.amendments = AmendmentDetector(repo, llm)
 
     def ingest(self, raw: dict, *, promote: bool = True) -> IntakeResult:
         row = self.gateway.accept(raw)
@@ -225,13 +229,106 @@ class Orchestrator:
         return task_ids
 
     def _promote(self, candidate: CandidateRow) -> str | None:
-        """Promote a ready candidate to a Task, or None if another caller won it.
+        """Turn a settled candidate into work: a new task, a fold into a running
+        one, or a decision parked for a human.
 
-        The claim comes first and is conditional on the candidate still being
-        READY. Creating the task first made concurrent sweeps double-create it and
-        left the loser raising InvalidCandidateTransition out of a 500.
+        Returns the task id the candidate's request now lives in — which for a
+        fold is the EXISTING task — or None when it created no work (a lost
+        claim, or a proposal parked for triage).
+
+        Routing and detection run BEFORE any claim, which is forced rather than
+        careless: the two outcomes take different claims (claim_for_promotion vs
+        claim_for_triage), so which one to attempt is not known until the
+        proposal exists. The cost is that a caller who then loses the race has
+        paid for a routing call; the claims still guarantee exactly one of them
+        creates work.
         """
+        project = self._route(candidate)
+        proposal = self.amendments.detect(
+            project=project, title=candidate.title, summary=candidate.summary
+        )
+        if proposal is not None:
+            return self._handle_amendment(candidate, proposal)
+
         if not self.candidates.claim_for_promotion(candidate.id):
+            return None
+        task = self.repo.create(
+            project=project,
+            title=candidate.title,
+            source_message_ids=list(candidate.message_ids),
+            candidate_id=candidate.id,
+        )
+        self.candidates.attach_task(candidate.id, task.id)
+        self.driver.hand_off(task.id)
+        return task.id
+
+    def _handle_amendment(
+        self, candidate: CandidateRow, proposal: AmendmentProposal
+    ) -> str | None:
+        target = self.repo.get(proposal.task_id)
+        if target is None:
+            return None
+        spec = target.spec or {}
+        decision = recommend_fold(
+            mode=AutonomyMode(target.effective_mode) if target.effective_mode else None,
+            detector_confidence=proposal.confidence,
+            target_state=TaskState(target.state),
+            target_missing_fields=list(spec.get("missing_fields") or []),
+        )
+        if not decision.fold:
+            # Park it. The candidate holds the decision, so no placeholder task
+            # is created for work nobody has agreed to do yet.
+            if not self.candidates.claim_for_triage(
+                candidate.id,
+                task_id=target.id,
+                reason=f"{proposal.reason} — {decision.reason}",
+                confidence=proposal.confidence,
+            ):
+                return None
+            logger.info("candidate %s parked as an amendment to %s", candidate.id, target.id)
+            return None
+
+        return self._fold(candidate, target, claim=self.candidates.claim_for_promotion)
+
+    def _fold(self, candidate: CandidateRow, target: TaskRow, *, claim) -> str | None:
+        """Merge a candidate into a task. Shared by the automatic and human paths.
+
+        The candidate is claimed FIRST: a fold that loses the candidate race must
+        not have already changed the target.
+        """
+        if not claim(candidate.id):
+            return None
+        if not self.repo.fold_into(
+            target.id,
+            message_ids=list(candidate.message_ids),
+            expected=TaskState(target.state),
+        ):
+            # The target moved on. Put the candidate back where a human can see
+            # it rather than dropping the request.
+            self.candidates.return_to_triage(candidate.id)
+            return None
+        self.candidates.attach_task(candidate.id, target.id)
+        self.driver.hand_off(target.id)
+        return target.id
+
+    # --- human triage actions ----------------------------------------------
+
+    def fold(self, candidate_id: str) -> str | None:
+        """Fold a parked candidate into the task it amends."""
+        candidate = self.candidates.get(candidate_id)
+        if candidate is None:
+            raise KeyError(candidate_id)
+        target = self.repo.get(candidate.amends_task_id or "")
+        if target is None:
+            raise KeyError(candidate.amends_task_id)
+        return self._fold(candidate, target, claim=self.candidates.claim_for_fold)
+
+    def separate(self, candidate_id: str) -> str | None:
+        """Promote a parked candidate as its own task after all."""
+        candidate = self.candidates.get(candidate_id)
+        if candidate is None:
+            raise KeyError(candidate_id)
+        if not self.candidates.claim_for_fold(candidate.id):
             return None
         task = self.repo.create(
             project=self._route(candidate),
@@ -240,9 +337,6 @@ class Orchestrator:
             candidate_id=candidate.id,
         )
         self.candidates.attach_task(candidate.id, task.id)
-        # The driver owns everything from here: interpret, score, and either park
-        # for a human or (on Auto) run through. The orchestrator's job ends at
-        # turning a settled candidate into a task.
         self.driver.hand_off(task.id)
         return task.id
 

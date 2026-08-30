@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import case, or_, select, update
 from sqlalchemy.orm import Session
 
-from ..domain.states import TERMINAL, WAITING, TaskState, ensure_transition
+from ..domain.states import TERMINAL, WAITING, TaskState, can_transition, ensure_transition
 from ..interpreter.spec import TaskSpec
 from .orm import TaskRow
 
@@ -125,7 +125,25 @@ class TaskRepository:
         This is the same shape as _route_reply's answered-clarification path: the
         amendment is re-INTERPRETED over the enlarged message set, never stapled
         onto the old spec.
+
+        False therefore covers two losses, and the caller treats them alike
+        because the recovery is the same: the target is no longer in `expected`,
+        or `expected` is itself a state no fold may touch.
         """
+        if not can_transition(expected, TaskState.CLASSIFIED):
+            # EXECUTING and VALIDATING have no edge back to CLASSIFIED: a task
+            # with a live sandbox workspace is past the point where its inputs
+            # can change. Reaching one is a lost race, not a programmer error —
+            # the human fold path reads the target's state long after it was
+            # parked, so it can legitimately observe one — and claim() would
+            # raise InvalidTransition rather than report the loss.
+            #
+            # The check must live in front of the claim and cannot be hoisted to
+            # the caller: the row IS in `expected` here, so the claim's WHERE
+            # clause would match and fold a running task back to CLASSIFIED. And
+            # only a check this close to the claim closes the window, since the
+            # target can enter EXECUTING after any caller-side look.
+            return False
         if not self.claim(task_id, expected=expected, target=TaskState.CLASSIFIED):
             return False
         self.append_source_messages(task_id, message_ids)

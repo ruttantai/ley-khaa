@@ -170,3 +170,26 @@ class CandidateRepository:
         self.session.commit()
         self.session.refresh(row)
         return row
+
+    def return_to_triage(self, candidate_id: str) -> bool:
+        """Undo a claim whose fold then lost the race on the target task.
+
+        PROMOTED is terminal for a candidate, so this is written as a direct
+        state write rather than through ensure_transition: the candidate never
+        actually became a task, and leaving it PROMOTED would hide a request
+        nobody ever ran.
+        """
+        result = self.session.execute(
+            update(CandidateRow)
+            .where(
+                CandidateRow.id == candidate_id,
+                CandidateRow.state == CandidateState.PROMOTED.value,
+                CandidateRow.task_id.is_(None),
+            )
+            .values(
+                state=CandidateState.AWAITING_TRIAGE.value,
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        self.session.commit()
+        return result.rowcount == 1
