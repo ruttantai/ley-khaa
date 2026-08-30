@@ -85,6 +85,25 @@ def session_factory(tmp_path):
 
 
 @pytest.fixture
+def seed_workflow(session_factory):
+    """Seed the registry over `session_factory`'s database and hand back the
+    name of a workflow that's now in it, for Task 15's lost-update tests.
+
+    `session_factory` yields a sessionmaker (see above), so a session has to
+    be opened, used, and closed here rather than passed straight to
+    ensure_seed_workflows.
+    """
+    from ley_khaa.registry.seeds import ensure_seed_workflows
+
+    session = session_factory()
+    try:
+        ensure_seed_workflows(session)
+        return "set_difference"
+    finally:
+        session.close()
+
+
+@pytest.fixture
 def stub_execution(monkeypatch, tmp_path):
     """Make _execute a no-op that succeeds.
 

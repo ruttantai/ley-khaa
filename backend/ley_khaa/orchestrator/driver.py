@@ -190,12 +190,16 @@ class TaskDriver:
             spec = TaskSpec.model_validate(remembered.spec).model_copy(
                 update={"source_message_ids": list(row.source_message_ids or [])}
             )
-            self.repo.save_memory_hit(
-                row.id,
-                source_task_id=remembered.source_task_id,
-                familiarity=remembered.times_seen,
-            )
-            return self._after_spec(row, spec)
+            won = self._after_spec(row, spec)
+            if won:
+                # Same ordering rule: attribution belongs to the caller that
+                # actually took the task down the remembered path.
+                self.repo.save_memory_hit(
+                    row.id,
+                    source_task_id=remembered.source_task_id,
+                    familiarity=remembered.times_seen,
+                )
+            return won
 
         try:
             spec = self.interpreter.interpret(row)
@@ -239,22 +243,23 @@ class TaskDriver:
     def _after_spec(self, row: TaskRow, spec: TaskSpec) -> bool:
         """Everything that happens once a spec exists, however it was obtained.
 
-        Extracted so the remembered path and the interpreted path cannot drift:
-        a remembered spec with missing_fields must still stop and ask.
+        The claim comes FIRST. Writing the spec before winning the transition
+        left a task that lost the race carrying a spec for a path it never took
+        — the same inversion c043c46 fixed in reject(), and backlog item 6.
+        _remember already gets this right and is the model followed here.
         """
-        self.repo.save_spec(row.id, spec)
-        if spec.missing_fields and (row.clarification_rounds or 0) < _MAX_CLARIFICATION_ROUNDS:
-            self.repo.set_open_question(row.id, _question_for(spec.missing_fields))
-            return self.repo.claim(
-                row.id, expected=TaskState.CLASSIFIED, target=TaskState.NEEDS_CLARIFICATION
-            )
-
-        # Either the spec is complete, or we have asked enough times. The gaps
-        # stay visible in spec.missing_fields; we simply stop asking about them.
-        self.repo.set_open_question(row.id, None)
-        return self.repo.claim(
-            row.id, expected=TaskState.CLASSIFIED, target=TaskState.INTERPRETED
+        asking = bool(spec.missing_fields) and (
+            (row.clarification_rounds or 0) < _MAX_CLARIFICATION_ROUNDS
         )
+        target = TaskState.NEEDS_CLARIFICATION if asking else TaskState.INTERPRETED
+        if not self.repo.claim(row.id, expected=TaskState.CLASSIFIED, target=target):
+            return False
+
+        self.repo.save_spec(row.id, spec)
+        self.repo.set_open_question(
+            row.id, _question_for(spec.missing_fields) if asking else None
+        )
+        return True
 
     def _gate(self, row: TaskRow) -> bool:
         spec = TaskSpec.model_validate(row.spec)
