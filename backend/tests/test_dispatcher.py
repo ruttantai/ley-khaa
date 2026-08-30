@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
@@ -278,3 +279,52 @@ def test_a_project_with_nothing_runnable_is_skipped(session_factory):
     with session_factory() as session:
         _task(session, project="acme", state=TaskState.AWAITING_APPROVAL)
     assert asyncio.run(Dispatcher(session_factory, drive=lambda s, t: None).tick()) == []
+
+
+def test_the_heartbeat_keeps_a_long_running_task_leased(session_factory, monkeypatch):
+    """The lease has to outlive the work, and only the heartbeat makes it.
+
+    Every other dispatcher test drives instantly, so the TTL never has a chance
+    to elapse mid-flight: replacing `_heartbeat` with `asyncio.sleep(0)` left the
+    whole suite green while every real task longer than the TTL would have had
+    its lease reclaimed out from under it — two lanes over one workspace, which
+    is the exact thing the lease exists to prevent.
+
+    So: a TTL shorter than the work, and the expiry read from a SEPARATE session
+    while the worker thread is still holding the task.
+    """
+    from ley_khaa.config import settings as real_settings
+
+    monkeypatch.setattr(
+        dispatcher_module,
+        "settings",
+        replace(real_settings, lease_ttl_seconds=1.0, lease_heartbeat_seconds=0.1),
+    )
+    with session_factory() as session:
+        task_id = _task(session, project="acme")
+
+    seen: list[tuple[datetime, datetime]] = []
+
+    def drive(_session, tid):
+        # 1.5s of work against a 1.0s TTL: without renewal the lease lapses
+        # partway through, and next_runnable would hand the task to a second
+        # worker while this one is still on it.
+        for _ in range(15):
+            time.sleep(0.1)
+            with session_factory() as fresh:
+                row = TaskRepository(fresh).get(tid)
+                seen.append((datetime.now(timezone.utc), _as_utc(row.lease_expires_at)))
+
+    asyncio.run(Dispatcher(session_factory, drive=drive, owner="w1").tick())
+
+    assert len(seen) == 15
+    assert seen[-1][1] > seen[0][1], "the expiry never moved: nothing renewed the lease"
+    # The load-bearing one: at the last check, 1.5s in, the original 1.0s lease
+    # would long since have expired. It has not.
+    checked_at, expires_at = seen[-1]
+    assert expires_at > checked_at, "the lease lapsed while its worker still held the task"
+
+
+def _as_utc(value: datetime) -> datetime:
+    """SQLite hands back naive datetimes even for timezone=True columns."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)

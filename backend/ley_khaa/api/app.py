@@ -120,7 +120,11 @@ async def _periodic_sweeper(interval: float, sweep: Callable[[], int] = _sweep_o
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if settings.disable_startup:
+        # Both background tasks are declared here, not just the sweeper: a test
+        # that asks "is the dispatcher running?" must get None rather than
+        # AttributeError when startup is disabled.
         app.state.sweeper = None
+        app.state.dispatcher = None
         yield
         return
     run_migrations()
