@@ -56,6 +56,9 @@ Phase plans: [`docs/superpowers/plans/`](docs/superpowers/plans/).
 
 ## Run
 
+**New here?** [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) walks from a fresh clone to a
+finished task with a downloadable bundle, and says plainly which parts are not built yet.
+
 ```bash
 docker compose up
 ```
@@ -306,8 +309,8 @@ cd frontend && npm install && npm run dev
 ## Develop
 
 ```bash
-cd backend  && python -m pytest -q   # 632 tests
-cd frontend && npm test              # 48 tests (vitest)
+cd backend  && python -m pytest -q   # 639 tests
+cd frontend && npm test              # 49 tests (vitest)
 cd frontend && npm run typecheck     # `npm run build` is transpile-only; this is the real check
 ```
 
