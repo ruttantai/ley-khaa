@@ -57,6 +57,13 @@ class TaskRow(Base):
     # TaskRepository.claim_lease. A task driven normally ends its life at 0.
     lease_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
+    # --- outbound notification (spec §3.6) ----------------------------------
+    # The state this task last ANNOUNCED to its channel. advance() is
+    # re-entrant, so without this a task re-driven in the same state would
+    # repeat its question every pass. NULL means nothing has been announced
+    # yet, which is why it must not default to a state.
+    last_notified_state: Mapped[str | None] = mapped_column(String, nullable=True)
+
     @property
     def effective_mode(self) -> str | None:
         """The mode actually in force. Computed, never stored, so a human's
@@ -244,3 +251,30 @@ class ProjectBindingRow(Base):
         String, default="manual", server_default="manual"
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class DeadLetterRow(Base):
+    """An inbound message, an outbound notification, or a connection that was
+    lost (spec §3.8, §7).
+
+    A dropped message that leaves no trace is the worst failure mode an intake
+    system can have, so this table exists to make every drop visible at
+    GET /dead-letters.
+
+    `payload` is TEXT, not JSON: it is written once by the redactor and only
+    ever displayed. A JSON column invites an equality comparison, and Postgres's
+    `json` type has no equality operator — the exact Postgres-only bug a
+    SQLite-only suite hid until Phase 5's review.
+    """
+
+    __tablename__ = "dead_letters"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    # "slack" | "discord" | "simulator" — which adapter this concerns.
+    source: Mapped[str] = mapped_column(String, index=True)
+    # "inbound" | "outbound" | "connection"
+    kind: Mapped[str] = mapped_column(String, index=True)
+    reason: Mapped[str] = mapped_column(String)
+    # Redacted before it ever gets here — see DeadLetterRepository.redact.
+    payload: Mapped[str] = mapped_column(String, default="", server_default=text("''"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
