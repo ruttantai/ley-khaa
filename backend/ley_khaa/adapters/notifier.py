@@ -13,12 +13,18 @@ where the sync call is handed to the event loop.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Callable
+from concurrent.futures import Future
+from contextlib import suppress
 from typing import Protocol
 
+from ..config import settings
 from ..domain.states import TaskState
+from ..persistence.dead_letter_repository import DeadLetterRepository
 from ..persistence.orm import TaskRow
-from .base import Destination
+from .base import ChannelAdapter, Destination
 
 logger = logging.getLogger(__name__)
 
@@ -140,3 +146,99 @@ def set_notifier(notifier: Notifier) -> None:
 
 def current_notifier() -> Notifier:
     return _notifier
+
+
+class ChannelNotifier:
+    """Hands a notification to the adapter that owns its conversation.
+
+    This is the one place the design meets Phase 5's threading model head-on.
+    TaskDriver.advance() is SYNCHRONOUS and, in workers mode, runs inside
+    asyncio.to_thread on a dispatcher worker; the Slack and Discord clients are
+    ASYNC and live on the main event loop. So notify() is called from a worker
+    thread and hands its coroutine across with
+    asyncio.run_coroutine_threadsafe(coro, loop), where `loop` was captured at
+    lifespan start and is held by the supervisor.
+
+    Fire-and-forget: the driver does not wait on the future, so a slow or wedged
+    platform API cannot extend a task's execution time. The future's exception
+    is consumed by a done-callback that writes the dead letter — without one,
+    asyncio swallows it and a failed notification leaves no trace at all, which
+    is the failure §3.8 exists to prevent.
+    """
+
+    name = "channel"
+
+    def __init__(
+        self,
+        adapters: dict[str, ChannelAdapter],
+        *,
+        loop: asyncio.AbstractEventLoop | None,
+        session_factory: Callable[[], object],
+    ) -> None:
+        self.adapters = adapters
+        self.loop = loop
+        self.session_factory = session_factory
+
+    def notify(self, dest: Destination, text: str) -> None:
+        adapter = self.adapters.get(dest.source)
+        if adapter is None:
+            # NOT a dead letter. A task's source can be "simulator" (a fresh
+            # clone's demo task) or "dashboard" (every /tasks/{id}/answer
+            # message); there is no channel to answer into and nothing failed.
+            # Recording those would bury the real drops under a clone's own
+            # traffic and make the panel useless.
+            logger.debug("no adapter for %s; nothing to notify", dest.source)
+            return
+
+        if settings.dispatch_mode == "inline":
+            # Spec §3.6: inline is the single-operator dashboard mode. A task
+            # driven on a request thread has no channel to answer into, so the
+            # notification is recorded rather than delivered.
+            self._dead_letter(dest, "inline dispatch mode does not deliver notifications", text)
+            return
+
+        if self.loop is None or not self.loop.is_running():
+            self._dead_letter(dest, "no running event loop to deliver on", text)
+            return
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(adapter.notify(dest, text), self.loop)
+        except Exception as exc:  # the loop closed between the check and here
+            self._dead_letter(dest, f"could not schedule delivery: {exc}", text)
+            return
+        future.add_done_callback(lambda done: self._record_result(dest, text, done))
+
+    def _record_result(self, dest: Destination, text: str, future: Future) -> None:
+        try:
+            future.result()
+        except Exception as exc:
+            self._dead_letter(dest, f"delivery failed: {exc}", text)
+
+    def _dead_letter(self, dest: Destination, reason: str, text: str) -> None:
+        """Its own session, always.
+
+        notify() runs on a dispatcher worker thread that already holds a session
+        for the task it is driving. Writing through that one would interleave an
+        unrelated commit into the middle of the driver's transaction; this is
+        the same per-unit-of-work session discipline Dispatcher._drive follows.
+        """
+        session = self.session_factory()
+        try:
+            DeadLetterRepository(session).record(
+                source=dest.source,
+                kind="outbound",
+                reason=reason,
+                payload={
+                    "conversation_id": dest.conversation_id,
+                    "external_id": dest.external_id,
+                    "text": text,
+                },
+            )
+        except Exception:
+            # Last resort. A dead letter records a failure and must not become
+            # one — least of all inside a done-callback, where the exception has
+            # nowhere to go.
+            logger.exception("could not dead-letter a failed notification")
+        finally:
+            with suppress(Exception):
+                session.close()
