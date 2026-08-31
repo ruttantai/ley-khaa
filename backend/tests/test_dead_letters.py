@@ -4,6 +4,7 @@ from ley_khaa.persistence.dead_letter_repository import (
     MAX_PAYLOAD_CHARS,
     DeadLetterRepository,
     redact,
+    scrub_text,
 )
 
 
@@ -163,3 +164,40 @@ def test_a_signature_header_is_redacted():
     assert "v0=abcdef" not in text
     assert "cs" not in text
     assert text.count("[redacted]") == 2
+
+
+def test_a_token_in_the_reason_is_scrubbed(session):
+    """`reason` is the field an adapter crash writes an exception message into,
+    and an SDK exception routinely quotes the request that produced it."""
+    repo = DeadLetterRepository(session)
+    repo.record(
+        source="slack",
+        kind="connection",
+        reason="ConnectionError: auth failed for xoxb-1234-abcd",
+    )
+    stored = repo.list()[0].reason
+    assert "xoxb-1234-abcd" not in stored
+    assert "[redacted]" in stored
+    assert "ConnectionError" in stored, "the diagnostic must survive"
+
+
+def test_a_token_in_a_payload_string_value_is_scrubbed(session):
+    """Key-based redaction only sees a secret-NAMED key; this is the same
+    secret hiding in an innocuously-named one."""
+    repo = DeadLetterRepository(session)
+    repo.record(
+        source="slack",
+        kind="inbound",
+        reason="bad envelope",
+        payload={"message": "retry with xapp-9999-zzzz please"},
+    )
+    stored = repo.list()[0].payload
+    assert "xapp-9999-zzzz" not in stored
+    assert "retry with" in stored, "the diagnostic must survive"
+
+
+def test_scrubbing_leaves_ordinary_text_alone():
+    """A false positive silently destroys a diagnostic, so the patterns are
+    prefix-anchored rather than entropy-based."""
+    assert scrub_text("no text in the event") == "no text in the event"
+    assert scrub_text("channel C0ALLOWED1 is not listed") == "channel C0ALLOWED1 is not listed"

@@ -9,6 +9,7 @@ serialisation rather than letting callers pass a pre-rendered string.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 
 from sqlalchemy import select
@@ -48,6 +49,28 @@ REDACTED = "[redacted]"
 # right trade.
 _RENDERABLE = (str, int, float, bool, type(None))
 
+# Credential shapes that appear in free text, where key-based redaction cannot
+# see them — an SDK exception's message routinely quotes the request that
+# produced it. Prefix-anchored rather than entropy-guessing: a false positive
+# here silently destroys a diagnostic, so only well-known shapes are matched.
+_TOKEN_PATTERNS = (
+    re.compile(r"xox[abposr]-[A-Za-z0-9-]+"),      # Slack bot/user/app tokens
+    re.compile(r"xapp-[A-Za-z0-9-]+"),             # Slack app-level tokens
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),  # Authorization headers
+)
+
+
+def scrub_text(value: str) -> str:
+    """Replace credential shapes inside free text.
+
+    Applies to `reason` as well as payload strings: key-based redaction only
+    sees `{"token": ...}`, and a platform SDK's exception message embeds the
+    credential in a sentence instead.
+    """
+    for pattern in _TOKEN_PATTERNS:
+        value = pattern.sub(REDACTED, value)
+    return value
+
 
 def _scrub(value: object) -> object:
     if isinstance(value, dict):
@@ -58,7 +81,7 @@ def _scrub(value: object) -> object:
     if isinstance(value, (list, tuple)):
         return [_scrub(item) for item in value]
     if isinstance(value, _RENDERABLE):
-        return value
+        return scrub_text(value) if isinstance(value, str) else value
     return f"<{type(value).__name__}>"
 
 
@@ -104,7 +127,7 @@ class DeadLetterRepository:
             id=str(uuid.uuid4()),
             source=source,
             kind=kind,
-            reason=reason,
+            reason=scrub_text(reason),
             payload=redact(payload),
         )
         self.session.add(row)
