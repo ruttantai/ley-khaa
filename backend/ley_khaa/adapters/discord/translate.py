@@ -30,6 +30,14 @@ def translate(
     drop; TranslationError is a message that looked like work and could not be
     handled, and the caller dead-letters it.
     """
+    # Distinguish "no channel identifier at all" (a malformed event — worth
+    # seeing in the dead-letter panel, and safe to record because it names no
+    # channel) from "a channel that is simply not allowlisted" (a normal,
+    # silent drop). The Slack translator draws the same line; a later task
+    # calls both through one code path, so the return contracts must match.
+    if "channel_id" not in payload and "parent_id" not in payload:
+        raise TranslationError("a Discord message with no channel id cannot be routed")
+
     channel_id = payload.get("channel_id")
     parent_id = payload.get("parent_id")
 

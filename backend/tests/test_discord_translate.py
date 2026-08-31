@@ -71,6 +71,30 @@ def test_the_timestamp_is_iso_because_the_gateway_parses_it_that_way():
     assert datetime.fromisoformat(raw["timestamp"]).tzinfo is not None
 
 
+def test_a_message_with_no_channel_identifier_at_all_is_a_translation_error():
+    """A payload carrying neither key is structurally malformed — an
+    integration fault, not channel traffic. It names no channel, so recording
+    it cannot leak an unlisted channel's existence. Mirrors the Slack
+    translator's missing-`channel` behaviour so a caller can treat both the
+    same way."""
+    payload = _payload("discord_channel_message")
+    del payload["channel_id"]
+    del payload["parent_id"]
+    with pytest.raises(TranslationError):
+        translate(payload, allowed_channels=ALLOWED, bot_user_id=BOT)
+
+
+def test_a_present_but_null_channel_id_is_a_silent_drop_not_an_error():
+    """The keys are PRESENT, so this is not malformed — it is simply not a
+    message from an allowlisted channel, which is the normal, silent path.
+    Guards the difference between checking key presence and checking
+    truthiness."""
+    payload = _payload("discord_channel_message")
+    payload["channel_id"] = None
+    payload["parent_id"] = None
+    assert translate(payload, allowed_channels=ALLOWED, bot_user_id=BOT) is None
+
+
 def test_a_message_from_an_unlisted_channel_is_dropped():
     payload = _payload("discord_channel_message")
     payload["channel_id"] = "000000000000000000"
