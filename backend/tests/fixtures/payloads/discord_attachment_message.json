@@ -1,0 +1,24 @@
+{
+  "id": "1180000000000000005",
+  "channel_id": "998877665544332211",
+  "parent_id": null,
+  "guild_id": "112233445566778899",
+  "content": "here is the screenshot and the holdings file",
+  "timestamp": "2026-08-31T09:10:00+00:00",
+  "type": 0,
+  "author": {"id": "555000000000000001", "username": "ana", "bot": false},
+  "attachments": [
+    {
+      "id": "700000000000000001",
+      "filename": "screenshot.png",
+      "url": "https://cdn.example.invalid/screenshot.png",
+      "content_type": "image/png"
+    },
+    {
+      "id": "700000000000000002",
+      "filename": "holdings.csv",
+      "url": "https://cdn.example.invalid/holdings.csv",
+      "content_type": "text/csv"
+    }
+  ]
+}

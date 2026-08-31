@@ -1,0 +1,11 @@
+{
+  "id": "1180000000000000002",
+  "channel_id": "998877665544332211",
+  "parent_id": null,
+  "guild_id": "112233445566778899",
+  "content": "compare the Bloomberg universe against FactSet and send the difference as an Excel file",
+  "timestamp": "2026-08-31T09:00:00+00:00",
+  "type": 0,
+  "author": {"id": "555000000000000001", "username": "ana", "bot": false},
+  "attachments": []
+}

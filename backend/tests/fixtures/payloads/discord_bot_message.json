@@ -1,0 +1,11 @@
+{
+  "id": "1180000000000000004",
+  "channel_id": "1180000000000000002",
+  "parent_id": "998877665544332211",
+  "guild_id": "112233445566778899",
+  "content": "Before I start, I still need: output_format. Can you fill those in?",
+  "timestamp": "2026-08-31T09:02:00+00:00",
+  "type": 0,
+  "author": {"id": "999000000000000001", "username": "ley-khaa", "bot": true},
+  "attachments": []
+}
