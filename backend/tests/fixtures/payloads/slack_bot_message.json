@@ -1,0 +1,20 @@
+{
+  "token": "fake-verification-token",
+  "team_id": "T0SYNTH01",
+  "api_app_id": "A0SYNTH01",
+  "event": {
+    "type": "message",
+    "subtype": "bot_message",
+    "channel": "C0ALLOWED1",
+    "bot_id": "B0SYNTH01",
+    "username": "ley-khaa",
+    "text": "Before I start, I still need: output_format. Can you fill those in?",
+    "ts": "1756600100.000100",
+    "thread_ts": "1756600000.000100",
+    "event_ts": "1756600100.000100",
+    "channel_type": "channel"
+  },
+  "type": "event_callback",
+  "event_id": "Ev0SYNTH03",
+  "event_time": 1756600100
+}
