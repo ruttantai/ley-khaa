@@ -114,6 +114,18 @@ def test_awaiting_approval_with_no_reason_still_reports_readiness():
     assert "()" not in text
 
 
+def test_awaiting_approval_with_no_mode_at_all_still_names_one():
+    """Both columns behind effective_mode (mode_override, recommended_mode) are
+    nullable, so a row can reach this branch with neither set. Every other
+    AWAITING_APPROVAL test supplies recommended_mode="suggest", which is also
+    the hardcoded fallback -- so none of them can tell a field read from a
+    literal, and the fallback was deletable with the whole file still green.
+    """
+    text = message_for(_row(TaskState.AWAITING_APPROVAL, autonomy_reason="r"))
+    assert "suggest" in text
+    assert "None" not in text
+
+
 def test_done_says_where_the_bundle_is():
     text = message_for(_row(TaskState.DONE, workspace_path="/work/task-workspaces/task-t1"))
     assert "/work/task-workspaces/task-t1" in text
@@ -144,6 +156,39 @@ def test_failed_with_no_reason_still_reports_the_failure():
     assert text.strip()
     assert "None" not in text
     assert "no reason was recorded" in text
+
+
+@pytest.mark.parametrize(
+    "state, field, extra, expect_substring, forbid_substring",
+    [
+        (TaskState.NEEDS_CLARIFICATION, "open_question", {}, "What should I do?", None),
+        (
+            TaskState.AWAITING_APPROVAL,
+            "autonomy_reason",
+            {"recommended_mode": "suggest"},
+            None,
+            "(",
+        ),
+        (TaskState.DONE, "workspace_path", {}, None, "bundle"),
+        (TaskState.FAILED, "failure_reason", {}, "no reason was recorded", None),
+    ],
+    ids=["needs_clarification", "awaiting_approval", "done", "failed"],
+)
+def test_whitespace_only_field_behaves_like_none(
+    state, field, extra, expect_substring, forbid_substring
+):
+    """The four nullable fields all go through the same (x or "").strip()
+    pattern, so whitespace-only input should take the identical path as None.
+    One parametrized check across all four instead of four near-duplicate
+    tests -- each case reuses the same assertion its corresponding
+    None-fixture test uses."""
+    text = message_for(_row(state, **{field: "   "}, **extra))
+    assert text.strip()
+    assert "None" not in text
+    if expect_substring:
+        assert expect_substring in text
+    if forbid_substring:
+        assert forbid_substring not in text
 
 
 def test_the_null_notifier_does_nothing_and_says_so():
