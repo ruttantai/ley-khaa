@@ -42,5 +42,20 @@ class Settings:
     # visibly rather than being re-run forever.
     max_lease_attempts: int = int(os.getenv("LEY_KHAA_MAX_LEASE_ATTEMPTS", "3"))
 
+    # --- channel adapters (spec §5). Tokens come from the environment only:
+    # never committed, never logged, never written into a bundle, never
+    # returned by an API. No token -> that adapter does not start, which is
+    # what keeps `docker compose up` a zero-account demo.
+    slack_bot_token: str = os.getenv("LEY_KHAA_SLACK_BOT_TOKEN", "")
+    slack_app_token: str = os.getenv("LEY_KHAA_SLACK_APP_TOKEN", "")
+    # Comma-separated channel ids. EMPTY MEANS INGEST NOTHING, never "ingest
+    # everything": being invited to a channel is not consent to read it
+    # (decision #4), and an adapter with a token and an empty allowlist starts,
+    # ingests nothing, and says so — the safe reading of an incomplete
+    # configuration.
+    slack_channels: str = os.getenv("LEY_KHAA_SLACK_CHANNELS", "")
+    discord_bot_token: str = os.getenv("LEY_KHAA_DISCORD_BOT_TOKEN", "")
+    discord_channels: str = os.getenv("LEY_KHAA_DISCORD_CHANNELS", "")
+
 
 settings = Settings()
