@@ -2,6 +2,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from ..adapters.notifier import Notifier
 from ..autonomy.engine import recommend_fold
 from ..autonomy.modes import AutonomyMode
 from ..crystallizer.candidate import CandidateState
@@ -70,6 +71,7 @@ class Orchestrator:
         workflows: WorkflowRepository | None = None,
         memories: MemoryRepository | None = None,
         projects: ProjectRepository | None = None,
+        notifier: Notifier | None = None,
     ) -> None:
         self.repo = repo
         self.messages = messages
@@ -80,7 +82,7 @@ class Orchestrator:
         self.gate = gate or ReadinessGate()
         self.driver = TaskDriver(
             repo, llm=llm, messages=messages, candidates=candidates,
-            workflows=workflows, memories=memories,
+            workflows=workflows, memories=memories, notifier=notifier,
         )
         self.projects = projects
         self.router = ProjectRouter(projects, llm) if projects is not None else None

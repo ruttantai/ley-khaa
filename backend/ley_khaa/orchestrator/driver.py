@@ -3,6 +3,8 @@ from collections.abc import Callable
 
 from pydantic import ValidationError
 
+from ..adapters.base import Destination
+from ..adapters.notifier import Notifier, NullNotifier, message_for
 from ..autonomy.engine import recommend
 from ..autonomy.modes import AutonomyMode
 from ..config import settings
@@ -61,6 +63,7 @@ class TaskDriver:
         candidates: CandidateRepository,
         workflows: WorkflowRepository | None = None,
         memories: MemoryRepository | None = None,
+        notifier: Notifier | None = None,
     ) -> None:
         self.repo = repo
         self.messages = messages
@@ -72,9 +75,21 @@ class TaskDriver:
         self.executor = ExecutionRunner(llm=llm, messages=messages, workflows=workflows)
         self.memories = memories
         self.memory = MemoryMatcher(memories, llm) if memories is not None else None
+        # NullNotifier by default, so every existing test and every token-free
+        # run behaves exactly as it did before this phase.
+        self.notifier = notifier or NullNotifier()
 
     def advance(self, task_id: str) -> TaskRow:
-        """Push a task as far as it can go unattended, then return where it landed."""
+        """Push a task as far as it can go unattended, then return where it landed.
+
+        One exit point, so no return path can forget to announce. The driving
+        itself is unchanged and lives in _drive.
+        """
+        row = self._drive(task_id)
+        self._announce(row)
+        return row
+
+    def _drive(self, task_id: str) -> TaskRow:
         for _ in range(_MAX_STEPS):
             row = self.repo.get(task_id)
             if row is None:
@@ -125,7 +140,12 @@ class TaskDriver:
         if not self.repo.claim(task_id, expected=state, target=TaskState.FAILED):
             raise InvalidTransition(f"task {task_id} cannot be rejected from {row.state}")
         self.repo.record_failure(task_id, reason)
-        return self.repo.get(task_id)
+        row = self.repo.get(task_id)
+        # reject() moves a task to FAILED on its own, so advance()'s single exit
+        # point does not cover it. Without this the human who was waiting on the
+        # question is never told the task is over.
+        self._announce(row)
+        return row
 
     def override(self, task_id: str, mode: AutonomyMode | None) -> TaskRow:
         """Pin the mode, or pass None to clear the pin and follow the recommendation."""
@@ -410,6 +430,49 @@ class TaskDriver:
         except Exception:
             # Remembering is a bonus, never a reason for a finished task to fail.
             logger.exception("could not remember task %s", row.id)
+
+    def _announce(self, row: TaskRow | None) -> None:
+        """Tell the originating channel, at most once per state (spec §3.6).
+
+        Everything here is best-effort and nothing here can fail a task: a
+        wedged platform API must not be able to stop work from completing. The
+        order is claim-then-send — mark_notified is a compare-and-swap, so a
+        re-entrant advance() or a second worker cannot repeat the message.
+        """
+        if row is None:
+            return
+        try:
+            text = message_for(row)
+            if text is None:
+                return
+            dest = self._destination(row)
+            if dest is None:
+                # No originating message means no channel to answer into. A
+                # task created directly (a test, a future CLI) is not a failure.
+                return
+            if not self.repo.mark_notified(row.id, row.state):
+                return
+            self.notifier.notify(dest, text)
+        except Exception:
+            logger.exception("could not announce task %s", row.id)
+
+    def _destination(self, row: TaskRow) -> Destination | None:
+        """Where this task's channel conversation is.
+
+        No mapping table (§3.6): the originating MessageRow already carries
+        source, conversation_id and external_id. The FIRST source message is the
+        anchor — it is the one that started the thread, and its external_id is
+        what a threaded reply hangs under.
+        """
+        sources = self.messages.get_many(list(row.source_message_ids or []))
+        if not sources:
+            return None
+        first = sources[0]
+        return Destination(
+            source=first.source,
+            conversation_id=first.conversation_id,
+            external_id=first.external_id,
+        )
 
 
 _STEPS: dict[TaskState, Callable[[TaskDriver, TaskRow], bool]] = {
