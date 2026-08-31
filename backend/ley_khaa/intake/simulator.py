@@ -1,8 +1,12 @@
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from ..adapters.base import Destination
 from ..orchestrator.orchestrator import IntakeResult, Orchestrator
+
+logger = logging.getLogger(__name__)
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "conversations"
 
@@ -12,10 +16,28 @@ class Simulator:
 
     Timestamps are backdated so the readiness gate sees a settled conversation
     rather than one still in progress.
+
+    Also a ChannelAdapter (spec §3.3): it already goes through IntakeGateway,
+    so satisfying the protocol costs four members and means the interface has
+    three implementations from the start rather than being shaped around Slack
+    and bolted onto the others afterwards. It has no socket and no channel, so
+    start/stop are no-ops and notify only logs — a fixture replay has nobody to
+    answer.
     """
+
+    name = "simulator"
 
     def __init__(self, orchestrator: Orchestrator) -> None:
         self.orchestrator = orchestrator
+
+    async def start(self) -> None:
+        """Nothing to connect. Replay is driven by POST /simulate, not by a socket."""
+
+    async def stop(self) -> None:
+        """Nothing to disconnect."""
+
+    async def notify(self, dest: Destination, text: str) -> None:
+        logger.info("simulator notification for %s: %s", dest.conversation_id, text)
 
     def available(self) -> list[str]:
         return sorted(p.stem for p in FIXTURES.glob("*.json"))
