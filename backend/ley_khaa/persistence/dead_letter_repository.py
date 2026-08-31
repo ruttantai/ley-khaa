@@ -52,11 +52,19 @@ _RENDERABLE = (str, int, float, bool, type(None))
 # Credential shapes that appear in free text, where key-based redaction cannot
 # see them — an SDK exception's message routinely quotes the request that
 # produced it. Prefix-anchored rather than entropy-guessing: a false positive
-# here silently destroys a diagnostic, so only well-known shapes are matched.
+# silently destroys a diagnostic, so only well-known shapes match.
+#
+# The Bearer tail requires 16+ characters BECAUSE the obvious pattern
+# (`bearer\s+\S+`) eats ordinary English: "missing bearer token in the request"
+# is a realistic auth diagnostic carrying no secret, and redacting it destroys
+# the very information the dead letter exists to preserve. Real bearer tokens
+# are long; the English words that follow "bearer" are not.
+_MIN_BEARER_TOKEN = 16
+
 _TOKEN_PATTERNS = (
-    re.compile(r"xox[abposr]-[A-Za-z0-9-]+"),      # Slack bot/user/app tokens
-    re.compile(r"xapp-[A-Za-z0-9-]+"),             # Slack app-level tokens
-    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),  # Authorization headers
+    re.compile(r"(?i)xox[abposr]-[A-Za-z0-9-]+"),           # Slack bot/user/app tokens
+    re.compile(r"(?i)xapp-[A-Za-z0-9-]+"),                  # Slack app-level tokens
+    re.compile(rf"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{{{_MIN_BEARER_TOKEN},}}"),  # Authorization headers
 )
 
 

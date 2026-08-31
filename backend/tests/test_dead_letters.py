@@ -198,6 +198,29 @@ def test_a_token_in_a_payload_string_value_is_scrubbed(session):
 
 def test_scrubbing_leaves_ordinary_text_alone():
     """A false positive silently destroys a diagnostic, so the patterns are
-    prefix-anchored rather than entropy-based."""
+    prefix-anchored and length-gated rather than entropy-based."""
     assert scrub_text("no text in the event") == "no text in the event"
     assert scrub_text("channel C0ALLOWED1 is not listed") == "channel C0ALLOWED1 is not listed"
+    # The word "bearer" in a realistic auth diagnostic carries no secret.
+    assert scrub_text("missing bearer token in the request") == (
+        "missing bearer token in the request"
+    )
+    assert scrub_text("the bearer of this message is unknown") == (
+        "the bearer of this message is unknown"
+    )
+    # A path is not a token: the prefixes require a trailing hyphen.
+    assert scrub_text("/var/data/xoxbox/notreally.txt") == "/var/data/xoxbox/notreally.txt"
+
+
+def test_a_real_bearer_token_is_still_scrubbed():
+    """The length gate must not cost the actual protection."""
+    text = scrub_text("401 for Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc123def456")
+    assert "eyJhbGci" not in text
+    assert "[redacted]" in text
+    assert "401 for" in text, "the diagnostic must survive"
+
+
+def test_an_uppercase_slack_token_is_scrubbed_too():
+    """Slack issues lowercase, but a caller that upper-cases a message must not
+    thereby defeat the scrub."""
+    assert "XOXB-UPPER-1234" not in scrub_text("leaked XOXB-UPPER-1234 here")
