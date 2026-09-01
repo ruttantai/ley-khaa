@@ -98,20 +98,6 @@ class Orchestrator:
         if row.reply_to_task_id:
             return self._route_reply(row, promote=promote)
 
-        # Spec §3.7: a message arriving in a conversation whose task is asking
-        # a question IS that task's answer. Nobody types a task id into Slack,
-        # and this rule lives here rather than in the adapter because deciding
-        # what a message MEANS is business logic (§5.1).
-        #
-        # An explicit reply_to_task_id above still wins: the dashboard names
-        # the task it is answering, and inference must never override a caller
-        # that was specific.
-        clarifying = self._clarifying_task_in(row.conversation_id)
-        if clarifying is not None:
-            self.messages.set_reply_target(row.id, clarifying.id)
-            row = self.messages.get_many([row.id])[0]
-            return self._route_reply(row, promote=promote)
-
         verdict = self.relevance.judge(row)
         self.messages.record_verdict(
             row.id,
@@ -119,6 +105,36 @@ class Orchestrator:
             topic=verdict.topic,
             confidence=verdict.confidence,
         )
+
+        # Spec §3.7: a message arriving in a conversation whose task is asking
+        # a question IS that task's answer. Nobody types a task id into Slack,
+        # and this rule lives here rather than in the adapter because deciding
+        # what a message MEANS is business logic (§5.1).
+        #
+        # NARROWED with stage A, deliberately: taken literally, §3.7 makes
+        # every later message in the channel an answer, so a genuinely new
+        # request posted while a task is parked is swallowed into that task's
+        # source set — silently, with no candidate, no task and no dead letter.
+        # `verdict.relevant` is machinery that already exists and already means
+        # "is this a work request?", so an answer ("as a csv please") is not
+        # relevant and routes to the question, while a new request still forms
+        # its own task.
+        #
+        # Cost if wrong: an answer PHRASED like a fresh request forms a new
+        # candidate instead of answering — recoverable by a human through the
+        # dashboard's Answer box, and the amendment detector is the designed
+        # path for that shape. The opposite error is silent and unrecoverable,
+        # so this is the safer side to be wrong on.
+        #
+        # An explicit reply_to_task_id above still wins: the dashboard names
+        # the task it is answering, and inference must never override a caller
+        # that was specific.
+        if not verdict.relevant:
+            clarifying = self._clarifying_task_in(row.conversation_id)
+            if clarifying is not None:
+                self.messages.set_reply_target(row.id, clarifying.id)
+                row = self.messages.get_many([row.id])[0]
+                return self._route_reply(row, promote=promote)
         candidates = self.crystallizer.observe(row.conversation_id, verdict)
 
         result = IntakeResult(
