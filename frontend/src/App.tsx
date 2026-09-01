@@ -3,6 +3,7 @@ import Candidates from "./Candidates";
 import Projects from "./Projects";
 import Registry from "./Registry";
 import TaskDetail from "./TaskDetail";
+import DeadLetters from "./DeadLetters";
 import Triage from "./Triage";
 import { fetchCandidates, fetchTasks, type Candidate, type Task } from "./api";
 
@@ -39,6 +40,8 @@ export default function App() {
       <Projects />
 
       <Triage />
+
+      <DeadLetters />
 
       <h2 className="text-lg font-semibold mb-2 mt-8">Forming</h2>
       <Candidates items={candidates.filter((c) => !TERMINAL_STATES.includes(c.state))} />

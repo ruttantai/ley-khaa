@@ -180,6 +180,23 @@ export async function fetchProjects(): Promise<Project[]> {
   return res.json();
 }
 
+export type DeadLetter = {
+  id: string;
+  source: string;
+  // "inbound" | "outbound" | "connection"
+  kind: string;
+  reason: string;
+  // Redacted server-side before storage — never contains a token.
+  payload: string;
+  created_at: string;
+};
+
+export async function fetchDeadLetters(limit = 50): Promise<DeadLetter[]> {
+  const res = await fetch(`${BASE}/dead-letters?limit=${limit}`);
+  if (!res.ok) throw new Error(`fetchDeadLetters failed: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchTriage(): Promise<TriageItem[]> {
   const res = await fetch(`${BASE}/triage`);
   if (!res.ok) throw new Error(`fetchTriage failed: ${res.status}`);
