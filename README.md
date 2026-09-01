@@ -341,6 +341,44 @@ What the channel is for, and what it is not:
   treat the panel as diagnostics, not as a guaranteed-clean surface.
 - **Threads only.** DMs are not ingested in this release.
 
+### Images
+
+Paste a screenshot into a channel or the dashboard and ley-khaa reads it — a table becomes data a
+generated script can compute on, anything else becomes context the interpreter can reason about.
+
+**The extraction is frozen.** An image is read once, keyed by a hash of its bytes, and every later
+step — a repair attempt, a re-drive, a second task quoting the same screenshot — reuses that stored
+result rather than re-reading the picture. That is what makes a run with an image in it
+reproducible. It also means a misread table stays wrong until its stored row is cleared — freezing
+buys reproducibility at the cost of self-correction.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LEY_KHAA_VISION` | `on` | `off` carries images without reading them |
+| `LEY_KHAA_IMAGE_HOSTS` | Slack + Discord CDNs | exact hostnames an image may be fetched from |
+| `LEY_KHAA_IMAGE_MAX_BYTES` | `5242880` | hard cap on a fetched image, enforced on the bytes read |
+
+**The fetch boundary matches the channel adapters' spirit.** Only https, only an allowlisted host,
+no redirects followed, and the Slack bot token is attached only when the host is a Slack CDN — an
+allowlisted host is not automatically a trusted recipient of a credential.
+
+**A pasted CSV beats a screenshot of the same table.** If their filenames collide, the resolver
+binds the real bytes and drops the vision extraction — a human who pasted data meant that data,
+regardless of which attachment happened to be pasted first.
+
+**Limits, stated plainly.**
+
+- With no `ANTHROPIC_API_KEY` an image is **carried, not read**: it is recorded, credited to the
+  offline `heuristic` stand-in, and its name still reaches the prompt, but nothing reads the
+  picture — the task proceeds on text alone. `docker compose up` still demos end to end.
+- There is no re-extraction of a successful read: freezing is what makes a re-run reproducible, so
+  if a table is misread the checkpoint stays wrong until its row is cleared.
+- Images are never stored, only their extraction — an image whose URL has expired cannot be
+  re-read.
+- **Not live-tested against a real Slack or Discord image.** Everything here is proven offline and
+  against recorded transports, the same call made for the channel adapters in 0.7.0.
+- The Ollama fallback planned for 0.9.0 is text-only: vision will not work on that offline path.
+
 ### Local dev (no Docker)
 
 The backend reads `DATABASE_URL`, so it runs on SQLite with no Postgres:

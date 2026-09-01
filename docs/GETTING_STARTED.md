@@ -223,6 +223,24 @@ same task. Answer inside that thread.
 If nothing happens, check the **Dead letters** panel first: a dropped message leaves a trace there
 with the reason.
 
+## 5.6 Pasting a screenshot into an allowlisted channel (optional)
+
+Paste an image into a channel already in `LEY_KHAA_SLACK_CHANNELS` / `LEY_KHAA_DISCORD_CHANNELS`, or
+into the dashboard directly. If it is a table, the resolver hands the generated script real CSV data
+extracted from it; if it is anything else, its summary reaches the interpreter as context. Vision
+runs once per image, keyed by a hash of its bytes — a re-drive or a second task quoting the same
+screenshot reuses that result rather than reading the picture again, which is what keeps a run with
+an image in it reproducible.
+
+**No `ANTHROPIC_API_KEY` set?** The image is still carried, not read: it is recorded, credited to
+the offline stand-in, and its name still reaches the prompt, but nothing looks at the picture and
+the task proceeds on text alone. `docker compose up` still runs the demo end to end without one.
+
+`LEY_KHAA_VISION=off` turns the whole path off, the same shape as having no key. Only images from
+`LEY_KHAA_IMAGE_HOSTS` (Slack + Discord CDNs by default) are ever fetched, and a fetch is capped at
+`LEY_KHAA_IMAGE_MAX_BYTES` (5 MB by default). See [Images](../README.md#images) in the README for
+the full boundary and its stated limits.
+
 ## 6. Running without Docker
 
 The fastest dev loop. The backend reads `DATABASE_URL`, so it runs on SQLite with no Postgres:
@@ -288,11 +306,11 @@ docker build -t ley-khaa-sandbox backend/sandbox
 
 Stated plainly so you do not go looking for it:
 
-- **Vision intake.** The model router has a `VISION_EXTRACTION` stage with a token budget, but
-  nothing calls it — attachments reach the interpreter as *names*, not images.
-- **Ollama offline fallback.** Not started.
+- **Ollama offline fallback.** Not started. When it lands in 0.9.0 it is scoped as **text-only**, so
+  vision will still require `ANTHROPIC_API_KEY` even after this ships — see
+  [Images](../README.md#images).
 
-These are the remaining items in the v1 definition of done (§11 of the design spec).
+This is the remaining item in the v1 definition of done (§11 of the design spec).
 
 The channel adapters shipped in 0.7.0 (see §5.5), with these limits:
 
@@ -304,5 +322,7 @@ The channel adapters shipped in 0.7.0 (see §5.5), with these limits:
 - A second question asked without the task leaving `needs_clarification` in between is not sent to
   the channel; notification is keyed on a state change (backlog item 16).
 - `dead_letters` has no retention (backlog item 17).
-- Attachments are carried, not understood; an image from a channel is stored, not read.
+- Non-image attachments are carried, not understood — a PDF or a spreadsheet reaches the interpreter
+  as a URL, never fetched. Images are read (see §5.6 above), except with no `ANTHROPIC_API_KEY`,
+  where an image is carried the same way.
 - One workspace per platform, and threads only — no DMs.
