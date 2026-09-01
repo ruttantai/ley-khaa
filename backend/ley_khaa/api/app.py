@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from ..adapters.base import channel_set
 from ..adapters.notifier import ChannelNotifier, NullNotifier, current_notifier, set_notifier
 from ..adapters.supervisor import AdapterSupervisor, build_adapters
 from ..autonomy.modes import AutonomyMode
@@ -29,6 +30,7 @@ from ..orchestrator.dispatcher import Dispatcher
 from ..orchestrator.orchestrator import ForeignReplyTarget, Orchestrator
 from ..persistence.candidate_repository import CandidateRepository
 from ..persistence.dead_letter_repository import DeadLetterRepository
+from ..persistence.image_extraction_repository import ImageExtractionRepository
 from ..persistence.memory_repository import MemoryRepository
 from ..persistence.message_repository import MessageRepository
 from ..persistence.project_repository import ProjectRepository
@@ -37,6 +39,8 @@ from ..persistence.workflow_repository import DuplicateWorkflow, WorkflowReposit
 from ..projects.seeds import ensure_default_project
 from ..registry.promote import NotPromotable, promote
 from ..registry.seeds import ensure_seed_workflows
+from ..vision.extractor import VisionExtractor
+from ..vision.fetcher import ImageFetcher
 from .schemas import (
     AnswerIn,
     BundleOut,
@@ -59,6 +63,38 @@ from .schemas import (
 logger = logging.getLogger(__name__)
 
 
+def build_vision_extractor(session: Session) -> VisionExtractor:
+    """The extractor for one unit of work.
+
+    Its dead_letter writes on its OWN session rather than this one: a drop is
+    recorded even when the caller's transaction is about to roll back, which is
+    the same discipline _record_dead_letter follows for the adapters.
+    """
+    return VisionExtractor(
+        llm=build_llm(settings.llm_backend),
+        extractions=ImageExtractionRepository(session),
+        fetcher=ImageFetcher(
+            # channel_set() strips whitespace but does not lowercase — it is
+            # shared with the Slack/Discord allowlists, whose channel ids are
+            # case-sensitive and conventionally uppercase, so lowercasing
+            # THERE would silently break every existing channel allowlist.
+            # ImageFetcher compares against urlparse(...).hostname, which
+            # Python always lowercases, so an operator writing
+            # `Files.Slack.Com` here must be normalized on this path only, or
+            # the entry silently never matches.
+            allowed_hosts=frozenset(
+                host.lower() for host in channel_set(settings.image_hosts)
+            ),
+            max_bytes=settings.image_max_bytes,
+            # The bot token, so a Slack url_private can be resolved. The fetcher
+            # attaches it to Slack hosts only.
+            slack_token=settings.slack_bot_token,
+        ),
+        dead_letter=_record_dead_letter,
+        enabled=settings.vision_enabled,
+    )
+
+
 def build_orchestrator(session: Session) -> Orchestrator:
     return Orchestrator(
         TaskRepository(session),
@@ -72,6 +108,7 @@ def build_orchestrator(session: Session) -> Orchestrator:
         # Whatever the lifespan installed — NullNotifier when no tokens are
         # set, which is every existing test and every fresh clone.
         notifier=current_notifier(),
+        extractor=build_vision_extractor(session),
     )
 
 

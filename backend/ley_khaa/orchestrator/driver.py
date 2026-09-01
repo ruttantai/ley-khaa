@@ -64,15 +64,18 @@ class TaskDriver:
         workflows: WorkflowRepository | None = None,
         memories: MemoryRepository | None = None,
         notifier: Notifier | None = None,
+        extractor=None,
     ) -> None:
         self.repo = repo
         self.messages = messages
         self.candidates = candidates
-        self.interpreter = Interpreter(llm, messages)
+        self.interpreter = Interpreter(llm, messages, extractor=extractor)
         # Constructing this is cheap: the sandbox itself is resolved on first
         # use, so a driver built for a request that executes nothing never
         # probes the Docker daemon.
-        self.executor = ExecutionRunner(llm=llm, messages=messages, workflows=workflows)
+        self.executor = ExecutionRunner(
+            llm=llm, messages=messages, workflows=workflows, extractor=extractor
+        )
         self.memories = memories
         self.memory = MemoryMatcher(memories, llm) if memories is not None else None
         # NullNotifier by default, so every existing test and every token-free

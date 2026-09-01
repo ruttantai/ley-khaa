@@ -72,6 +72,7 @@ class Orchestrator:
         memories: MemoryRepository | None = None,
         projects: ProjectRepository | None = None,
         notifier: Notifier | None = None,
+        extractor=None,
     ) -> None:
         self.repo = repo
         self.messages = messages
@@ -83,6 +84,7 @@ class Orchestrator:
         self.driver = TaskDriver(
             repo, llm=llm, messages=messages, candidates=candidates,
             workflows=workflows, memories=memories, notifier=notifier,
+            extractor=extractor,
         )
         self.projects = projects
         self.router = ProjectRouter(projects, llm) if projects is not None else None
