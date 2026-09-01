@@ -102,6 +102,16 @@ def test_offline_an_image_is_carried_not_read_and_the_task_still_completes(sessi
     body = resp.json()
     assert body["task_ids"], "an image attachment must not stop a task forming"
 
+    # The invariant this test is named for, actually pinned: this is the only
+    # test in the file on the REAL API path (client -> build_vision_extractor
+    # -> production wiring), so it must not just take the sibling unit test's
+    # word for carried-not-read -- an operator's zero-account run goes through
+    # exactly this path, and a silent regression here would bite for real.
+    extraction = ImageExtractionRepository(session).get(sha256_of(PNG))
+    assert extraction is not None
+    assert extraction.content == "", "carried, not read: no content may be fabricated"
+    assert extraction.model == "heuristic", "must credit the offline stand-in, never an Anthropic model"
+
 
 def test_the_manifest_credits_who_actually_read_the_image(session):
     """Offline, the manifest must say heuristic — never claude-opus-5."""
