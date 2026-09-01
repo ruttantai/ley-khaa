@@ -22,6 +22,15 @@ services:
       # falls back and says so in the log.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       LEY_KHAA_LLM: ${LEY_KHAA_LLM:-anthropic}
+      # Channel adapters (spec §5). Unset -> that adapter does not start, which
+      # is what keeps `docker compose up` a zero-account demo. Point these at a
+      # SCRATCH workspace and server only: the synthetic-data commitment does
+      # not survive being aimed at anything work-adjacent.
+      LEY_KHAA_SLACK_BOT_TOKEN: ${LEY_KHAA_SLACK_BOT_TOKEN:-}
+      LEY_KHAA_SLACK_APP_TOKEN: ${LEY_KHAA_SLACK_APP_TOKEN:-}
+      LEY_KHAA_SLACK_CHANNELS: ${LEY_KHAA_SLACK_CHANNELS:-}
+      LEY_KHAA_DISCORD_BOT_TOKEN: ${LEY_KHAA_DISCORD_BOT_TOKEN:-}
+      LEY_KHAA_DISCORD_CHANNELS: ${LEY_KHAA_DISCORD_CHANNELS:-}
       # Bundles live on a named volume mounted at this same path in the sandbox
       # container, so a path written here is valid there too.
       LEY_KHAA_WORKSPACE_ROOT: /work/task-workspaces

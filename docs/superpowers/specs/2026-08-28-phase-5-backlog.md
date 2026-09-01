@@ -349,3 +349,21 @@ plan justified a safety property with "the bonus (0.15) is smaller than one miss
 (0.2)" — which does not follow, because that is a relative relation and the AUTO threshold is
 absolute. Executing it showed a `certainty=1.0` spec with a known gap reaching AUTO. Pre-scanning
 each task brief against the real code before dispatching caught that and four more brief defects.
+
+## 15. A poisoned task fails without telling anyone
+
+**What is broken.** `Dispatcher._fail_poison` moves a task to FAILED when it has outlived
+`max_lease_attempts` workers. It does that with a bare `TaskRepository`, and the notifier lives on
+`TaskDriver` — so this is the one path to FAILED that does not notify. Everything else does
+(`advance()`'s single exit point, and `reject()` explicitly). §8's "`done` and `failed` notify" is
+therefore true of every path a human is likely to hit and false of exactly this one, which is
+recorded in 0.7.0's known limits rather than left to be discovered.
+
+**Shape of the fix.** Inject an `announce: Callable[[Session, str], None]` into `Dispatcher`, bound
+in `api/app.py` to something that builds the orchestrator for that session and calls
+`driver._announce(repo.get(task_id))`. That keeps the dispatcher ignorant of the driver, the
+notifier and FastAPI, which is why it is not simply given a `TaskDriver`.
+
+**Why it was deferred.** Phase 6 widened the review surface more than any phase so far — first
+outside world, first credentials — and this adds a constructor parameter to the one component whose
+concurrency correctness the whole queue rests on.

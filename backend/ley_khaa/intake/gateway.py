@@ -9,7 +9,7 @@ from ..persistence.orm import MessageRow
 class IntakeGateway:
     """Normalizes any inbound payload to a canonical Message and persists it.
 
-    Adapters (simulator now; Slack/Discord later) hand raw dicts to this one
+    Adapters (the simulator, Slack and Discord) hand raw dicts to this one
     door. Images are stored, never interpreted here (spec §5.2).
     """
 

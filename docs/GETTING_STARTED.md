@@ -177,6 +177,48 @@ The full route table is in the [README](../README.md#run).
 
 ---
 
+## 5.5 Connecting a real Slack or Discord channel (optional)
+
+**Create a scratch workspace or server for this.** Never point it at anything work-adjacent — the
+project's synthetic-data commitment does not survive a real channel.
+
+**Slack**
+
+1. Create an app at api.slack.com/apps → *From scratch*.
+2. **Socket Mode** → enable it. That generates the **app-level token** (`xapp-…`) —
+   `LEY_KHAA_SLACK_APP_TOKEN`.
+3. **OAuth & Permissions** → bot scopes `channels:history`, `chat:write`. Install to the workspace;
+   the **bot token** (`xoxb-…`) is `LEY_KHAA_SLACK_BOT_TOKEN`.
+4. **Event Subscriptions** → subscribe to `message.channels`.
+5. Invite the bot to a channel, copy the channel id (right-click → *Copy link*; it is the `C…` part)
+   into `LEY_KHAA_SLACK_CHANNELS`.
+
+**Discord**
+
+1. Create an application at discord.com/developers → *Bot*. The token is
+   `LEY_KHAA_DISCORD_BOT_TOKEN`.
+2. **Enable the MESSAGE CONTENT INTENT.** It is privileged and off by default. Without it every
+   message arrives with empty content, the bot looks connected, and it silently ingests nothing.
+3. Invite the bot with the `bot` scope and *Send Messages* / *Read Message History*.
+4. Turn on Developer Mode in Discord, right-click the channel → *Copy Channel ID*, into
+   `LEY_KHAA_DISCORD_CHANNELS`.
+
+Then:
+
+```bash
+export LEY_KHAA_SLACK_BOT_TOKEN=xoxb-…
+export LEY_KHAA_SLACK_APP_TOKEN=xapp-…
+export LEY_KHAA_SLACK_CHANNELS=C0123456789
+docker compose up
+```
+
+The startup log names every channel it is listening to. Post a request in that channel; watch the
+task appear in the dashboard, answer the bot's question **in the thread**, and approve it in the
+dashboard — approval stays there on purpose, because it releases work to run unattended.
+
+If nothing happens, check the **Dead letters** panel first: a dropped message leaves a trace there
+with the reason.
+
 ## 6. Running without Docker
 
 The fastest dev loop. The backend reads `DATABASE_URL`, so it runs on SQLite with no Postgres:
@@ -242,11 +284,18 @@ docker build -t ley-khaa-sandbox backend/sandbox
 
 Stated plainly so you do not go looking for it:
 
-- **Slack and Discord adapters.** The intake gateway is adapter-shaped and the message model already
-  carries `source` and `client`, but the only adapters that exist are the HTTP endpoint and the
-  conversation simulator. There is nothing to point a real Slack workspace at yet.
 - **Vision intake.** The model router has a `VISION_EXTRACTION` stage with a token budget, but
   nothing calls it — attachments reach the interpreter as *names*, not images.
 - **Ollama offline fallback.** Not started.
 
 These are the remaining items in the v1 definition of done (§11 of the design spec).
+
+The channel adapters shipped in 0.7.0 (see §5.5), with these limits:
+
+- Approve, reject and mode override are dashboard actions. There are no interactive buttons, so a
+  phone-only workflow is not possible.
+- Notification is best-effort with dead-lettering, not a durable outbox.
+- A task the dispatcher fails after it outlives `max_lease_attempts` does not notify — that one
+  path has no notifier (backlog item 15).
+- Attachments are carried, not understood; an image from a channel is stored, not read.
+- One workspace per platform, and threads only — no DMs.

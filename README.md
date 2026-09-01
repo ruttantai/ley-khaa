@@ -293,6 +293,42 @@ the dashboard's **Triage** tray (`GET /triage`) and resolved with `POST /candida
 **Amendment detection is within a project only** — a follow-up that lands in a different project is
 always a new task, never matched against another project's work.
 
+### Channels
+
+ley-khaa can read and answer in a real Slack or Discord channel. Both adapters dial **out** (Slack
+Socket Mode, Discord Gateway), so there is no public URL, no tunnel and no inbound port — they run
+as supervised tasks inside the backend beside the dispatcher.
+
+**With no tokens set, no adapters start and nothing changes.** `docker compose up` stays a
+zero-account demo.
+
+| Variable | Meaning |
+|---|---|
+| `LEY_KHAA_SLACK_BOT_TOKEN`, `LEY_KHAA_SLACK_APP_TOKEN` | Slack. **Both** or the adapter does not start. |
+| `LEY_KHAA_SLACK_CHANNELS` | comma-separated channel ids the bot may read |
+| `LEY_KHAA_DISCORD_BOT_TOKEN` | Discord |
+| `LEY_KHAA_DISCORD_CHANNELS` | comma-separated channel ids |
+
+**Use a scratch workspace.** Point this at a Slack workspace or Discord server you created for it,
+and never at anything work-adjacent. The project's synthetic-data commitment does not survive being
+aimed at a real channel.
+
+**The allowlist is the boundary.** The bot ignores every message from a channel not named in
+configuration, and that check runs before anything is persisted — being invited to a channel is not
+consent to ingest it. An adapter with a token and an *empty* allowlist starts and ingests nothing,
+logging that plainly; startup always logs exactly which channels are live.
+
+What the channel is for, and what it is not:
+
+- **It is an inbox and a reply surface.** A message becomes a task; a clarifying question comes back
+  in that thread; an ordinary reply in the thread answers it. `done` and `failed` report back.
+- **It is not a control panel.** Approve, reject and mode override stay in the dashboard, because
+  approval releases work to run unattended and a channel has no notion of who may do that.
+- **The bot never ingests its own messages**, so a notification cannot become a new request.
+- **Notification is best-effort.** A failed send is dead-lettered and shown in the dashboard's
+  Dead letters panel; it never fails the task.
+- **Threads only.** DMs are not ingested in this release.
+
 ### Local dev (no Docker)
 
 The backend reads `DATABASE_URL`, so it runs on SQLite with no Postgres:
