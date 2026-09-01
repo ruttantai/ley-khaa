@@ -31,6 +31,11 @@ services:
       LEY_KHAA_SLACK_CHANNELS: ${LEY_KHAA_SLACK_CHANNELS:-}
       LEY_KHAA_DISCORD_BOT_TOKEN: ${LEY_KHAA_DISCORD_BOT_TOKEN:-}
       LEY_KHAA_DISCORD_CHANNELS: ${LEY_KHAA_DISCORD_CHANNELS:-}
+      # Vision intake (phase 7). Unset -> defaults: on, both platforms' CDNs,
+      # 5 MB. LEY_KHAA_VISION=off carries images without reading them.
+      LEY_KHAA_VISION: ${LEY_KHAA_VISION:-}
+      LEY_KHAA_IMAGE_HOSTS: ${LEY_KHAA_IMAGE_HOSTS:-}
+      LEY_KHAA_IMAGE_MAX_BYTES: ${LEY_KHAA_IMAGE_MAX_BYTES:-}
       # Bundles live on a named volume mounted at this same path in the sandbox
       # container, so a path written here is valid there too.
       LEY_KHAA_WORKSPACE_ROOT: /work/task-workspaces

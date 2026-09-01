@@ -57,5 +57,16 @@ class Settings:
     discord_bot_token: str = os.getenv("LEY_KHAA_DISCORD_BOT_TOKEN", "")
     discord_channels: str = os.getenv("LEY_KHAA_DISCORD_CHANNELS", "")
 
+    # Vision intake (spec §5 of the phase 7 design). Off means an image is
+    # carried but not read, which is the same shape as having no API key.
+    vision_enabled: bool = os.getenv("LEY_KHAA_VISION", "on") != "off"
+    # Exact hostnames an image may be fetched from. Parsed with
+    # adapters.base.channel_set, the same helper the channel allowlists use —
+    # one parser, so "empty means empty" cannot drift between them.
+    image_hosts: str = os.getenv("LEY_KHAA_IMAGE_HOSTS") or (
+        "files.slack.com,cdn.discordapp.com,media.discordapp.net"
+    )
+    image_max_bytes: int = int(os.getenv("LEY_KHAA_IMAGE_MAX_BYTES", str(5 * 1024 * 1024)))
+
 
 settings = Settings()
