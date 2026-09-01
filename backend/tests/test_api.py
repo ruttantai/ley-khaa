@@ -147,8 +147,17 @@ def test_missing_text_is_rejected_with_422(client):
 
 
 def test_two_requests_in_one_conversation_yield_two_tasks_over_http(client):
-    """The bug as reproduced: every request after the first returned task_ids []."""
+    """The bug as reproduced: every request after the first returned task_ids [].
+
+    The first request parks asking for an output format, and under spec §3.7 the
+    next message in that conversation answers that question rather than starting
+    new work. So the question is answered first — what a human would do — and
+    only then is the second request a second request. Kept in ONE conversation
+    on purpose: routing it to another would stop testing what this test is named
+    for.
+    """
     first = client.post("/messages", json={"text": "compare the Bloomberg universe against FactSet"})
+    client.post("/messages", json={"text": "as an excel file please"})
     second = client.post("/messages", json={"text": "also build the risk report and send it"})
     assert len(first.json()["task_ids"]) == 1
     assert len(second.json()["task_ids"]) == 1

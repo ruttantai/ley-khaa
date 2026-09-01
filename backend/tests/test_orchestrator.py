@@ -198,9 +198,17 @@ def test_two_separate_requests_in_one_conversation_produce_two_tasks(session):
     The offline heuristic used to hardcode a single candidate key, so once the
     first candidate was promoted every later request in that conversation matched
     the terminal candidate and was silently discarded.
+
+    The first request parks asking for an output format, and under spec §3.7 the
+    next message in that conversation is read as the ANSWER to that question.
+    So the question is answered first, which is what a human would do; only then
+    is the second request genuinely a second request. Answering here rather than
+    moving the second request to its own conversation is deliberate — a separate
+    conversation would no longer test what this test is named for.
     """
     orch = _orch(session, HeuristicLLM())
     first = orch.ingest({"text": "compare the Bloomberg universe against FactSet"})
+    orch.ingest({"text": "as an excel file please"})
     second = orch.ingest({"text": "also build the risk report and send it"})
 
     assert len(first.task_ids) == 1

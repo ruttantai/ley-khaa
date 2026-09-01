@@ -25,6 +25,11 @@ from .driver import TaskDriver
 
 logger = logging.getLogger(__name__)
 
+
+def _as_utc(value: datetime) -> datetime:
+    # SQLite returns naive datetimes even for timezone=True columns.
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
 # Appended to the detector's own sentence when an automatic fold loses its race,
 # so the human reading the tray is told what actually happened rather than being
 # shown the reason the fold was attempted.
@@ -92,6 +97,21 @@ class Orchestrator:
         row = self.gateway.accept(raw)
         if row.reply_to_task_id:
             return self._route_reply(row, promote=promote)
+
+        # Spec §3.7: a message arriving in a conversation whose task is asking
+        # a question IS that task's answer. Nobody types a task id into Slack,
+        # and this rule lives here rather than in the adapter because deciding
+        # what a message MEANS is business logic (§5.1).
+        #
+        # An explicit reply_to_task_id above still wins: the dashboard names
+        # the task it is answering, and inference must never override a caller
+        # that was specific.
+        clarifying = self._clarifying_task_in(row.conversation_id)
+        if clarifying is not None:
+            self.messages.set_reply_target(row.id, clarifying.id)
+            row = self.messages.get_many([row.id])[0]
+            return self._route_reply(row, promote=promote)
+
         verdict = self.relevance.judge(row)
         self.messages.record_verdict(
             row.id,
@@ -215,6 +235,37 @@ class Orchestrator:
         """
         sources = self.messages.get_many(list(task.source_message_ids or []))
         return sources[0].conversation_id if sources else None
+
+    def _clarifying_task_in(self, conversation_id: str) -> TaskRow | None:
+        """The task in this conversation that is currently asking something.
+
+        TaskRow carries no conversation_id — it is derived from the messages
+        that formed it, the same lookup _task_conversation_id and app.py's
+        answer_task already do. The scan is over tasks in NEEDS_CLARIFICATION
+        only, which is by definition a small set: every one of them is blocked
+        on a human.
+
+        Most recently updated wins. Two parked tasks in one conversation is a
+        real shape — the simulator's split request produces exactly that — so
+        the tie-break has to be deterministic rather than whatever the database
+        returned first, and the newest question is the one the human is
+        answering.
+        """
+        candidates = [
+            task
+            for task in self.repo.list_by_state(TaskState.NEEDS_CLARIFICATION)
+            if self._task_conversation_id(task) == conversation_id
+        ]
+        if not candidates:
+            return None
+        # SQLite has no tz-aware datetime type, so a row written as aware and
+        # re-read comes back NAIVE, while one still in the identity map is
+        # still aware — and `max` over a mix raises "can't compare offset-naive
+        # and offset-aware datetimes". Exactly two parked tasks in a
+        # conversation is enough to hit it, which is the shape this tie-break
+        # exists for. Same SQLite fact `crystallizer.gate._as_utc` and
+        # `TaskRepository.claim_lease` each document; Postgres never bites.
+        return max(candidates, key=lambda t: (_as_utc(t.updated_at), t.id))
 
     def sweep(self, conversation_id: str | None = None) -> list[str]:
         """Re-evaluate READY candidates against the gate with no new message.
