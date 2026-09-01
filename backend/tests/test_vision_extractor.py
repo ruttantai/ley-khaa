@@ -197,3 +197,114 @@ def test_a_non_image_attachment_is_refused(session):
 
     assert row.content == ""
     assert llm.calls == []
+
+
+# -- fix round 1 -----------------------------------------------------------
+
+
+def test_a_malformed_model_return_does_not_escape_extract(session):
+    """A model can stop on max_tokens and hand back None with no exception
+    (AnthropicLLM.parse has no guard for it) — that must degrade like any
+    other model failure, not raise out of .extract() (spec §3.6)."""
+
+    class _Malformed:
+        name = "anthropic"
+
+        def extract_image(self, **kwargs):
+            return None
+
+    dead = []
+    row = _extractor(
+        session, llm=_Malformed(), dead_letter=lambda **kw: dead.append(kw)
+    ).extract(_image())
+
+    assert row.content == ""
+    assert len(dead) == 1
+    assert "VisionExtraction" in dead[0]["reason"] or "NoneType" in dead[0]["reason"]
+
+
+def test_a_stored_unread_record_is_retried_by_a_different_backend(session):
+    """A row stored by one backend (or by no backend at all) must not freeze
+    forever: a later drive with a different backend gets a fresh call."""
+    heuristic = _CountingLLM()  # inner is the real HeuristicLLM, name="heuristic"
+    first = _extractor(session, llm=heuristic).extract(_image())
+    assert first.content == ""
+    assert first.model == "heuristic"
+
+    real = _CountingLLM(result=VisionExtraction(kind="text", content="hello", summary="s"))
+    real.name = "anthropic"
+    second = _extractor(session, llm=real).extract(_image())
+
+    assert len(real.calls) == 1, "a differently-named backend must be given a fresh chance"
+    assert second.content == "hello"
+
+
+def test_a_stored_unread_record_from_no_backend_is_retried_once_enabled(session):
+    """enabled=False -> True must not freeze on the disabled run's empty row."""
+    disabled_llm = _CountingLLM(result=VisionExtraction(kind="table", content="a", summary="s"))
+    first = _extractor(session, llm=disabled_llm, enabled=False).extract(_image())
+    assert first.content == ""
+    assert first.model == ""
+
+    second = _extractor(session, llm=disabled_llm, enabled=True).extract(_image())
+
+    assert len(disabled_llm.calls) == 1
+    assert second.content == "a"
+
+
+def test_a_same_backend_failure_stays_frozen(session):
+    """The ruling: bounded retry needs a retry-count column, which is out of
+    scope. A transient 503 from the SAME backend stays frozen, not retried."""
+    calls = []
+
+    class _Boom:
+        name = "anthropic"
+
+        def extract_image(self, **kwargs):
+            calls.append(kwargs)
+            raise RuntimeError("down")
+
+    boom = _Boom()
+    _extractor(session, llm=boom, dead_letter=lambda **kw: None).extract(_image())
+    _extractor(session, llm=boom, dead_letter=lambda **kw: None).extract(_image())
+
+    assert len(calls) == 1
+
+
+def test_a_data_uri_prefixed_base64_image_is_extracted(session):
+    """Browser pastes arrive as `data:image/png;base64,...` — this phase
+    exists so a pasted screenshot works, not just a bare base64 string."""
+    llm = _CountingLLM(result=VisionExtraction(kind="text", content="ok", summary="s"))
+    row = _extractor(session, llm=llm).extract(_image(content=f"data:image/png;base64,{B64}"))
+
+    assert row.content == "ok"
+
+
+def test_a_line_wrapped_base64_image_is_extracted(session):
+    """coreutils `base64` and base64.encodebytes wrap output at 76 columns."""
+    wrapped = base64.encodebytes(PNG).decode()
+    assert "\n" in wrapped
+    llm = _CountingLLM(result=VisionExtraction(kind="text", content="ok", summary="s"))
+    row = _extractor(session, llm=llm).extract(_image(content=wrapped))
+
+    assert row.content == "ok"
+
+
+def test_a_disabled_extraction_credits_no_backend(session):
+    """The manifest must not credit a client that made zero calls — and this
+    is load-bearing for the retry-on-different-backend fix above."""
+    llm = _CountingLLM(result=VisionExtraction(kind="table", content="a", summary="s"))
+    row = _extractor(session, llm=llm, enabled=False).extract(_image())
+
+    assert row.model == ""
+
+
+def test_media_type_is_sniffed_from_magic_bytes_not_hardcoded(session):
+    """A pasted JPEG sent to the API mislabelled image/png 400s."""
+    jpeg_bytes = b"\xff\xd8\xff\xe0" + b"fakejpegbytes"
+    jpeg_b64 = base64.standard_b64encode(jpeg_bytes).decode()
+    llm = _CountingLLM(result=VisionExtraction(kind="text", content="ok", summary="s"))
+    extractor = _extractor(session, llm=llm)
+    extractor.extract(_image(content=jpeg_b64, name="photo.jpg"))
+
+    assert llm.calls[0]["media_type"] == "image/jpeg"

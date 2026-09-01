@@ -1,14 +1,17 @@
 """Read an image once, and remember it (spec §3.2, §3.6).
 
 One rule governs this module: an unreadable image NEVER blocks a task. Every
-path either returns a real extraction or returns the unread record, and the
-unread record is stored like any other so a re-drive does not retry a failure.
+path either returns a real extraction or returns the unread record, and a
+failed extraction is stored so a re-drive does not retry a failure made by the
+SAME backend again. A stored "was not read" record from a DIFFERENT (or no)
+backend is not frozen forever — see the cache-hit check in `extract()`.
 """
 from __future__ import annotations
 
 import base64
 import binascii
 import logging
+import re
 from collections.abc import Callable
 
 from ..llm.router import Stage, model_for
@@ -25,6 +28,29 @@ _SYSTEM = (
     "row. Otherwise set kind='text' and put what the image says in content. summary is one "
     "short sentence describing what the image is."
 )
+
+# A browser paste arrives as `data:image/png;base64,....`; strip the prefix
+# before decoding. `[^,]*` rather than a strict mime-type pattern: the prefix
+# only needs to be recognised and discarded, never parsed for meaning.
+_DATA_URI_PREFIX = re.compile(r"^data:[^,]*,")
+
+
+def _sniff_media_type(image: bytes) -> str:
+    """Identify the format from its magic bytes rather than assume PNG.
+
+    A pasted JPEG sent to the API mislabelled image/png 400s — and, worse,
+    freezes under that digest forever once stored as a failure. Falls back to
+    image/png for anything unrecognised, matching the historical default.
+    """
+    if image.startswith(b"\x89PNG"):
+        return "image/png"
+    if image.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image.startswith(b"GIF8"):
+        return "image/gif"
+    if image[:4] == b"RIFF" and image[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/png"
 
 
 class VisionExtractor:
@@ -61,10 +87,25 @@ class VisionExtractor:
         digest = sha256_of(image)
         cached = self.extractions.get(digest)
         if cached is not None:
-            return cached
+            current_model = getattr(self.llm, "name", "")
+            # A non-empty content is a real extraction: always short-circuit —
+            # the one-model-call-per-image guarantee, untouched. An empty
+            # content is a stored "was not read" record. That stays frozen
+            # ONLY when the same backend that produced it is the one asking
+            # again (a deterministic failure that will fail again). A stored
+            # record from a DIFFERENT backend, or from no backend at all
+            # (model == ""), is a configuration change, not a repeat of the
+            # same failure — fall through and try again.
+            if cached.content or (cached.model and cached.model == current_model):
+                return cached
 
         if not self.enabled:
-            return self._store(digest, image, media_type, self._unread_extraction(name, "vision is disabled"))
+            # No client ran, so nothing did the work: the manifest must not
+            # credit self.llm.name for zero calls. This is also load-bearing
+            # for the cache-hit check above — an empty model always retries.
+            return self._store(
+                digest, image, media_type, self._unread_extraction(name, "vision is disabled"), model=""
+            )
 
         try:
             extraction = self.llm.extract_image(
@@ -75,16 +116,31 @@ class VisionExtractor:
                 media_type=media_type,
                 output_format=VisionExtraction,
             )
+            if not isinstance(extraction, VisionExtraction):
+                # A model can stop on max_tokens and hand back a None
+                # parsed_output with no exception raised (AnthropicLLM.parse
+                # has no guard for it) — that must degrade like any other
+                # model failure, not raise an AttributeError out of
+                # .extract() when _store below reads extraction.kind.
+                raise TypeError(
+                    f"vision model returned {type(extraction).__name__}, not VisionExtraction"
+                )
         except Exception as exc:  # noqa: BLE001 - an unread image must not fail a task
             logger.exception("extracting %s failed", name)
             reason = f"could not read {name}: {type(exc).__name__}: {exc}"
             self._record_drop(reason, name)
             # STORED, not just returned: otherwise every re-drive retries a
-            # failure that will fail again, and a task that repairs three times
-            # pays for it three times.
-            return self._store(digest, image, media_type, self._unread_extraction(name, reason))
+            # failure that will fail again, and a task that repairs three
+            # times pays for it three times. Credited to the backend that
+            # actually attempted and failed, so the cache-hit check above can
+            # tell a same-backend failure (stays frozen) from a switch to a
+            # different backend (retried).
+            return self._store(
+                digest, image, media_type, self._unread_extraction(name, reason),
+                model=getattr(self.llm, "name", ""),
+            )
 
-        return self._store(digest, image, media_type, extraction)
+        return self._store(digest, image, media_type, extraction, model=getattr(self.llm, "name", ""))
 
     # -- helpers ---------------------------------------------------------
 
@@ -96,16 +152,29 @@ class VisionExtractor:
             return self.fetcher.fetch(content)
         if not content:
             raise ValueError("the attachment carries no content")
+        # A browser paste arrives as `data:image/*;base64,...`; strip that
+        # prefix. Encoders like coreutils `base64` and base64.encodebytes wrap
+        # output at 76 columns; strip all whitespace too, or a legitimate
+        # payload fails the strict decode below. This phase exists so a user
+        # can paste a screenshot — rejecting the browser paste form defeats
+        # the point of it.
+        payload = _DATA_URI_PREFIX.sub("", content, count=1)
+        payload = "".join(payload.split())
         # b64decode (not standard_b64decode, which has no validate kwarg),
         # validate=True so a text blob raises here rather than decoding into
         # garbage bytes that get billed to a vision call.
-        return base64.b64decode(content, validate=True), "image/png"
+        image = base64.b64decode(payload, validate=True)
+        return image, _sniff_media_type(image)
 
     def _unread_extraction(self, name: str, reason: str) -> VisionExtraction:
         return VisionExtraction(kind="text", content="", summary=f"{name} was not read: {reason}")
 
     def _unread(self, image: bytes, name: str, *, reason: str, media_type: str) -> ImageExtractionRow:
-        """An unread record for something that never got as far as a cache key."""
+        """An unread record for something that never got as far as a cache key.
+
+        model is always "": nothing ran on this path, so there is no backend
+        to credit or blame.
+        """
         return ImageExtractionRow(
             image_sha256=sha256_of(image),
             kind="text",
@@ -113,19 +182,22 @@ class VisionExtractor:
             summary=f"{name} was not read: {reason}",
             media_type=media_type,
             byte_size=len(image),
-            model=getattr(self.llm, "name", ""),
+            model="",
         )
 
     def _store(
-        self, digest: str, image: bytes, media_type: str, extraction: VisionExtraction
+        self, digest: str, image: bytes, media_type: str, extraction: VisionExtraction, *, model: str
     ) -> ImageExtractionRow:
         return self.extractions.record(
             image_sha256=digest,
             extraction=extraction,
             media_type=media_type,
             byte_size=len(image),
-            # LLMClient.name, so the manifest credits who ACTUALLY produced it.
-            model=getattr(self.llm, "name", ""),
+            # LLMClient.name when a client actually ran, "" when nothing did
+            # (see call sites) — the manifest attests who ACTUALLY produced
+            # this, and the cache-hit check above keys retry-worthiness off
+            # exactly this column.
+            model=model,
         )
 
     def _record_drop(self, reason: str, name: str) -> None:
