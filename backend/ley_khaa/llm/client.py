@@ -24,6 +24,25 @@ class LLMClient(Protocol):
     def parse(self, *, choice: ModelChoice, system: str, user: str, output_format: type[T]) -> T:
         ...
 
+    def extract_image(
+        self,
+        *,
+        choice: ModelChoice,
+        system: str,
+        user: str,
+        image: bytes,
+        media_type: str,
+        output_format: type[T],
+    ) -> T:
+        """Read one image into a structured result (spec §3.4).
+
+        Separate from parse() rather than an optional argument on it: every
+        implementation must consciously answer "what do I do with an image?",
+        and the offline ones answer "nothing, and I say so" — which is a
+        different behaviour, not a degenerate case of text parsing.
+        """
+        ...
+
 
 @dataclass
 class RecordedCall:
@@ -51,6 +70,12 @@ class FakeLLM:
         if isinstance(response, Exception):
             raise response
         return response
+
+    def extract_image(
+        self, *, choice: ModelChoice, system: str, user: str,
+        image: bytes, media_type: str, output_format: type[T],
+    ) -> T:
+        return self.parse(choice=choice, system=system, user=user, output_format=output_format)
 
 
 class AnthropicLLM:

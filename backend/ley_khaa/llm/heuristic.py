@@ -202,6 +202,26 @@ class HeuristicLLM:
             return AmendmentChoice(task_id=None, confidence=0.0, reason="offline: no detection")
         raise NotImplementedError(f"HeuristicLLM has no rule for {output_format.__name__}")
 
+    def extract_image(
+        self, *, choice: ModelChoice, system: str, user: str,
+        image: bytes, media_type: str, output_format: type[T],
+    ) -> T:
+        """The offline stand-in has no vision, and says so (spec §3.6).
+
+        `image` is deliberately unread: this class is regex over text, and a
+        result that varied with the bytes would mean something had been wired
+        to a real backend by accident. `user` carries the filename so the
+        summary can name what it could not read.
+        """
+        return output_format(
+            kind="text",
+            content="",
+            summary=(
+                f"{user or 'an image'} was attached but not read: "
+                "no vision backend is configured (set ANTHROPIC_API_KEY)."
+            ),
+        )
+
     def _relevance(self, user: str) -> RelevanceVerdict:
         text = ""
         for line in user.splitlines():
