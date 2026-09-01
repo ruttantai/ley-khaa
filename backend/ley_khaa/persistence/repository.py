@@ -373,6 +373,8 @@ class TaskRepository:
                 lease_attempts=TaskRow.lease_attempts
                 + case((TaskRow.lease_owner.is_(None), 0), else_=1),
             )
+            # See persistence.orm.as_utc for the shared root cause; this is the
+            # same SQLite fact needing a different remedy.
             # synchronize_session="auto" (the default) tries the "evaluate"
             # strategy first: re-check this WHERE clause in Python against any
             # already-loaded copy of this row in the identity map (e.g. the one

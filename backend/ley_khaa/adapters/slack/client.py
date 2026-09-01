@@ -87,7 +87,15 @@ class SlackAdapter:
 
     async def stop(self) -> None:
         if self.socket is not None:
-            await self.socket.disconnect()
+            # close(), NOT disconnect(). disconnect() closes only the current
+            # session: it leaves `closed` False and auto-reconnect armed, so
+            # monitor_current_session() sees a closed session on its next ping
+            # tick (~10s) and dials a NEW endpoint — after the lifespan has
+            # already swapped in a NullNotifier. Ingest would resume with
+            # nothing able to answer. close() also cancels the message
+            # processor, the session monitor and the receiver, and closes the
+            # aiohttp session that would otherwise leak.
+            await self.socket.close()
             self.socket = None
 
     async def _handle(self, payload: dict) -> None:
@@ -105,6 +113,23 @@ class SlackAdapter:
             )
         except TranslationError as exc:
             self.dead_letter(source=self.name, kind="inbound", reason=str(exc), payload=payload)
+            return
+        except Exception as exc:
+            # A malformed payload must DEAD-LETTER, never escape. `translate`
+            # raises TranslationError on the shapes it anticipates, but it is
+            # handed untrusted wire data and cannot anticipate all of them.
+            # Escaping here is silent data loss: on_request acks the envelope
+            # BEFORE calling _handle, so the platform never redelivers, and the
+            # SDK's own listener wrapper logs the exception and moves on — the
+            # message is gone with no trace, which is exactly what §3.8 exists
+            # to prevent.
+            logger.exception("translating a Slack message failed")
+            self.dead_letter(
+                source=self.name,
+                kind="inbound",
+                reason=f"{type(exc).__name__}: {exc}",
+                payload=payload,
+            )
             return
         if raw is None:
             # A deliberate, normal drop: an unlisted channel, our own message,

@@ -108,9 +108,14 @@ def _timestamp(ts: str) -> str:
     """
     try:
         seconds = float(ts)
-    except ValueError as exc:
+        # INSIDE the try, deliberately: float() accepts "inf"/"nan" happily and
+        # a large epoch parses fine, so the conversion is where those actually
+        # blow up — with OverflowError/ValueError, one layer past a `float()`-only
+        # guard. OSError joins them because the platform's time_t is what
+        # ultimately rejects an out-of-range value.
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat()
+    except (ValueError, OverflowError, OSError) as exc:
         raise TranslationError(f"unparsable Slack ts {ts!r}") from exc
-    return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat()
 
 
 def _attachments(files: list) -> list[dict]:

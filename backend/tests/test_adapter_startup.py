@@ -147,3 +147,76 @@ def test_the_dead_letter_callable_writes_a_row(monkeypatch, session):
     rows = DeadLetterRepository(session).list()
     assert len(rows) == 1
     assert "x" not in rows[0].payload
+
+
+# --- The wiring between the lifespan and the machinery -----------------------
+# Everything above proves the machinery WORKS. These four prove it is actually
+# ATTACHED to the running app. Each of the four lines below was independently
+# mutated during the whole-branch review and the full suite stayed green, so
+# every one of these failures would have shipped looking completely healthy:
+# adapters connected, startup logging the live allowlist, dashboard green — and
+# no notification ever sent / every notification dead-lettered / every inbound
+# message discarded / every inbound failure vanished.
+
+
+def test_build_orchestrator_hands_the_driver_the_installed_notifier(session):
+    """Pins `notifier=current_notifier()` in build_orchestrator."""
+    from ley_khaa.adapters.notifier import RecordingNotifier, set_notifier
+
+    recording = RecordingNotifier()
+    set_notifier(recording)
+    try:
+        assert app_module.build_orchestrator(session).driver.notifier is recording
+    finally:
+        set_notifier(NullNotifier())
+
+
+def test_the_channel_notifier_is_given_the_supervisors_running_loop(monkeypatch, session):
+    """Pins `loop=supervisor.loop`. With loop=None every notification is
+    dead-lettered as "no running event loop to deliver on" — silently, because
+    a dead letter is not a failure anyone is watching for."""
+
+    class StubAdapter:
+        name = "slack"
+
+        async def start(self):
+            await asyncio.Event().wait()
+
+        async def stop(self): ...
+
+        async def notify(self, dest: Destination, text: str): ...
+
+    _pin(monkeypatch, disable_startup=False, dispatch_mode="inline")
+    monkeypatch.setattr(app_module, "run_migrations", lambda *a, **k: None)
+    monkeypatch.setattr(app_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(app_module, "build_adapters", lambda **kw: [StubAdapter()])
+
+    with TestClient(app_module.app):
+        notifier = current_notifier()
+        supervisor = app_module.app.state.supervisor
+        assert notifier.loop is not None
+        assert notifier.loop is supervisor.loop
+
+
+def test_the_adapters_are_built_with_the_real_ingest_and_dead_letter_callables(
+    monkeypatch, session
+):
+    """Pins both callables in the `build_adapters(...)` call. Binding either to
+    a no-op leaves every test green while the system silently discards every
+    inbound message, or every inbound failure."""
+    captured = {}
+
+    def spy(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    _pin(monkeypatch, disable_startup=False, dispatch_mode="inline")
+    monkeypatch.setattr(app_module, "run_migrations", lambda *a, **k: None)
+    monkeypatch.setattr(app_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(app_module, "build_adapters", spy)
+
+    with TestClient(app_module.app):
+        pass
+
+    assert captured["ingest"] is app_module._ingest_from_channel
+    assert captured["dead_letter"] is app_module._record_dead_letter

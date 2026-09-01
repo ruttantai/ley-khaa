@@ -15,7 +15,7 @@ from ..llm.client import LLMClient
 from ..persistence.candidate_repository import CandidateRepository
 from ..persistence.memory_repository import MemoryRepository
 from ..persistence.message_repository import MessageRepository
-from ..persistence.orm import CandidateRow, MessageRow, TaskRow
+from ..persistence.orm import CandidateRow, MessageRow, TaskRow, as_utc
 from ..persistence.project_repository import DEFAULT_PROJECT, ProjectRepository
 from ..persistence.repository import TaskRepository
 from ..persistence.workflow_repository import WorkflowRepository
@@ -24,11 +24,6 @@ from .amendment import AmendmentDetector, AmendmentProposal
 from .driver import TaskDriver
 
 logger = logging.getLogger(__name__)
-
-
-def _as_utc(value: datetime) -> datetime:
-    # SQLite returns naive datetimes even for timezone=True columns.
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 # Appended to the detector's own sentence when an automatic fold loses its race,
 # so the human reading the tray is told what actually happened rather than being
@@ -135,6 +130,7 @@ class Orchestrator:
                 self.messages.set_reply_target(row.id, clarifying.id)
                 row = self.messages.get_many([row.id])[0]
                 return self._route_reply(row, promote=promote)
+
         candidates = self.crystallizer.observe(row.conversation_id, verdict)
 
         result = IntakeResult(
@@ -274,14 +270,11 @@ class Orchestrator:
         ]
         if not candidates:
             return None
-        # SQLite has no tz-aware datetime type, so a row written as aware and
-        # re-read comes back NAIVE, while one still in the identity map is
-        # still aware — and `max` over a mix raises "can't compare offset-naive
-        # and offset-aware datetimes". Exactly two parked tasks in a
-        # conversation is enough to hit it, which is the shape this tie-break
-        # exists for. Same SQLite fact `crystallizer.gate._as_utc` and
-        # `TaskRepository.claim_lease` each document; Postgres never bites.
-        return max(candidates, key=lambda t: (_as_utc(t.updated_at), t.id))
+        # as_utc because `max` over a mix of naive and aware datetimes raises,
+        # and exactly two parked tasks in one conversation is enough to hit it —
+        # the shape this tie-break exists for. See `persistence.orm.as_utc` for
+        # why a re-read row goes naive under SQLite and never under Postgres.
+        return max(candidates, key=lambda t: (as_utc(t.updated_at), t.id))
 
     def sweep(self, conversation_id: str | None = None) -> list[str]:
         """Re-evaluate READY candidates against the gate with no new message.

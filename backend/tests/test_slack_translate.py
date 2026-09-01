@@ -242,3 +242,21 @@ def test_translate_imports_no_slack_sdk():
         check=True,
     )
     assert result.stdout.strip() == "False"
+
+
+@pytest.mark.parametrize("ts", ["inf", "-inf", "nan", "99999999999999"])
+def test_a_ts_that_floats_but_will_not_convert_raises_translation_error(ts):
+    """Asserted at the TRANSLATE level on purpose. `client._handle` now has a
+    blanket `except Exception` that dead-letters, so this fix is invisible from
+    there — the outer net would catch an OverflowError just as happily and the
+    test would pass with the bug still present.
+
+    float() accepts "inf"/"nan" and a 14-digit epoch, so a float()-only guard
+    lets all of them reach datetime.fromtimestamp, which raises
+    OverflowError/ValueError one layer past it. This module's contract is that
+    it raises TranslationError and nothing else."""
+    payload = _payload("slack_channel_message")
+    payload["event"]["ts"] = ts
+
+    with pytest.raises(TranslationError):
+        translate(payload, allowed_channels=ALLOWED, bot_user_id=BOT)

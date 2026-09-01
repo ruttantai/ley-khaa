@@ -101,8 +101,13 @@ class AdapterSupervisor:
         token scrub it applies to payload strings, rather than trusting it to
         be safe by construction.
         """
-        session = self.session_factory()
+        # INSIDE the try: session_factory() itself can raise (pool exhausted,
+        # database down), and that is exactly when a dead letter is most likely
+        # to be attempted. Outside, the failure escapes the very handler whose
+        # job is to make sure recording a failure never becomes one.
+        session = None
         try:
+            session = self.session_factory()
             DeadLetterRepository(session).record(
                 source=name,
                 kind="connection",
@@ -112,8 +117,9 @@ class AdapterSupervisor:
             # Recording a failure must never become one.
             logger.exception("could not dead-letter an adapter crash")
         finally:
-            with suppress(Exception):
-                session.close()
+            if session is not None:
+                with suppress(Exception):
+                    session.close()
 
 
 def build_adapters(

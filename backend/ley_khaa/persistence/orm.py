@@ -11,6 +11,28 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def as_utc(value: datetime) -> datetime:
+    """Make a datetime read back from the database safe to compare.
+
+    SQLite has no tz-aware datetime type: a value written as aware and re-read
+    comes back NAIVE, while a copy still in the identity map is still aware —
+    and comparing the two raises "can't compare offset-naive and offset-aware
+    datetimes". Postgres returns real tz-aware timestamps, so this never bites
+    in production, which is exactly why it is easy to write code that only
+    fails on the SQLite dev loop and in the test suite.
+
+    Assuming UTC for a naive value is sound here: every write goes through
+    `_now()` above, and SQLAlchemy's SQLite DATETIME bind processor stores the
+    wall-clock fields and drops the offset, so the stored clock IS UTC.
+
+    Related but NOT the same fix: `TaskRepository.claim_lease` uses
+    `synchronize_session="fetch"` to stop SQLAlchemy re-evaluating a WHERE
+    clause in Python against the identity map. Same root cause, different
+    mechanism — it cannot be expressed as a datetime helper.
+    """
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
 class TaskRow(Base):
     __tablename__ = "tasks"
 

@@ -3,6 +3,8 @@ import json
 import threading
 from pathlib import Path
 
+import pytest
+
 from ley_khaa.adapters.slack.client import SlackAdapter
 
 PAYLOADS = Path(__file__).resolve().parent / "fixtures" / "payloads"
@@ -138,3 +140,78 @@ def test_no_token_is_ever_in_the_repr():
     adapter, _, _ = _adapter()
     assert "xoxb-not-a-real-token" not in repr(adapter)
     assert "xapp-not-a-real-token" not in repr(adapter)
+
+
+@pytest.mark.parametrize(
+    "label,payload",
+    [
+        ("event is an int", {"event": 5}),
+        ("event is a float", {"event": 1.5}),
+        ("payload is None", None),
+    ],
+)
+def test_a_structurally_broken_payload_dead_letters_rather_than_escaping(label, payload):
+    """`_handle` promises nothing raises out of it, and that promise is load
+    bearing in a way peculiar to Slack: `on_request` ACKS the envelope before
+    calling `_handle`, so Slack never redelivers, and slack_sdk's listener
+    wrapper logs an escaping exception and moves on. The message is then gone
+    with no dead letter — silent loss, which is what §3.8 exists to prevent.
+
+    Slack's `_handle` receives the RAW wire payload (Discord's receives
+    flatten's output), so it cannot assume any shape at all."""
+    adapter, ingested, dead = _adapter()
+
+    asyncio.run(adapter._handle(payload))
+
+    assert ingested == []
+    assert len(dead) == 1, f"{label} escaped instead of dead-lettering"
+    assert dead[0]["kind"] == "inbound"
+
+
+@pytest.mark.parametrize("ts", ["inf", "nan", "99999999999999"])
+def test_a_timestamp_float_accepts_but_datetime_rejects_is_dead_lettered(ts):
+    """float("inf") and float("nan") succeed, and a huge epoch parses fine — so
+    a `float()`-only guard lets all three through to datetime.fromtimestamp,
+    which raises OverflowError/ValueError one layer past it."""
+    payload = _payload("slack_channel_message")
+    payload["event"]["ts"] = ts
+    adapter, ingested, dead = _adapter()
+
+    asyncio.run(adapter._handle(payload))
+
+    assert ingested == []
+    assert len(dead) == 1 and dead[0]["kind"] == "inbound"
+
+
+def test_a_non_iterable_files_field_is_dead_lettered():
+    payload = _payload("slack_channel_message")
+    payload["event"]["files"] = 7
+    adapter, ingested, dead = _adapter()
+
+    asyncio.run(adapter._handle(payload))
+
+    assert ingested == [] and len(dead) == 1
+
+
+def test_stop_closes_the_socket_rather_than_merely_disconnecting_it():
+    """slack_sdk's disconnect() closes only the current session — it leaves
+    `closed` False and auto-reconnect armed, so monitor_current_session()
+    re-dials within a ping interval. After shutdown the lifespan has installed
+    a NullNotifier, so a re-dialled client would keep ingesting with nothing
+    able to answer, and would leak three tasks plus an aiohttp session."""
+    calls = []
+
+    class FakeSocket:
+        async def close(self):
+            calls.append("close")
+
+        async def disconnect(self):
+            calls.append("disconnect")
+
+    adapter, _, _ = _adapter()
+    adapter.socket = FakeSocket()
+
+    asyncio.run(adapter.stop())
+
+    assert calls == ["close"]
+    assert adapter.socket is None

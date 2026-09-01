@@ -5,7 +5,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from ley_khaa.adapters.base import Destination
+import pytest
+
+from ley_khaa.adapters.base import AdapterError, Destination
 from ley_khaa.adapters.discord.client import DiscordAdapter, flatten
 
 PAYLOADS = Path(__file__).resolve().parent / "fixtures" / "payloads"
@@ -142,17 +144,49 @@ def test_ingest_runs_off_the_event_loop():
     assert seen and seen[0] != loop_thread
 
 
-def test_notify_posts_into_the_thread_named_by_the_conversation_id():
-    sent = {}
+class _FakeThread:
+    def __init__(self, sink):
+        self.sink = sink
 
-    class FakeChannel:
-        async def send(self, text):
-            sent["text"] = text
+    async def send(self, text):
+        self.sink["text"] = text
+
+
+class _FakeMessage:
+    def __init__(self, sink):
+        self.sink = sink
+
+    async def create_thread(self, *, name):
+        self.sink["created_thread_name"] = name
+        return _FakeThread(self.sink)
+
+
+class _FakeChannel:
+    def __init__(self, sink):
+        self.sink = sink
+
+    async def send(self, text):
+        self.sink["posted_in_channel"] = text
+
+    def get_partial_message(self, message_id):
+        self.sink["partial_message_id"] = message_id
+        return _FakeMessage(self.sink)
+
+
+def test_notify_posts_into_the_thread_named_by_the_conversation_id():
+    """The anchor already IS a live thread, so it is used directly.
+
+    The fake resolves ONLY the thread id — a fake that returned a channel for
+    any id would make this test pass no matter what id the code looked up, and
+    would have hidden the top-level bug the next test covers."""
+    sent = {}
 
     class FakeClient:
         def get_channel(self, channel_id):
             sent["channel_id"] = channel_id
-            return FakeChannel()
+            if channel_id == 1180000000000000002:
+                return _FakeThread(sent)
+            return None
 
     adapter, _, _ = _adapter()
     adapter.client = FakeClient()
@@ -173,3 +207,58 @@ def test_notify_posts_into_the_thread_named_by_the_conversation_id():
 def test_no_token_is_ever_in_the_repr():
     adapter, _, _ = _adapter()
     assert "not-a-real-token" not in repr(adapter)
+
+
+def test_notify_on_a_top_level_message_starts_the_thread_it_answers_in():
+    """Client.get_channel resolves channels and threads only, so at top level
+    the anchor (a MESSAGE id) resolves to None and nothing could be sent — every
+    first question, done and failed became an outbound dead letter.
+
+    The thread has to be CREATED from the anchoring message, not replaced by a
+    plain channel post: Discord gives such a thread that message's own id, which
+    is the anchor conversation_parts derives, so the human's reply routes back
+    to this task. A channel post would mint a new conversation and orphan it."""
+    sent = {}
+
+    class FakeClient:
+        def get_channel(self, channel_id):
+            # No thread exists yet — only the parent channel resolves.
+            if channel_id == 998877665544332211:
+                return _FakeChannel(sent)
+            return None
+
+    adapter, _, _ = _adapter()
+    adapter.client = FakeClient()
+    asyncio.run(
+        adapter.notify(
+            Destination(
+                source="discord",
+                conversation_id="discord:112233445566778899:998877665544332211:1180000000000000002",
+            ),
+            "the question",
+        )
+    )
+
+    assert sent["partial_message_id"] == 1180000000000000002, "the thread must anchor to the message"
+    assert sent["created_thread_name"]
+    assert sent["text"] == "the question"
+    assert "posted_in_channel" not in sent, "a channel post would orphan the reply"
+
+
+def test_notify_raises_when_neither_thread_nor_channel_is_visible():
+    class FakeClient:
+        def get_channel(self, channel_id):
+            return None
+
+    adapter, _, _ = _adapter()
+    adapter.client = FakeClient()
+    with pytest.raises(AdapterError):
+        asyncio.run(
+            adapter.notify(
+                Destination(
+                    source="discord",
+                    conversation_id="discord:112233445566778899:998877665544332211:1180000000000000002",
+                ),
+                "the question",
+            )
+        )

@@ -128,6 +128,23 @@ class DiscordAdapter:
         except TranslationError as exc:
             self.dead_letter(source=self.name, kind="inbound", reason=str(exc), payload=payload)
             return
+        except Exception as exc:
+            # A malformed payload must DEAD-LETTER, never escape. `translate`
+            # raises TranslationError on the shapes it anticipates, but it is
+            # handed untrusted wire data and cannot anticipate all of them.
+            # Escaping here is silent data loss: on_request acks the envelope
+            # BEFORE calling _handle, so the platform never redelivers, and the
+            # SDK's own listener wrapper logs the exception and moves on — the
+            # message is gone with no trace, which is exactly what §3.8 exists
+            # to prevent.
+            logger.exception("translating a Discord message failed")
+            self.dead_letter(
+                source=self.name,
+                kind="inbound",
+                reason=f"{type(exc).__name__}: {exc}",
+                payload=payload,
+            )
+            return
         if raw is None:
             return
 
@@ -145,12 +162,30 @@ class DiscordAdapter:
     async def notify(self, dest: Destination, text: str) -> None:
         if self.client is None:
             raise AdapterError("discord adapter is not connected")
-        _guild, _channel, thread = conversation_parts(dest.conversation_id)
-        # The conversation's anchor IS the channel to post into: inside a thread
-        # it is the thread's id, and at top level it is the message id, which
-        # Discord resolves to the thread started from it. get_channel takes an
-        # int — the flatten docstring explains why everything else is a string.
-        target = self.client.get_channel(int(thread))
+        _guild, channel_id, anchor = conversation_parts(dest.conversation_id)
+        # `anchor` is the THREAD's id inside a thread, and the MESSAGE's id at
+        # top level. Client.get_channel resolves channels and threads only
+        # (`self._channels.get(id) or self._threads.get(id)`), so at top level
+        # it returns None until a thread actually exists — which is why simply
+        # posting to `anchor` could never answer a first-time request.
+        target = self.client.get_channel(int(anchor))
         if target is None:
-            raise AdapterError(f"discord channel {thread} is not visible to this bot")
+            parent = self.client.get_channel(int(channel_id))
+            if parent is None:
+                raise AdapterError(f"discord channel {channel_id} is not visible to this bot")
+            # Start the thread FROM the anchoring message. Discord gives a
+            # thread created this way that message's own id — exactly the
+            # anchor `conversation_parts` derives — so the human's reply lands
+            # back under the same conversation_id and routes to this task.
+            # Posting into the channel instead would mint a new conversation
+            # and orphan the answer.
+            target = await parent.get_partial_message(int(anchor)).create_thread(
+                name=_thread_name(text)
+            )
         await target.send(text)
+
+
+def _thread_name(text: str) -> str:
+    """Discord caps a thread name at 100 characters and rejects an empty one."""
+    first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+    return (first_line[:95] + "…") if len(first_line) > 96 else (first_line or "ley-khaa")

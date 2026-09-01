@@ -222,8 +222,13 @@ class ChannelNotifier:
         unrelated commit into the middle of the driver's transaction; this is
         the same per-unit-of-work session discipline Dispatcher._drive follows.
         """
-        session = self.session_factory()
+        # INSIDE the try: session_factory() itself can raise (pool exhausted,
+        # database down), and that is exactly when a dead letter is most likely
+        # to be attempted. Outside, the failure escapes the very handler whose
+        # job is to make sure recording a failure never becomes one.
+        session = None
         try:
+            session = self.session_factory()
             DeadLetterRepository(session).record(
                 source=dest.source,
                 kind="outbound",
@@ -240,5 +245,6 @@ class ChannelNotifier:
             # nowhere to go.
             logger.exception("could not dead-letter a failed notification")
         finally:
-            with suppress(Exception):
-                session.close()
+            if session is not None:
+                with suppress(Exception):
+                    session.close()
