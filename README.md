@@ -25,6 +25,12 @@ generator code, exact inputs, seeded manifest — so any result can be audited a
 
 ## Status
 
+**v0.8.0 — vision intake.** A screenshot pasted into a channel or the dashboard is read once
+through Claude vision and frozen as a reproducible checkpoint keyed by a hash of its bytes: a
+table becomes data a generated script computes on, anything else becomes context the interpreter
+reasons about. With no `ANTHROPIC_API_KEY` an image is carried, not read, and the task still runs
+on its text alone. See [Images](#images) below.
+
 **v0.6.0 — project routing, per-project queues, and amendment detection.** Every task now lands in
 a **project**, decided by a two-stage router at promotion time; each project drains through its own
 concurrent, per-project worker instead of one shared lane; and a follow-up message that modifies a
@@ -49,6 +55,8 @@ relevance filtering and crystallization run on every message regardless, caches 
 | 3 | `v0.4.0` | Synthesis-first executor, validator, Output Bundle | ✅ shipped |
 | 4 | `v0.5.0` | **Workflow registry** + **task memory** | ✅ shipped |
 | 5 | `v0.6.0` | **Project routing**, per-project queues, **amendment detection** | ✅ shipped |
+| 6 | `v0.7.0` | Real Slack and Discord **channel adapters**, ingesting and notifying | ✅ shipped |
+| 7 | `v0.8.0` | **Vision intake** — an image read once and frozen as a reproducible checkpoint | ✅ shipped |
 | — | `v1.0.0` | Definition of done (spec §11) | 🎯 target |
 
 Design spec: [`docs/superpowers/specs/2026-08-18-ley-khaa-design.md`](docs/superpowers/specs/2026-08-18-ley-khaa-design.md).
