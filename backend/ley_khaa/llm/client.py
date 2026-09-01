@@ -104,3 +104,44 @@ class AnthropicLLM:
             kwargs["thinking"] = {"type": "adaptive"}
         response = self._client.messages.parse(**kwargs)
         return response.parsed_output
+
+    def extract_image(
+        self, *, choice: ModelChoice, system: str, user: str,
+        image: bytes, media_type: str, output_format: type[T],
+    ) -> T:
+        """parse(), with an image content block ahead of the text.
+
+        The block order is Anthropic's documented shape for vision. The bytes
+        go in the image block and nowhere else: pasting base64 into the text
+        would double the token bill for no benefit.
+        """
+        import base64
+
+        kwargs: dict[str, Any] = {
+            "model": choice.model,
+            "max_tokens": choice.max_tokens,
+            "system": system,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": base64.standard_b64encode(image).decode("ascii"),
+                            },
+                        },
+                        {"type": "text", "text": user},
+                    ],
+                }
+            ],
+            "output_format": output_format,
+        }
+        # Same gate as parse(): adaptive thinking exists only on the 5-series,
+        # and sending it to Haiku 4.5 is a 400.
+        if choice.supports_thinking:
+            kwargs["thinking"] = {"type": "adaptive"}
+        response = self._client.messages.parse(**kwargs)
+        return response.parsed_output
