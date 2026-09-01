@@ -139,6 +139,24 @@ def test_a_message_from_the_bots_user_id_is_dropped():
     assert translate(payload, allowed_channels=ALLOWED, bot_user_id=BOT) is None
 
 
+def test_a_non_dict_author_is_dead_lettered_rather_than_crashing_the_adapter():
+    """`author = payload.get("author") or {}` keeps a TRUTHY non-dict, and the
+    next line calls .get on it — so a malformed author escaped translate() as an
+    AttributeError instead of a TranslationError. That breaks the contract
+    _handle's docstring states ("Nothing raises out of here"): an exception
+    escaping there is swallowed by asyncio at best and takes the gateway socket
+    down at worst.
+
+    The Slack translator never had this hole — a non-dict `event` hits
+    `"channel" not in event`, a substring test — so the two modules advertised
+    the same contract while only one kept it."""
+    payload = _payload("discord_channel_message")
+    payload["author"] = "ana"
+
+    with pytest.raises(TranslationError):
+        translate(payload, allowed_channels=ALLOWED, bot_user_id=BOT)
+
+
 def test_a_system_message_is_dropped():
     """Type 7 is a member-join notice. Only DEFAULT (0) and REPLY (19) are
     things a person actually said."""

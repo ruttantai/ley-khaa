@@ -59,6 +59,15 @@ def translate(
         return None
 
     author = payload.get("author") or {}
+    # A truthy non-dict survives the `or` above, and every guard below calls
+    # .get on it — so a malformed author used to escape as an AttributeError
+    # rather than a TranslationError. Nothing may raise out of client._handle
+    # (its docstring says so, and the loop that runs it runs every other
+    # adapter and the dispatcher), so this is a dead letter, not a crash. The
+    # Slack translator never had the hole: a non-dict `event` there hits
+    # `"channel" not in event`, which is a substring test.
+    if not isinstance(author, dict):
+        raise TranslationError(f"a Discord message has a malformed author: {type(author).__name__}")
     # Two guards on one property, deliberately: `bot` covers every bot in the
     # channel, and the id check covers OUR bot specifically (a self-hosted app
     # posting under an unusual identity). Each is pinned by its own test so
