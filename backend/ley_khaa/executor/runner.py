@@ -94,6 +94,7 @@ class ExecutionRunner:
         sandbox: SandboxRunner | None = None,
         workspace_root: Path | str | None = None,
         workflows: WorkflowRepository | None = None,
+        extractor=None,
     ) -> None:
         self.synthesizer = Synthesizer(llm)
         self.messages = messages
@@ -103,6 +104,9 @@ class ExecutionRunner:
         # exactly the Phase 3 runner, which is what every existing test builds.
         self.workflows = workflows
         self.matcher = RegistryMatcher(workflows, llm) if workflows is not None else None
+        # None is a supported configuration: without an extractor an image
+        # attachment is ignored exactly as it was before phase 7.
+        self.extractor = extractor
 
     @property
     def sandbox(self) -> SandboxRunner:
@@ -135,7 +139,17 @@ class ExecutionRunner:
         earlier = first_attempt - 1
 
         try:
-            resolved = resolve_inputs(spec, row, self.messages)
+            # Passed only when configured: with no extractor the call must stay
+            # the exact 3-argument shape it was before phase 7, byte-identical
+            # down to the call site — a pre-existing test intercepts this exact
+            # name and asserts on it (test_driver_memory.py), and TaskDriver
+            # never wires an extractor through today, so this branch is what
+            # every current caller actually takes.
+            resolved = (
+                resolve_inputs(spec, row, self.messages, extractor=self.extractor)
+                if self.extractor is not None
+                else resolve_inputs(spec, row, self.messages)
+            )
         except UnresolvedInputs as exc:
             # Returned, not raised: EXECUTING -> NEEDS_CLARIFICATION is not a
             # legal edge, so the question reaches the human through _validate.

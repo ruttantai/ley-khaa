@@ -17,7 +17,9 @@ from ..persistence.orm import TaskRow
 from . import catalog
 
 # Only these carry literal content the executor can compute on. An IMAGE
-# attachment needs vision extraction, which is not built in this phase.
+# attachment carries a URL or base64, so it is computable only once vision has
+# extracted it — which is what `extractor` in resolve_inputs() does, turning it
+# into a synthetic textual attachment before matching (phase 7, spec §3.5).
 _TEXTUAL = {AttachmentKind.TABLE.value, AttachmentKind.TEXT.value}
 
 
@@ -44,7 +46,12 @@ class ResolvedInput:
     name: str       # the spec input name this satisfies
     filename: str   # what it is called inside inputs/
     content: str
-    source: str     # "attachment" | "catalog"
+    source: str     # "attachment" | "catalog" | "vision"
+    # Set only for source == "vision". sha256 below hashes the extracted
+    # CONTENT; these say which IMAGE it came from and who read it, which is
+    # what makes a vision-sourced run auditable.
+    extracted_from: str | None = None
+    extracted_by: str | None = None
 
     @property
     def sha256(self) -> str:
@@ -59,13 +66,34 @@ class UnresolvedInputs(Exception):
         self.names = names
 
 
-def _attachments_for(task: TaskRow, messages: MessageRepository) -> list[dict]:
+def _attachments_for(task: TaskRow, messages: MessageRepository, extractor=None) -> list[dict]:
     rows = messages.get_many(list(task.source_message_ids or []))
     found: list[dict] = []
     for row in rows:
         for attachment in row.attachments or []:
             if attachment.get("kind") in _TEXTUAL:
                 found.append(attachment)
+                continue
+            if extractor is None or attachment.get("kind") != AttachmentKind.IMAGE.value:
+                continue
+            record = extractor.extract(attachment)
+            # Empty content is the "was not read" signal. Binding it would hand
+            # a generated script an empty file and let it compute a confident
+            # wrong answer, which is worse than asking the human.
+            if not record.content:
+                continue
+            stem = (attachment.get("name") or "image").rsplit(".", 1)[0]
+            suffix = "csv" if record.kind == "table" else "txt"
+            found.append(
+                {
+                    "kind": AttachmentKind.TEXT.value,
+                    "name": f"extracted_{stem}.{suffix}",
+                    "content": record.content,
+                    # Carried on the synthetic attachment so resolve_inputs can
+                    # stamp provenance without a second extractor call.
+                    "_vision": {"from": record.image_sha256, "by": record.model},
+                }
+            )
     return found
 
 
@@ -107,9 +135,9 @@ def _unique(filename: str, taken: set[str]) -> str:
 
 
 def resolve_inputs(
-    spec: TaskSpec, task: TaskRow, messages: MessageRepository
+    spec: TaskSpec, task: TaskRow, messages: MessageRepository, extractor=None
 ) -> list[ResolvedInput]:
-    attachments = _attachments_for(task, messages)
+    attachments = _attachments_for(task, messages, extractor)
     used_attachments: set[int] = set()
     taken_filenames: set[str] = set()
     resolved: list[ResolvedInput] = []
@@ -118,12 +146,17 @@ def resolve_inputs(
     for name in spec.inputs:
         hit = _from_attachments(name, attachments, used_attachments)
         if hit is not None:
+            vision = hit.get("_vision")
             resolved.append(
                 ResolvedInput(
                     name=name,
-                    filename=_unique(_safe_basename(hit.get("name", "")) or f"{name}.csv", taken_filenames),
+                    filename=_unique(
+                        _safe_basename(hit.get("name", "")) or f"{name}.csv", taken_filenames
+                    ),
                     content=hit.get("content", ""),
-                    source="attachment",
+                    source="vision" if vision else "attachment",
+                    extracted_from=(vision or {}).get("from"),
+                    extracted_by=(vision or {}).get("by"),
                 )
             )
             continue
