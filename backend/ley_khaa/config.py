@@ -66,7 +66,7 @@ class Settings:
     image_hosts: str = os.getenv("LEY_KHAA_IMAGE_HOSTS") or (
         "files.slack.com,cdn.discordapp.com,media.discordapp.net"
     )
-    image_max_bytes: int = int(os.getenv("LEY_KHAA_IMAGE_MAX_BYTES", str(5 * 1024 * 1024)))
+    image_max_bytes: int = int(os.getenv("LEY_KHAA_IMAGE_MAX_BYTES") or str(5 * 1024 * 1024))
 
 
 settings = Settings()

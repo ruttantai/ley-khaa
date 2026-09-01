@@ -48,3 +48,53 @@ def test_an_empty_env_var_does_not_silently_empty_the_allowlist(monkeypatch):
     finally:
         monkeypatch.delenv("LEY_KHAA_IMAGE_HOSTS", raising=False)
         reload(config_module)
+
+
+def test_an_empty_max_bytes_env_var_falls_back_to_the_default(monkeypatch):
+    """docker-compose passes ${VAR:-} for an unset variable, which arrives as
+    "". A two-argument os.getenv default never fires for a SET-but-empty
+    variable, so a naive read would crash the whole process at import time
+    with ValueError: invalid literal for int() with base 10: ''."""
+    monkeypatch.setenv("LEY_KHAA_IMAGE_MAX_BYTES", "")
+    from importlib import reload
+
+    import ley_khaa.config as config_module
+
+    try:
+        reload(config_module)
+        assert config_module.Settings().image_max_bytes == 5 * 1024 * 1024
+    finally:
+        monkeypatch.delenv("LEY_KHAA_IMAGE_MAX_BYTES", raising=False)
+        reload(config_module)
+
+
+def test_a_set_max_bytes_env_var_is_honored(monkeypatch):
+    monkeypatch.setenv("LEY_KHAA_IMAGE_MAX_BYTES", "1024")
+    from importlib import reload
+
+    import ley_khaa.config as config_module
+
+    try:
+        reload(config_module)
+        assert config_module.Settings().image_max_bytes == 1024
+    finally:
+        monkeypatch.delenv("LEY_KHAA_IMAGE_MAX_BYTES", raising=False)
+        reload(config_module)
+
+
+def test_vision_can_be_turned_off_via_the_environment(monkeypatch):
+    """test_vision_can_be_turned_off only proves the field is a settable
+    dataclass attribute via `replace` — it never exercises the
+    os.getenv(...) != "off" line at all. This drives it through the env var
+    the way an operator actually would."""
+    monkeypatch.setenv("LEY_KHAA_VISION", "off")
+    from importlib import reload
+
+    import ley_khaa.config as config_module
+
+    try:
+        reload(config_module)
+        assert config_module.Settings().vision_enabled is False
+    finally:
+        monkeypatch.delenv("LEY_KHAA_VISION", raising=False)
+        reload(config_module)
