@@ -180,6 +180,27 @@ export async function fetchProjects(): Promise<Project[]> {
   return res.json();
 }
 
+export type DeadLetter = {
+  id: string;
+  source: string;
+  // "inbound" | "outbound" | "connection"
+  kind: string;
+  reason: string;
+  // Redacted server-side before storage. The scrub catches Slack xox*/xapp*
+  // prefixes and Bearer headers; it does NOT recognise a Discord bot token,
+  // a raw base64 secret or an sk_live_-style key, which have no distinctive
+  // shape. Nothing writes those into a payload today — do not treat this as
+  // a guarantee that any secret is safe here.
+  payload: string;
+  created_at: string;
+};
+
+export async function fetchDeadLetters(limit = 50): Promise<DeadLetter[]> {
+  const res = await fetch(`${BASE}/dead-letters?limit=${limit}`);
+  if (!res.ok) throw new Error(`fetchDeadLetters failed: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchTriage(): Promise<TriageItem[]> {
   const res = await fetch(`${BASE}/triage`);
   if (!res.ok) throw new Error(`fetchTriage failed: ${res.status}`);

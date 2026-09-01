@@ -1,0 +1,18 @@
+{
+  "token": "fake-verification-token",
+  "team_id": "T0SYNTH01",
+  "api_app_id": "A0SYNTH01",
+  "event": {
+    "type": "message",
+    "channel": "C0ALLOWED1",
+    "user": "U0HUMAN01",
+    "text": "as a csv please",
+    "ts": "1756600300.000200",
+    "thread_ts": "1756600000.000100",
+    "event_ts": "1756600300.000200",
+    "channel_type": "channel"
+  },
+  "type": "event_callback",
+  "event_id": "Ev0SYNTH02",
+  "event_time": 1756600300
+}

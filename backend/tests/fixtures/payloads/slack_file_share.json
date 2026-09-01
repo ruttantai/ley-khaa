@@ -1,0 +1,31 @@
+{
+  "token": "fake-verification-token",
+  "team_id": "T0SYNTH01",
+  "api_app_id": "A0SYNTH01",
+  "event": {
+    "type": "message",
+    "channel": "C0ALLOWED1",
+    "user": "U0HUMAN01",
+    "text": "here is the screenshot and the holdings file",
+    "ts": "1756600500.000100",
+    "event_ts": "1756600500.000100",
+    "channel_type": "channel",
+    "files": [
+      {
+        "id": "F0SYNTH01",
+        "name": "screenshot.png",
+        "mimetype": "image/png",
+        "url_private": "https://files.example.invalid/screenshot.png"
+      },
+      {
+        "id": "F0SYNTH02",
+        "name": "holdings.csv",
+        "mimetype": "text/csv",
+        "url_private": "https://files.example.invalid/holdings.csv"
+      }
+    ]
+  },
+  "type": "event_callback",
+  "event_id": "Ev0SYNTH04",
+  "event_time": 1756600500
+}

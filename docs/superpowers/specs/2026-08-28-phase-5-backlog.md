@@ -349,3 +349,56 @@ plan justified a safety property with "the bonus (0.15) is smaller than one miss
 (0.2)" — which does not follow, because that is a relative relation and the AUTO threshold is
 absolute. Executing it showed a `certainty=1.0` spec with a known gap reaching AUTO. Pre-scanning
 each task brief against the real code before dispatching caught that and four more brief defects.
+
+## 15. A poisoned task fails without telling anyone
+
+**What is broken.** `Dispatcher._fail_poison` moves a task to FAILED when it has outlived
+`max_lease_attempts` workers. It does that with a bare `TaskRepository`, and the notifier lives on
+`TaskDriver` — so this is the one path to FAILED that does not notify. Everything else does
+(`advance()`'s single exit point, and `reject()` explicitly). §8's "`done` and `failed` notify" is
+therefore true of every path a human is likely to hit and false of exactly this one, which is
+recorded in 0.7.0's known limits rather than left to be discovered.
+
+**Shape of the fix.** Inject an `announce: Callable[[Session, str], None]` into `Dispatcher`, bound
+in `api/app.py` to something that builds the orchestrator for that session and calls
+`driver._announce(repo.get(task_id))`. That keeps the dispatcher ignorant of the driver, the
+notifier and FastAPI, which is why it is not simply given a `TaskDriver`.
+
+**Why it was deferred.** Phase 6 widened the review surface more than any phase so far — first
+outside world, first credentials — and this adds a constructor parameter to the one component whose
+concurrency correctness the whole queue rests on.
+
+## 16. A second clarifying question is never delivered
+
+**What is broken.** `TaskDriver._announce` guards re-notification with
+`mark_notified(row.id, row.state)` — a compare-and-swap on the STATE string. There are three
+writers of `open_question` and three transitions into `NEEDS_CLARIFICATION`
+(`_MAX_CLARIFICATION_ROUNDS` is 3), so a task that arrives at `NEEDS_CLARIFICATION` a second time
+with no notifying state in between is silently skipped. The harmful variant: `_gate` goes
+`INTERPRETED → EXECUTING` directly when the effective mode is `auto`, so `AWAITING_APPROVAL` never
+intervenes, and `_validate`'s failing branch re-parks the task with a DIFFERENT question. The run
+failed, a human is blocked, and the channel is silent.
+
+Spec §3.6 sanctions the mechanism verbatim ("notify only when the state differs from what was last
+announced"), so code and spec agree — what was wrong was §8's and the README's unqualified claim
+that the question comes back in the thread. Those are now qualified rather than left overstated.
+
+**Shape of the fix.** Key the CAS on the announced *content*, not the state: store a hash of the
+message in `last_notified_state`, or add a `last_notified_question` column. A NEW question then
+re-arms the guard while a re-drive in the same state still does not.
+
+**Why it was deferred.** It is a schema change to the exact column whose compare-and-swap stops a
+re-entrant `advance()` spamming the channel, landed at the end of the phase that introduced it.
+
+## 17. `dead_letters` has no retention
+
+**What is broken.** `MAX_PAYLOAD_CHARS` bounds row SIZE, not row COUNT, and nothing prunes. A
+permanently bad token makes `AdapterSupervisor._supervise` crash-loop at its 60s backoff cap,
+writing one `connection` row every minute for as long as the process runs.
+
+**Shape of the fix.** Coalesce repeated identical connection failures (a `count` plus `last_seen`
+on one row), which is better than time-based pruning here — the point of the table is that a drop
+stays visible, and a retention window would quietly delete evidence.
+
+**Why it was deferred.** Not a correctness bug, and the dashboard makes the crash-loop obvious long
+before row count matters.

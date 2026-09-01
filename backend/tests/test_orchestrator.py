@@ -198,6 +198,11 @@ def test_two_separate_requests_in_one_conversation_produce_two_tasks(session):
     The offline heuristic used to hardcode a single candidate key, so once the
     first candidate was promoted every later request in that conversation matched
     the terminal candidate and was silently discarded.
+
+    It also guards the §3.7 clarification rule: the first request PARKS asking
+    for an output format, so a §3.7 applied literally would make this second,
+    unrelated request that task's answer and produce no second task at all.
+    The rule is narrowed by stage A precisely so this keeps working.
     """
     orch = _orch(session, HeuristicLLM())
     first = orch.ingest({"text": "compare the Bloomberg universe against FactSet"})

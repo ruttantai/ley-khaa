@@ -1,0 +1,17 @@
+{
+  "token": "fake-verification-token",
+  "team_id": "T0SYNTH01",
+  "api_app_id": "A0SYNTH01",
+  "event": {
+    "type": "message",
+    "channel": "C0ALLOWED1",
+    "user": "U0HUMAN01",
+    "text": "compare the Bloomberg universe against FactSet and send the difference as an Excel file",
+    "ts": "1756600000.000100",
+    "event_ts": "1756600000.000100",
+    "channel_type": "channel"
+  },
+  "type": "event_callback",
+  "event_id": "Ev0SYNTH01",
+  "event_time": 1756600000
+}

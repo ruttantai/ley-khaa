@@ -173,6 +173,20 @@ class TriageOut(BaseModel):
     confidence: float
 
 
+class DeadLetterOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    source: str
+    # "inbound" | "outbound" | "connection"
+    kind: str
+    reason: str
+    # Already redacted at the write (DeadLetterRepository.redact) — §4: tokens
+    # are never returned by an API.
+    payload: str
+    created_at: datetime
+
+
 class WorkflowOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

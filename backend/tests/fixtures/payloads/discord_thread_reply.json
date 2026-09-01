@@ -1,0 +1,11 @@
+{
+  "id": "1180000000000000003",
+  "channel_id": "1180000000000000002",
+  "parent_id": "998877665544332211",
+  "guild_id": "112233445566778899",
+  "content": "as a csv please",
+  "timestamp": "2026-08-31T09:05:00+00:00",
+  "type": 0,
+  "author": {"id": "555000000000000001", "username": "ana", "bot": false},
+  "attachments": []
+}

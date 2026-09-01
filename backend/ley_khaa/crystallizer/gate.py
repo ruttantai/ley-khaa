@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from ..persistence.orm import CandidateRow
+from ..persistence.orm import CandidateRow, as_utc
 from .candidate import CandidateState
 
 
@@ -21,10 +21,5 @@ class ReadinessGate:
             return False
         if row.open_question:
             return False
-        quiet_for = (now - _as_utc(last_message_at)).total_seconds()
+        quiet_for = (now - as_utc(last_message_at)).total_seconds()
         return quiet_for >= self.debounce_seconds
-
-
-def _as_utc(value: datetime) -> datetime:
-    # SQLite returns naive datetimes even for timezone=True columns.
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)

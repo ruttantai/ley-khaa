@@ -147,7 +147,13 @@ def test_missing_text_is_rejected_with_422(client):
 
 
 def test_two_requests_in_one_conversation_yield_two_tasks_over_http(client):
-    """The bug as reproduced: every request after the first returned task_ids []."""
+    """The bug as reproduced: every request after the first returned task_ids [].
+
+    Also guards the §3.7 clarification rule over HTTP: the first request PARKS,
+    so §3.7 applied literally would make this second, unrelated request that
+    task's answer and yield no second task. The rule is narrowed by stage A so
+    this keeps working.
+    """
     first = client.post("/messages", json={"text": "compare the Bloomberg universe against FactSet"})
     second = client.post("/messages", json={"text": "also build the risk report and send it"})
     assert len(first.json()["task_ids"]) == 1

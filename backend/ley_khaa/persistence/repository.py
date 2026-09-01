@@ -311,6 +311,35 @@ class TaskRepository:
         self.session.commit()
         return row
 
+    def mark_notified(self, task_id: str, state: str) -> bool:
+        """Claim the right to announce `state` for this task. True if we won it.
+
+        Same compare-and-swap discipline as claim() and set_override(), applied
+        to a side effect that leaves the process. advance() is re-entrant and
+        the sweeper re-drives tasks, so an unguarded announcement would repeat a
+        task's clarifying question on every pass; two workers reaching the same
+        state at once would post it twice.
+
+        The caller sends only after this returns True, which means a send that
+        then fails is NOT retried — stated rather than hidden. §9 already says
+        notification is best-effort with dead-lettering, not a durable outbox,
+        and the alternative ordering trades a lost message for a duplicated one,
+        which in a channel is worse.
+        """
+        result = self.session.execute(
+            update(TaskRow)
+            .where(
+                TaskRow.id == task_id,
+                or_(
+                    TaskRow.last_notified_state.is_(None),
+                    TaskRow.last_notified_state != state,
+                ),
+            )
+            .values(last_notified_state=state)
+        )
+        self.session.commit()
+        return result.rowcount == 1
+
     # --- the lease that makes this table the queue (spec §3.2) --------------
 
     def claim_lease(
@@ -344,6 +373,8 @@ class TaskRepository:
                 lease_attempts=TaskRow.lease_attempts
                 + case((TaskRow.lease_owner.is_(None), 0), else_=1),
             )
+            # See persistence.orm.as_utc for the shared root cause; this is the
+            # same SQLite fact needing a different remedy.
             # synchronize_session="auto" (the default) tries the "evaluate"
             # strategy first: re-check this WHERE clause in Python against any
             # already-loaded copy of this row in the identity map (e.g. the one

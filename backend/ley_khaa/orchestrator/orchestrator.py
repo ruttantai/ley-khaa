@@ -2,6 +2,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from ..adapters.notifier import Notifier
 from ..autonomy.engine import recommend_fold
 from ..autonomy.modes import AutonomyMode
 from ..crystallizer.candidate import CandidateState
@@ -14,7 +15,7 @@ from ..llm.client import LLMClient
 from ..persistence.candidate_repository import CandidateRepository
 from ..persistence.memory_repository import MemoryRepository
 from ..persistence.message_repository import MessageRepository
-from ..persistence.orm import CandidateRow, MessageRow, TaskRow
+from ..persistence.orm import CandidateRow, MessageRow, TaskRow, as_utc
 from ..persistence.project_repository import DEFAULT_PROJECT, ProjectRepository
 from ..persistence.repository import TaskRepository
 from ..persistence.workflow_repository import WorkflowRepository
@@ -70,6 +71,7 @@ class Orchestrator:
         workflows: WorkflowRepository | None = None,
         memories: MemoryRepository | None = None,
         projects: ProjectRepository | None = None,
+        notifier: Notifier | None = None,
     ) -> None:
         self.repo = repo
         self.messages = messages
@@ -80,7 +82,7 @@ class Orchestrator:
         self.gate = gate or ReadinessGate()
         self.driver = TaskDriver(
             repo, llm=llm, messages=messages, candidates=candidates,
-            workflows=workflows, memories=memories,
+            workflows=workflows, memories=memories, notifier=notifier,
         )
         self.projects = projects
         self.router = ProjectRouter(projects, llm) if projects is not None else None
@@ -90,6 +92,7 @@ class Orchestrator:
         row = self.gateway.accept(raw)
         if row.reply_to_task_id:
             return self._route_reply(row, promote=promote)
+
         verdict = self.relevance.judge(row)
         self.messages.record_verdict(
             row.id,
@@ -97,6 +100,37 @@ class Orchestrator:
             topic=verdict.topic,
             confidence=verdict.confidence,
         )
+
+        # Spec §3.7: a message arriving in a conversation whose task is asking
+        # a question IS that task's answer. Nobody types a task id into Slack,
+        # and this rule lives here rather than in the adapter because deciding
+        # what a message MEANS is business logic (§5.1).
+        #
+        # NARROWED with stage A, deliberately: taken literally, §3.7 makes
+        # every later message in the channel an answer, so a genuinely new
+        # request posted while a task is parked is swallowed into that task's
+        # source set — silently, with no candidate, no task and no dead letter.
+        # `verdict.relevant` is machinery that already exists and already means
+        # "is this a work request?", so an answer ("as a csv please") is not
+        # relevant and routes to the question, while a new request still forms
+        # its own task.
+        #
+        # Cost if wrong: an answer PHRASED like a fresh request forms a new
+        # candidate instead of answering — recoverable by a human through the
+        # dashboard's Answer box, and the amendment detector is the designed
+        # path for that shape. The opposite error is silent and unrecoverable,
+        # so this is the safer side to be wrong on.
+        #
+        # An explicit reply_to_task_id above still wins: the dashboard names
+        # the task it is answering, and inference must never override a caller
+        # that was specific.
+        if not verdict.relevant:
+            clarifying = self._clarifying_task_in(row.conversation_id)
+            if clarifying is not None:
+                self.messages.set_reply_target(row.id, clarifying.id)
+                row = self.messages.get_many([row.id])[0]
+                return self._route_reply(row, promote=promote)
+
         candidates = self.crystallizer.observe(row.conversation_id, verdict)
 
         result = IntakeResult(
@@ -213,6 +247,34 @@ class Orchestrator:
         """
         sources = self.messages.get_many(list(task.source_message_ids or []))
         return sources[0].conversation_id if sources else None
+
+    def _clarifying_task_in(self, conversation_id: str) -> TaskRow | None:
+        """The task in this conversation that is currently asking something.
+
+        TaskRow carries no conversation_id — it is derived from the messages
+        that formed it, the same lookup _task_conversation_id and app.py's
+        answer_task already do. The scan is over tasks in NEEDS_CLARIFICATION
+        only, which is by definition a small set: every one of them is blocked
+        on a human.
+
+        Most recently updated wins. Two parked tasks in one conversation is a
+        real shape — the simulator's split request produces exactly that — so
+        the tie-break has to be deterministic rather than whatever the database
+        returned first, and the newest question is the one the human is
+        answering.
+        """
+        candidates = [
+            task
+            for task in self.repo.list_by_state(TaskState.NEEDS_CLARIFICATION)
+            if self._task_conversation_id(task) == conversation_id
+        ]
+        if not candidates:
+            return None
+        # as_utc because `max` over a mix of naive and aware datetimes raises,
+        # and exactly two parked tasks in one conversation is enough to hit it —
+        # the shape this tie-break exists for. See `persistence.orm.as_utc` for
+        # why a re-read row goes naive under SQLite and never under Postgres.
+        return max(candidates, key=lambda t: (as_utc(t.updated_at), t.id))
 
     def sweep(self, conversation_id: str | None = None) -> list[str]:
         """Re-evaluate READY candidates against the gate with no new message.

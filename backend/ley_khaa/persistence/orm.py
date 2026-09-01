@@ -11,6 +11,28 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def as_utc(value: datetime) -> datetime:
+    """Make a datetime read back from the database safe to compare.
+
+    SQLite has no tz-aware datetime type: a value written as aware and re-read
+    comes back NAIVE, while a copy still in the identity map is still aware —
+    and comparing the two raises "can't compare offset-naive and offset-aware
+    datetimes". Postgres returns real tz-aware timestamps, so this never bites
+    in production, which is exactly why it is easy to write code that only
+    fails on the SQLite dev loop and in the test suite.
+
+    Assuming UTC for a naive value is sound here: every write goes through
+    `_now()` above, and SQLAlchemy's SQLite DATETIME bind processor stores the
+    wall-clock fields and drops the offset, so the stored clock IS UTC.
+
+    Related but NOT the same fix: `TaskRepository.claim_lease` uses
+    `synchronize_session="fetch"` to stop SQLAlchemy re-evaluating a WHERE
+    clause in Python against the identity map. Same root cause, different
+    mechanism — it cannot be expressed as a datetime helper.
+    """
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
 class TaskRow(Base):
     __tablename__ = "tasks"
 
@@ -56,6 +78,13 @@ class TaskRow(Base):
     # Counts RECLAIMS of an expired lease, never ordinary claims — see
     # TaskRepository.claim_lease. A task driven normally ends its life at 0.
     lease_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+    # --- outbound notification (spec §3.6) ----------------------------------
+    # The state this task last ANNOUNCED to its channel. advance() is
+    # re-entrant, so without this a task re-driven in the same state would
+    # repeat its question every pass. NULL means nothing has been announced
+    # yet, which is why it must not default to a state.
+    last_notified_state: Mapped[str | None] = mapped_column(String, nullable=True)
 
     @property
     def effective_mode(self) -> str | None:
@@ -244,3 +273,30 @@ class ProjectBindingRow(Base):
         String, default="manual", server_default="manual"
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class DeadLetterRow(Base):
+    """An inbound message, an outbound notification, or a connection that was
+    lost (spec §3.8, §7).
+
+    A dropped message that leaves no trace is the worst failure mode an intake
+    system can have, so this table exists to make every drop visible at
+    GET /dead-letters.
+
+    `payload` is TEXT, not JSON: it is written once by the redactor and only
+    ever displayed. A JSON column invites an equality comparison, and Postgres's
+    `json` type has no equality operator — the exact Postgres-only bug a
+    SQLite-only suite hid until Phase 5's review.
+    """
+
+    __tablename__ = "dead_letters"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    # "slack" | "discord" | "simulator" — which adapter this concerns.
+    source: Mapped[str] = mapped_column(String, index=True)
+    # "inbound" | "outbound" | "connection"
+    kind: Mapped[str] = mapped_column(String, index=True)
+    reason: Mapped[str] = mapped_column(String)
+    # Redacted before it ever gets here — see DeadLetterRepository.redact.
+    payload: Mapped[str] = mapped_column(String, default="", server_default=text("''"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)

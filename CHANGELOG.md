@@ -5,6 +5,62 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-08-31
+
+### Added
+- Real Slack and Discord channel adapters (§5.1), ingesting **and** notifying. Each adapter is split
+  in two: a pure `translate.py` (platform event → the raw dict `IntakeGateway.accept()` already
+  takes) holding the allowlist, the self-message filter, thread derivation and the dedupe key, and a
+  thin `client.py` holding the socket and no decisions. Both platforms dial out — Slack Socket Mode,
+  Discord Gateway — so there is no public URL, no tunnel and no inbound port, and adapters run as
+  supervised asyncio tasks in the FastAPI lifespan beside the Phase 5 dispatcher. `docker compose up`
+  is still one command.
+- An explicit **channel allowlist** (`LEY_KHAA_SLACK_CHANNELS`, `LEY_KHAA_DISCORD_CHANNELS`),
+  enforced before anything is persisted. Empty means ingest nothing, never everything. Startup logs
+  exactly which channels are live.
+- **Notification** as a `Notifier` seam injected into `TaskDriver` — the same shape as `LLMClient`
+  and `SandboxRunner`, with `NullNotifier` as the default, so every existing test and every
+  token-free run is unchanged. Exactly four states speak: `needs_clarification` (the question),
+  `awaiting_approval` (the effective mode and its reason), `done` (the bundle path) and `failed`
+  (the reason). `tasks.last_notified_state` plus a compare-and-swap (`TaskRepository.mark_notified`)
+  is what stops a re-entrant `advance()` repeating a question every pass.
+- **A reply in the thread answers the question** (§3.7). The rule lives in `Orchestrator.ingest`,
+  not in an adapter — deciding what a message means is business logic — so a Slack thread reply and
+  a dashboard answer take the identical path and are identical rows in storage.
+- **Dead letters** (§3.8): a `dead_letters` table, `GET /dead-letters`, and a dashboard panel that
+  is loud when there is something and absent when there is not. Written on a failed translation, a
+  failed notification and an adapter crash. Payloads are redacted at the write — Slack's own Socket
+  Mode envelope carries a `token` field.
+- `Simulator` now satisfies `ChannelAdapter`, so the protocol has three implementations rather than
+  being shaped around Slack and bolted onto the others.
+
+### Changed
+- `AdapterSupervisor` restarts a crashed adapter with capped exponential backoff, dead-letters the
+  crash, and never lets it reach the API or the dispatcher. Cancellation is shutdown, not a crash.
+- Notification is fire-and-forget across the sync/async boundary: `TaskDriver.advance()` is
+  synchronous and runs on a dispatcher worker thread, so `ChannelNotifier` hands its coroutine to
+  the loop captured at lifespan start and does not wait — a wedged platform API cannot extend a
+  task's execution time. Under `LEY_KHAA_DISPATCH=inline` a notification is dead-lettered rather
+  than delivered.
+
+### Dependencies
+- `slack_sdk==3.44.0`, `discord.py==2.7.1`, backend image only. The sandbox image is untouched.
+
+### Known limits
+- Approve, reject and mode override are dashboard actions; there are no interactive buttons, so a
+  phone-only workflow is not possible.
+- Notification is best-effort with dead-lettering, not a durable outbox.
+- A task abandoned past `max_lease_attempts` is failed by the dispatcher, which has no notifier —
+  so that one failure path does not notify. Tracked as backlog item 15.
+- Notification is keyed on a state CHANGE (§3.6), so a second question asked without the task
+  leaving `needs_clarification` in between is not sent to the channel. Backlog item 16.
+- `dead_letters` has no retention. A permanently bad token writes one `connection` row per minute
+  at the supervisor's backoff cap. Backlog item 17.
+- Dead-letter redaction catches Slack `xox*`/`xapp*` and `Bearer`, not Discord bot tokens, raw
+  base64 or `sk_live_`-style keys.
+- Attachments are carried, not understood; images from a channel are stored, not read.
+- One workspace per platform, and threads only — no DMs.
+
 ## [0.6.0] — 2026-08-30
 
 ### Added

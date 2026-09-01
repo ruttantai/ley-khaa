@@ -90,15 +90,20 @@ function stubApi(
       if (method === "POST" && (u.includes("/fold") || u.includes("/separate"))) {
         return { ok: true, status: 200, json: async () => ({ id: "task-x" }) };
       }
-      const body = u.includes("/candidates")
-        ? candidates
-        : u.includes("/registry")
-          ? workflows
-          : u.includes("/projects")
-            ? projects
-            : u.includes("/triage")
-              ? triage
-              : [task()];
+      // BEFORE the catch-all below: without this branch /dead-letters falls
+      // through to [task()] and the panel renders task objects as dead letters
+      // — the same catch-all bug the comment above already records.
+      const body = u.includes("/dead-letters")
+        ? []
+        : u.includes("/candidates")
+          ? candidates
+          : u.includes("/registry")
+            ? workflows
+            : u.includes("/projects")
+              ? projects
+              : u.includes("/triage")
+                ? triage
+                : [task()];
       return { ok: true, json: async () => body };
     }),
   );
@@ -155,4 +160,16 @@ test("a parked amendment is listed in the Triage tray only, not under Forming", 
   render(<App />);
   await waitFor(() => expect(screen.getByText("Universe reconciliation")).toBeTruthy());
   expect(screen.getAllByText("flag mismatched totals")).toHaveLength(1);
+});
+
+test("a healthy dashboard shows no dead-letter panel", async () => {
+  // Pins the `/dead-letters` branch in stubApi. Without it the URL falls
+  // through to the catch-all's `[task()]`, and the panel renders TASK objects
+  // as dead letters — a red "Dead letters (1)" heading on a healthy dashboard,
+  // with every field undefined. The branch was previously load-bearing but
+  // unpinned: deleting it broke no test.
+  stubApi([]);
+  render(<App />);
+  await waitFor(() => expect(screen.getByText("compare universes")).toBeTruthy());
+  expect(screen.queryByText(/Dead letters/)).toBeNull();
 });

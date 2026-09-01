@@ -73,6 +73,24 @@ class MessageRepository:
         self.session.refresh(row)
         return row
 
+    def set_reply_target(self, message_id: str, task_id: str) -> MessageRow:
+        """Record that this message answers a task.
+
+        The gateway has already committed the row by the time the orchestrator
+        can decide this (§3.7), so it is a write rather than a constructor
+        argument. Writing it — rather than passing the id along in memory —
+        makes an inferred reply and an explicit one IDENTICAL in storage, so
+        the two paths cannot drift and an audit shows the message for what it
+        is.
+        """
+        row = self.session.get(MessageRow, message_id)
+        if row is None:
+            raise KeyError(message_id)
+        row.reply_to_task_id = task_id
+        self.session.commit()
+        self.session.refresh(row)
+        return row
+
     def window(
         self, conversation_id: str, limit: int = 30, *, exclude_noise: bool = False
     ) -> list[MessageRow]:
