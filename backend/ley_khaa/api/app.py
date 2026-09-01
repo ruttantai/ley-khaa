@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import ValidationError
@@ -41,6 +41,7 @@ from .schemas import (
     AnswerIn,
     BundleOut,
     CandidateOut,
+    DeadLetterOut,
     IntakeOut,
     MessageIn,
     MessageOut,
@@ -358,6 +359,23 @@ def list_triage(session: Session = Depends(get_session)) -> list[TriageOut]:
             )
         )
     return out
+
+
+@app.get("/dead-letters", response_model=list[DeadLetterOut])
+def list_dead_letters(
+    limit: int = Query(default=100, ge=1, le=500),
+    session: Session = Depends(get_session),
+) -> list[DeadLetterOut]:
+    """Every inbound message, notification and connection that was dropped (§3.8).
+
+    A dropped message with no visible trace is the failure this exists to
+    prevent, so this is a plain listing with no filtering: whatever went wrong
+    is on the first page.
+    """
+    return [
+        DeadLetterOut.model_validate(row)
+        for row in DeadLetterRepository(session).list(limit=limit)
+    ]
 
 
 @app.post("/candidates/{candidate_id}/fold", response_model=TaskOut)
