@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
+import requests
+
 _SLACK_HOSTS = frozenset({"files.slack.com"})
 _CHUNK = 64 * 1024
 
@@ -37,14 +39,18 @@ class ImageFetcher:
     def _get(self, url, *, headers, timeout, allow_redirects):
         if self._transport is not None:
             return self._transport(url, headers=headers, timeout=timeout, allow_redirects=allow_redirects)
-        import requests
-
         return requests.get(
             url, headers=headers, timeout=timeout, allow_redirects=allow_redirects, stream=True
         )
 
     def fetch(self, url: str) -> tuple[bytes, str]:
-        parsed = urlparse(url)
+        # A malformed netloc (e.g. an unbalanced "[") makes urlparse itself
+        # raise, before any host check has run — that must become a refusal
+        # too, never an unwrapped ValueError.
+        try:
+            parsed = urlparse(url)
+        except ValueError as exc:
+            raise FetchRefused(f"could not parse image url: {type(exc).__name__}") from exc
         if parsed.scheme != "https":
             raise FetchRefused(f"refusing a non-https image url ({parsed.scheme or 'no scheme'})")
         host = parsed.hostname or ""
@@ -59,14 +65,20 @@ class ImageFetcher:
         if host in _SLACK_HOSTS and self._slack_token:
             headers["Authorization"] = f"Bearer {self._slack_token}"
 
-        response = self._get(
-            url,
-            headers=headers,
-            timeout=self.timeout,
-            # A 302 to an off-allowlist host would defeat both checks above,
-            # because they already passed on the original URL.
-            allow_redirects=False,
-        )
+        try:
+            response = self._get(
+                url,
+                headers=headers,
+                timeout=self.timeout,
+                # A 302 to an off-allowlist host would defeat both checks
+                # above, because they already passed on the original URL.
+                allow_redirects=False,
+            )
+        except requests.RequestException as exc:
+            # Never interpolate the exception itself: RequestException.__str__
+            # can carry the full request URL. The class name is enough for a
+            # human reading a dead letter.
+            raise FetchRefused(f"image url could not be fetched: {type(exc).__name__}") from exc
         try:
             if response.status_code != 200:
                 raise FetchRefused(f"image url returned HTTP {response.status_code}")
@@ -75,12 +87,15 @@ class ImageFetcher:
                 raise FetchRefused(f"image url served {media_type or 'no content type'}")
 
             body = bytearray()
-            for chunk in response.iter_content(chunk_size=_CHUNK):
-                body.extend(chunk)
-                # Checked as the body arrives. Content-Length is written by the
-                # server and cannot be trusted to bound anything.
-                if len(body) > self.max_bytes:
-                    raise FetchRefused(f"image exceeds {self.max_bytes} bytes")
+            try:
+                for chunk in response.iter_content(chunk_size=_CHUNK):
+                    body.extend(chunk)
+                    # Checked as the body arrives. Content-Length is written by
+                    # the server and cannot be trusted to bound anything.
+                    if len(body) > self.max_bytes:
+                        raise FetchRefused(f"image exceeds {self.max_bytes} bytes")
+            except requests.RequestException as exc:
+                raise FetchRefused(f"image url could not be read: {type(exc).__name__}") from exc
             return bytes(body), media_type
         finally:
             close = getattr(response, "close", None)

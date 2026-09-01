@@ -1,4 +1,5 @@
 import pytest
+import requests
 
 from ley_khaa.vision.fetcher import FetchRefused, ImageFetcher
 
@@ -80,10 +81,12 @@ def test_redirects_are_not_followed():
     [
         "http://files.slack.com/f/abc.png",          # not https
         "https://evil.example.com/a.png",            # not allowlisted
-        "https://files.slack.com.evil.com/a.png",    # suffix trick
+        "https://files.slack.com.evil.com/a.png",    # suffix trick (attacker's host as a prefix)
+        "https://evilfiles.slack.com/a.png",         # suffix trick (allowlisted name as a bare suffix)
         "ftp://files.slack.com/a.png",               # not http at all
         "https://127.0.0.1/a.png",                   # not allowlisted
         "not a url",
+        "https://[::1/a.png",                        # malformed netloc: urlparse itself raises ValueError
     ],
 )
 def test_a_disallowed_url_is_refused_before_any_request(url):
@@ -106,6 +109,76 @@ def test_the_cap_is_enforced_on_the_body_not_on_content_length():
     response.headers["Content-Length"] = "10"
     with pytest.raises(FetchRefused):
         _fetcher(_Transport(response), max_bytes=1024).fetch("https://files.slack.com/f/lie.png")
+
+
+def test_the_cap_is_enforced_while_streaming_not_after_the_whole_body_arrives():
+    """A regression to accumulate-then-check would read a hostile server's
+    entire body into memory before refusing it — the point of streaming the
+    cap is that a huge body is abandoned within a few chunks, not after it
+    has all been buffered."""
+    yielded = []
+
+    class _StreamingResponse:
+        status_code = 200
+        headers = {"Content-Type": "image/png"}
+
+        def iter_content(self, chunk_size):
+            # Far more chunks than a correctly-streamed cap should ever need
+            # to look at; each chunk alone already exceeds max_bytes below.
+            for _ in range(200):
+                yielded.append(1)
+                yield b"y" * 8192
+
+        def close(self):
+            pass
+
+    t = _Transport(_StreamingResponse())
+    with pytest.raises(FetchRefused):
+        _fetcher(t, max_bytes=1024).fetch("https://files.slack.com/f/huge.png")
+
+    assert len(yielded) <= 2, (
+        "the cap must be enforced as chunks arrive, not after the generator "
+        f"has been fully drained (drained {len(yielded)} of 200 chunks)"
+    )
+
+
+def test_a_connection_error_is_refused_not_raised():
+    """A ReadTimeout or connection error on an allowlisted host must become a
+    FetchRefused, not an unwrapped requests exception escaping the boundary
+    — Task 6's dead-letter handler only catches FetchRefused."""
+
+    class _FailingTransport:
+        def __call__(self, url, *, headers, timeout, allow_redirects):
+            # A real RequestException.__str__ can carry the full request URL
+            # (query string, credentials and all) — deliberately included
+            # here so the assertion below can prove it never leaks.
+            raise requests.exceptions.ReadTimeout(
+                "https://files.slack.com/f/big.png?t=xoxb-secret timed out"
+            )
+
+    with pytest.raises(FetchRefused) as exc_info:
+        _fetcher(_FailingTransport()).fetch("https://files.slack.com/f/big.png")
+    assert "xoxb-secret" not in str(exc_info.value)
+
+
+def test_a_connection_error_mid_body_is_refused_not_raised():
+    """A ChunkedEncodingError partway through the read must also become a
+    FetchRefused, not escape from inside the streaming loop."""
+
+    class _BreakingResponse:
+        status_code = 200
+        headers = {"Content-Type": "image/png"}
+
+        def iter_content(self, chunk_size):
+            yield b"partial"
+            raise requests.exceptions.ChunkedEncodingError("stream broke")
+
+        def close(self):
+            pass
+
+    t = _Transport(_BreakingResponse())
+    with pytest.raises(FetchRefused):
+        _fetcher(t).fetch("https://files.slack.com/f/broken.png")
 
 
 def test_a_non_image_content_type_is_refused():
