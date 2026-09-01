@@ -14,6 +14,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from ..adapters.notifier import ChannelNotifier, NullNotifier, current_notifier, set_notifier
+from ..adapters.supervisor import AdapterSupervisor, build_adapters
 from ..autonomy.modes import AutonomyMode
 from ..config import settings
 from ..crystallizer.candidate import CandidateState
@@ -26,6 +28,7 @@ from ..llm.factory import build_llm
 from ..orchestrator.dispatcher import Dispatcher
 from ..orchestrator.orchestrator import ForeignReplyTarget, Orchestrator
 from ..persistence.candidate_repository import CandidateRepository
+from ..persistence.dead_letter_repository import DeadLetterRepository
 from ..persistence.memory_repository import MemoryRepository
 from ..persistence.message_repository import MessageRepository
 from ..persistence.project_repository import ProjectRepository
@@ -65,6 +68,9 @@ def build_orchestrator(session: Session) -> Orchestrator:
         workflows=WorkflowRepository(session),
         memories=MemoryRepository(session),
         projects=ProjectRepository(session),
+        # Whatever the lifespan installed — NullNotifier when no tokens are
+        # set, which is every existing test and every fresh clone.
+        notifier=current_notifier(),
     )
 
 
@@ -88,6 +94,28 @@ def _drive_task(session: Session, task_id: str) -> None:
     """What the dispatcher does with a leased task: exactly what every release
     before 0.6.0 did inline."""
     build_orchestrator(session).driver.advance(task_id)
+
+
+def _ingest_from_channel(raw: dict) -> None:
+    """What an adapter's `ingest` is bound to.
+
+    Its own session: this runs on a thread the adapter handed it to, not inside
+    any request's unit of work — the same discipline Dispatcher._drive follows.
+    """
+    session = SessionLocal()
+    try:
+        build_orchestrator(session).ingest(raw)
+    finally:
+        session.close()
+
+
+def _record_dead_letter(**kwargs) -> None:
+    """What an adapter's `dead_letter` is bound to. Own session, same reason."""
+    session = SessionLocal()
+    try:
+        DeadLetterRepository(session).record(**kwargs)
+    finally:
+        session.close()
 
 
 def build_dispatcher() -> Dispatcher:
@@ -125,6 +153,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # AttributeError when startup is disabled.
         app.state.sweeper = None
         app.state.dispatcher = None
+        app.state.supervisor = None
         yield
         return
     run_migrations()
@@ -148,9 +177,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.dispatcher = asyncio.create_task(
             build_dispatcher().run_forever(settings.sweep_interval_seconds)
         )
+    app.state.supervisor = None
+    adapters = build_adapters(ingest=_ingest_from_channel, dead_letter=_record_dead_letter)
+    if adapters:
+        supervisor = AdapterSupervisor(adapters, session_factory=SessionLocal)
+        await supervisor.start()
+        # The loop is captured by start(); ChannelNotifier needs it because a
+        # driver on a dispatcher worker thread has no running loop of its own.
+        set_notifier(
+            ChannelNotifier(
+                supervisor.registry, loop=supervisor.loop, session_factory=SessionLocal
+            )
+        )
+        app.state.supervisor = supervisor
     try:
         yield
     finally:
+        if app.state.supervisor is not None:
+            await app.state.supervisor.stop()
+            app.state.supervisor = None
+        # Put the holder back. Leaving a ChannelNotifier installed would point
+        # a later run — or a later test in the same process — at a dead loop.
+        set_notifier(NullNotifier())
         for task in (app.state.sweeper, app.state.dispatcher):
             if task is None:
                 continue

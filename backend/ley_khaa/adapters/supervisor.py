@@ -14,8 +14,11 @@ import logging
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 
+from ..config import settings
 from ..persistence.dead_letter_repository import DeadLetterRepository
-from .base import ChannelAdapter
+from .base import ChannelAdapter, channel_set
+from .discord.client import DiscordAdapter
+from .slack.client import SlackAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -111,3 +114,77 @@ class AdapterSupervisor:
         finally:
             with suppress(Exception):
                 session.close()
+
+
+def build_adapters(
+    *,
+    ingest: Callable[[dict], None],
+    dead_letter: Callable[..., None],
+) -> list[ChannelAdapter]:
+    """Exactly those adapters whose tokens are present (spec §3.4).
+
+    No tokens -> no adapters -> a fresh clone behaves precisely as it does
+    today, which is what keeps `docker compose up` a zero-account demo.
+
+    Callables rather than a session factory, so this module never imports
+    api/app.py — the lifespan is what calls this, which would be circular — and
+    so an adapter never sees a repository (§5.1: adapters hold no business
+    logic).
+
+    Importing SlackAdapter and DiscordAdapter here does NOT import slack_sdk or
+    discord: both clients import their library inside start(), so a token-free
+    process never loads either one.
+    """
+    adapters: list[ChannelAdapter] = []
+
+    if settings.slack_bot_token and settings.slack_app_token:
+        channels = channel_set(settings.slack_channels)
+        adapters.append(
+            SlackAdapter(
+                bot_token=settings.slack_bot_token,
+                app_token=settings.slack_app_token,
+                allowed_channels=channels,
+                ingest=ingest,
+                dead_letter=dead_letter,
+            )
+        )
+        _announce("slack", channels)
+    elif settings.slack_bot_token or settings.slack_app_token:
+        # Both or nothing (spec §5). A Socket Mode connection needs the app
+        # token and the Web API needs the bot token, so starting on one would
+        # crash-loop through the supervisor's backoff forever while looking
+        # configured.
+        logger.warning(
+            "slack is half-configured (need BOTH LEY_KHAA_SLACK_BOT_TOKEN and "
+            "LEY_KHAA_SLACK_APP_TOKEN); the slack adapter will not start"
+        )
+
+    if settings.discord_bot_token:
+        channels = channel_set(settings.discord_channels)
+        adapters.append(
+            DiscordAdapter(
+                bot_token=settings.discord_bot_token,
+                allowed_channels=channels,
+                ingest=ingest,
+                dead_letter=dead_letter,
+            )
+        )
+        _announce("discord", channels)
+
+    if not adapters:
+        logger.info("no channel tokens configured; running with no adapters")
+    return adapters
+
+
+def _announce(name: str, channels: frozenset[str]) -> None:
+    """Spec §4: startup logs exactly which channels are live, so what the bot
+    is listening to is always visible rather than inferred from config."""
+    if channels:
+        logger.info("%s adapter allowlist: %s", name, ", ".join(sorted(channels)))
+    else:
+        logger.warning(
+            "%s adapter has a token but an EMPTY channel allowlist — it will start and "
+            "ingest nothing. Set LEY_KHAA_%s_CHANNELS to the channel ids it should read.",
+            name,
+            name.upper(),
+        )
