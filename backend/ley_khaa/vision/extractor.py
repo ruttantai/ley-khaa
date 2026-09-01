@@ -160,6 +160,14 @@ class VisionExtractor:
         # the point of it.
         payload = _DATA_URI_PREFIX.sub("", content, count=1)
         payload = "".join(payload.split())
+        if not payload:
+            # An all-whitespace payload, or a bare "data:image/png;base64,"
+            # with nothing after the comma, strips down to "". b64decode("")
+            # happily returns b"" rather than raising — which would otherwise
+            # make a REAL model call billed against zero image bytes, and
+            # store the result under the shared sha256(b"") digest. Treat
+            # empty-after-stripping the same as empty-before-stripping.
+            raise ValueError("the attachment carries no content")
         # b64decode (not standard_b64decode, which has no validate kwarg),
         # validate=True so a text blob raises here rather than decoding into
         # garbage bytes that get billed to a vision call.

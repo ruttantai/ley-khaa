@@ -308,3 +308,43 @@ def test_media_type_is_sniffed_from_magic_bytes_not_hardcoded(session):
     extractor.extract(_image(content=jpeg_b64, name="photo.jpg"))
 
     assert llm.calls[0]["media_type"] == "image/jpeg"
+
+
+# -- fix round 2 -------------------------------------------------------------
+
+
+def test_a_whitespace_only_payload_is_refused_without_a_model_call(session):
+    """Stripping whitespace can collapse a payload to "". b64decode("") happily
+    returns b"" rather than raising, which would otherwise spend a REAL model
+    call on zero image bytes and store it under the shared sha256(b"") digest."""
+    llm = _CountingLLM()
+    row = _extractor(session, llm=llm).extract(_image(content="   \n  "))
+
+    assert row.content == ""
+    assert llm.calls == []
+
+
+def test_a_bare_data_uri_prefix_with_nothing_after_it_is_refused_without_a_model_call(session):
+    """`data:image/png;base64,` with nothing after the comma strips to ""."""
+    llm = _CountingLLM()
+    row = _extractor(session, llm=llm).extract(_image(content="data:image/png;base64,"))
+
+    assert row.content == ""
+    assert llm.calls == []
+
+
+def test_a_successful_extraction_survives_a_different_backend_on_the_second_drive(session):
+    """The project's definition-of-done: a successful extraction is written
+    once and reused — a second drive, even under a DIFFERENTLY-named client,
+    must make no model call. Only a stored FAILURE (empty content) is eligible
+    for retry under a different backend; a real result is not re-litigated."""
+    first_llm = _CountingLLM(result=VisionExtraction(kind="table", content="a,b\n1,2", summary="t"))
+    first = _extractor(session, llm=first_llm).extract(_image())
+    assert first.content == "a,b\n1,2"
+
+    second_llm = _CountingLLM(result=VisionExtraction(kind="table", content="x,y\n9,9", summary="different"))
+    second_llm.name = "a-completely-different-client"
+    second = _extractor(session, llm=second_llm).extract(_image())
+
+    assert second_llm.calls == [], "a successful extraction must not be re-litigated by a new backend"
+    assert second.content == "a,b\n1,2", "the original content must be returned, not re-extracted"
