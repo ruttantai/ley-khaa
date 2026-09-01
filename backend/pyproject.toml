@@ -15,6 +15,7 @@ dependencies = [
     "openpyxl==3.1.5",
     "python-docx==1.2.0",
     "slack_sdk==3.44.0",
+    "discord.py==2.7.1",
 ]
 
 [project.optional-dependencies]
