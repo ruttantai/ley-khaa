@@ -38,13 +38,16 @@ class MalformedSpec(Exception):
 class Interpreter:
     """Crystallized request -> validated TaskSpec (spec §5.5)."""
 
-    def __init__(self, llm: LLMClient, messages: MessageRepository) -> None:
+    def __init__(self, llm: LLMClient, messages: MessageRepository, extractor=None) -> None:
         self.llm = llm
         self.messages = messages
+        # Optional so every pre-phase-7 caller is unchanged, and so a run with
+        # no vision backend renders exactly what it rendered before.
+        self.extractor = extractor
 
     def interpret(self, task: TaskRow) -> TaskSpec:
         rows = self.messages.get_many(list(task.source_message_ids or []))
-        user = _render(task, rows)
+        user = _render(task, rows, extractor=self.extractor)
 
         try:
             spec = self._call(SYSTEM, user)
@@ -72,10 +75,17 @@ class Interpreter:
         )
 
 
-def _render(task: TaskRow, rows: list[MessageRow]) -> str:
+def _render(task: TaskRow, rows: list[MessageRow], extractor=None) -> str:
     lines = ["## Request", f"title: {task.title}", "", "## Messages"]
     for row in rows:
         lines.append(f"[{row.id}] {row.author}: {row.text}")
         for attachment in row.attachments or []:
-            lines.append(f"    attachment: {attachment['kind']} named {attachment['name']}")
+            line = f"    attachment: {attachment['kind']} named {attachment['name']}"
+            # The SUMMARY, never the content: a table's full CSV would crowd out
+            # the conversation this prompt exists to interpret.
+            if extractor is not None and attachment.get("kind") == "image":
+                summary = extractor.extract(attachment).summary
+                if summary:
+                    line += f" — {summary}"
+            lines.append(line)
     return "\n".join(lines)
