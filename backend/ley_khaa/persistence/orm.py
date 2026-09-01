@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String, UniqueConstraint, text
+from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -300,3 +300,33 @@ class DeadLetterRow(Base):
     # Redacted before it ever gets here — see DeadLetterRepository.redact.
     payload: Mapped[str] = mapped_column(String, default="", server_default=text("''"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+
+
+class ImageExtractionRow(Base):
+    """One image, read once (spec §3.2).
+
+    Keyed on the SHA-256 of the image BYTES, not on a message id or an
+    attachment index. The same screenshot pasted in two messages therefore
+    costs one Opus call, the identity survives re-drives and repair loops, and
+    it is the thing a manifest can attest.
+
+    `content` is TEXT rather than JSON for the same reason DeadLetterRow.payload
+    is: Postgres's `json` type has no equality operator, and this column is
+    written once and only ever read.
+
+    An empty `content` is the "was not read" record (spec §3.6) — no vision
+    backend, or an extraction that failed. It is stored rather than skipped so
+    a second drive does not retry a fetch that will fail again.
+    """
+
+    __tablename__ = "image_extractions"
+
+    image_sha256: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String, default="text", server_default=text("'text'"))
+    content: Mapped[str] = mapped_column(Text, default="", server_default=text("''"))
+    summary: Mapped[str] = mapped_column(Text, default="", server_default=text("''"))
+    media_type: Mapped[str] = mapped_column(String, default="", server_default=text("''"))
+    byte_size: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Who ACTUALLY produced this — LLMClient.name, never the router's pick.
+    model: Mapped[str] = mapped_column(String, default="", server_default=text("''"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
