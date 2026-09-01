@@ -216,6 +216,10 @@ The startup log names every channel it is listening to. Post a request in that c
 task appear in the dashboard, answer the bot's question **in the thread**, and approve it in the
 dashboard — approval stays there on purpose, because it releases work to run unattended.
 
+On Discord the bot **starts a thread** from your message to ask its question, because Discord gives
+a thread created that way the message's own id — which is what lets your reply route back to the
+same task. Answer inside that thread.
+
 If nothing happens, check the **Dead letters** panel first: a dropped message leaves a trace there
 with the reason.
 
@@ -297,5 +301,8 @@ The channel adapters shipped in 0.7.0 (see §5.5), with these limits:
 - Notification is best-effort with dead-lettering, not a durable outbox.
 - A task the dispatcher fails after it outlives `max_lease_attempts` does not notify — that one
   path has no notifier (backlog item 15).
+- A second question asked without the task leaving `needs_clarification` in between is not sent to
+  the channel; notification is keyed on a state change (backlog item 16).
+- `dead_letters` has no retention (backlog item 17).
 - Attachments are carried, not understood; an image from a channel is stored, not read.
 - One workspace per platform, and threads only — no DMs.

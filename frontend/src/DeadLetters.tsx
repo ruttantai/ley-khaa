@@ -32,7 +32,9 @@ export default function DeadLetters() {
   return (
     <section>
       <h2 className="text-lg font-semibold mb-2 mt-8 text-red-700">
-        Dead letters ({rows.length})
+        {/* fetchDeadLetters caps at 50, so a real flood would otherwise read a
+            reassuring "Dead letters (50)". Say "50+" when the page is full. */}
+        Dead letters ({rows.length >= 50 ? "50+" : rows.length})
       </h2>
       <ul className="space-y-2">
         {rows.map((row) => (

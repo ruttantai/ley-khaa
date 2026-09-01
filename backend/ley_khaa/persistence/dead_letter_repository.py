@@ -18,7 +18,14 @@ from sqlalchemy.orm import Session
 from .orm import DeadLetterRow
 
 # A payload is a diagnostic, not an archive. Big enough to hold a whole Slack
-# event, small enough that a flood cannot fill the database.
+# event, small enough that no single row is large.
+#
+# This bounds row SIZE, not row COUNT, and there is deliberately no pruning: a
+# permanently bad token makes the supervisor crash-loop at its 60s backoff cap,
+# writing one `connection` row per minute for as long as it runs. That is
+# visible in the dashboard by design — a silent drop is the failure this table
+# exists to prevent — but it is unbounded growth, and retention is backlog
+# item 17.
 MAX_PAYLOAD_CHARS = 4_000
 
 _TRUNCATED = "…[truncated]"

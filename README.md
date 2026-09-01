@@ -321,12 +321,24 @@ logging that plainly; startup always logs exactly which channels are live.
 What the channel is for, and what it is not:
 
 - **It is an inbox and a reply surface.** A message becomes a task; a clarifying question comes back
-  in that thread; an ordinary reply in the thread answers it. `done` and `failed` report back.
+  in that thread; a reply in the thread answers it. `done` and `failed` report back.
+- **What counts as an answer.** A message in a thread with a pending question answers it only when
+  the relevance filter judges it *not* a new request — so posting fresh work while a question is
+  open still creates its own task, rather than being swallowed into the parked one. The trade is
+  deliberate: an answer phrased like a request forms a task instead, which you resolve from the
+  dashboard's Answer box.
+- **One question per state.** Notification fires when a task's state *changes*, so if a task is
+  re-asked a second question without leaving `needs_clarification` in between, that second question
+  is not sent to the channel. It is visible in the dashboard (backlog item 16).
 - **It is not a control panel.** Approve, reject and mode override stay in the dashboard, because
   approval releases work to run unattended and a channel has no notion of who may do that.
 - **The bot never ingests its own messages**, so a notification cannot become a new request.
 - **Notification is best-effort.** A failed send is dead-lettered and shown in the dashboard's
   Dead letters panel; it never fails the task.
+- **Dead-letter payloads are scrubbed, not sanitised.** The redactor recognises Slack `xox*`/`xapp*`
+  prefixes and `Bearer` headers. It does not recognise a Discord bot token, a raw base64 secret or
+  an `sk_live_`-style key — none has a distinctive shape. Nothing writes those into a payload today;
+  treat the panel as diagnostics, not as a guaranteed-clean surface.
 - **Threads only.** DMs are not ingested in this release.
 
 ### Local dev (no Docker)

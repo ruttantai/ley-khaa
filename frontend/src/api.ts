@@ -186,7 +186,11 @@ export type DeadLetter = {
   // "inbound" | "outbound" | "connection"
   kind: string;
   reason: string;
-  // Redacted server-side before storage — never contains a token.
+  // Redacted server-side before storage. The scrub catches Slack xox*/xapp*
+  // prefixes and Bearer headers; it does NOT recognise a Discord bot token,
+  // a raw base64 secret or an sk_live_-style key, which have no distinctive
+  // shape. Nothing writes those into a payload today — do not treat this as
+  // a guarantee that any secret is safe here.
   payload: string;
   created_at: string;
 };
