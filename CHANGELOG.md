@@ -51,11 +51,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
   phone-only workflow is not possible.
 - Notification is best-effort with dead-lettering, not a durable outbox.
 - A task abandoned past `max_lease_attempts` is failed by the dispatcher, which has no notifier —
-  so that one failure path does not notify. Tracked as backlog item 15.
+  so that one failure path does not notify. Tracked as backlog item 16.
 - Notification is keyed on a state CHANGE (§3.6), so a second question asked without the task
-  leaving `needs_clarification` in between is not sent to the channel. Backlog item 16.
+  leaving `needs_clarification` in between is not sent to the channel. Backlog item 17.
 - `dead_letters` has no retention. A permanently bad token writes one `connection` row per minute
-  at the supervisor's backoff cap. Backlog item 17.
+  at the supervisor's backoff cap. Backlog item 18.
 - Dead-letter redaction catches Slack `xox*`/`xapp*` and `Bearer`, not Discord bot tokens, raw
   base64 or `sk_live_`-style keys.
 - Attachments are carried, not understood; images from a channel are stored, not read.
