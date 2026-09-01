@@ -107,6 +107,64 @@ def test_an_unread_image_is_NOT_bindable(session):
         )
 
 
+@pytest.mark.parametrize(
+    "attachments",
+    [
+        pytest.param(
+            [
+                Attachment(kind="image", name="holdings.png", content="https://cdn/a.png"),
+                Attachment(kind="table", name="holdings.csv", content="ticker\nREAL\n"),
+            ],
+            id="image_first",
+        ),
+        pytest.param(
+            [
+                Attachment(kind="table", name="holdings.csv", content="ticker\nREAL\n"),
+                Attachment(kind="image", name="holdings.png", content="https://cdn/a.png"),
+            ],
+            id="csv_first",
+        ),
+    ],
+)
+def test_a_pasted_csv_beats_a_screenshot_of_the_same_data_either_order(session, attachments):
+    """Coordinator ruling: resolver.py's own principle -- "a human who pasted
+    data meant that data" -- ranks literal bytes above a model's READING of a
+    picture. A user who drags both the screenshot AND the exact CSV into one
+    message must always get the real bytes, never the OCR'd guess, and this
+    must not depend on which one they happened to attach first."""
+    messages = MessageRepository(session)
+    row = messages.add(
+        Message(
+            source="discord", client="g", conversation_id="c1", author="ana",
+            text="compare these", attachments=attachments,
+        )
+    )
+    task = TaskRepository(session).create(
+        project="default", title="compare", source_message_ids=[row.id]
+    )
+
+    resolved = resolve_inputs(_spec(), task, messages, extractor=_Extractor())
+
+    assert len(resolved) == 1
+    assert resolved[0].content == "ticker\nREAL\n"
+    assert resolved[0].source == "attachment"
+    assert resolved[0].extracted_from is None
+    assert resolved[0].extracted_by is None
+
+
+def test_a_whitespace_only_extraction_is_NOT_bindable(session):
+    """Defence in depth: whitespace-only content is the same "was not read"
+    case as empty content, and must not sneak past on a bare truthiness
+    check ("\\n  \\n" is truthy)."""
+    task, messages = _task_with_image(session, name="notebook.png")
+
+    with pytest.raises(UnresolvedInputs):
+        resolve_inputs(
+            _spec(inputs=["notebook"]), task, messages,
+            extractor=_Extractor(content="\n  \n"),
+        )
+
+
 def test_without_an_extractor_an_image_is_still_ignored(session):
     """The offline path is byte-identical to pre-phase-7 behaviour."""
     task, messages = _task_with_image(session)

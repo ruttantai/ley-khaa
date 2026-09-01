@@ -139,17 +139,7 @@ class ExecutionRunner:
         earlier = first_attempt - 1
 
         try:
-            # Passed only when configured: with no extractor the call must stay
-            # the exact 3-argument shape it was before phase 7, byte-identical
-            # down to the call site — a pre-existing test intercepts this exact
-            # name and asserts on it (test_driver_memory.py), and TaskDriver
-            # never wires an extractor through today, so this branch is what
-            # every current caller actually takes.
-            resolved = (
-                resolve_inputs(spec, row, self.messages, extractor=self.extractor)
-                if self.extractor is not None
-                else resolve_inputs(spec, row, self.messages)
-            )
+            resolved = resolve_inputs(spec, row, self.messages, extractor=self.extractor)
         except UnresolvedInputs as exc:
             # Returned, not raised: EXECUTING -> NEEDS_CLARIFICATION is not a
             # legal edge, so the question reaches the human through _validate.
@@ -463,7 +453,18 @@ class ExecutionRunner:
                 "catalog_seed": catalog.CATALOG_SEED,
                 "spec": spec.model_dump(mode="json"),
                 "inputs": [
-                    {"name": i.name, "file": i.filename, "source": i.source, "sha256": i.sha256}
+                    {
+                        "name": i.name,
+                        "file": i.filename,
+                        "source": i.source,
+                        "sha256": i.sha256,
+                        # None (never "") for non-vision inputs: an empty
+                        # string would read as "attested nothing", when the
+                        # honest statement is "this input carries no image
+                        # provenance to attest".
+                        "extracted_from": i.extracted_from,
+                        "extracted_by": i.extracted_by,
+                    }
                     for i in resolved
                 ],
                 "attempts": attempts,

@@ -66,34 +66,59 @@ class UnresolvedInputs(Exception):
         self.names = names
 
 
+def _stem_tokens(name: str) -> frozenset[str]:
+    return catalog.tokens((name or "").rsplit(".", 1)[0])
+
+
+def _collides(tokens: frozenset[str], others: list[frozenset[str]]) -> bool:
+    if not tokens:
+        return False
+    return any(tokens <= other or other <= tokens for other in others)
+
+
 def _attachments_for(task: TaskRow, messages: MessageRepository, extractor=None) -> list[dict]:
     rows = messages.get_many(list(task.source_message_ids or []))
-    found: list[dict] = []
-    for row in rows:
-        for attachment in row.attachments or []:
-            if attachment.get("kind") in _TEXTUAL:
-                found.append(attachment)
-                continue
-            if extractor is None or attachment.get("kind") != AttachmentKind.IMAGE.value:
-                continue
-            record = extractor.extract(attachment)
-            # Empty content is the "was not read" signal. Binding it would hand
-            # a generated script an empty file and let it compute a confident
-            # wrong answer, which is worse than asking the human.
-            if not record.content:
-                continue
-            stem = (attachment.get("name") or "image").rsplit(".", 1)[0]
-            suffix = "csv" if record.kind == "table" else "txt"
-            found.append(
-                {
-                    "kind": AttachmentKind.TEXT.value,
-                    "name": f"extracted_{stem}.{suffix}",
-                    "content": record.content,
-                    # Carried on the synthetic attachment so resolve_inputs can
-                    # stamp provenance without a second extractor call.
-                    "_vision": {"from": record.image_sha256, "by": record.model},
-                }
-            )
+    all_attachments = [a for row in rows for a in (row.attachments or [])]
+
+    textual = [a for a in all_attachments if a.get("kind") in _TEXTUAL]
+    found: list[dict] = list(textual)
+    if extractor is None:
+        return found
+
+    # A pasted CSV/table beats a screenshot of the same data, regardless of
+    # which attachment the human happened to paste first: the module
+    # docstring's principle — "a human who pasted data meant that data" —
+    # ranks literal bytes above a model's READING of a picture. Vision
+    # entries are therefore computed in a SECOND pass, after every textual
+    # stem is known, and one is dropped outright if its filename stem
+    # collides with a textual attachment already bound, so attachment order
+    # within the message can never flip which one wins.
+    textual_stems = [_stem_tokens(a.get("name", "")) for a in textual]
+
+    for attachment in all_attachments:
+        if attachment.get("kind") != AttachmentKind.IMAGE.value:
+            continue
+        record = extractor.extract(attachment)
+        # Empty (or whitespace-only) content is the "was not read" signal.
+        # Binding it would hand a generated script an empty file and let it
+        # compute a confident wrong answer, which is worse than asking the
+        # human.
+        if not record.content.strip():
+            continue
+        stem = (attachment.get("name") or "image").rsplit(".", 1)[0]
+        if _collides(catalog.tokens(stem), textual_stems):
+            continue
+        suffix = "csv" if record.kind == "table" else "txt"
+        found.append(
+            {
+                "kind": AttachmentKind.TEXT.value,
+                "name": f"extracted_{stem}.{suffix}",
+                "content": record.content,
+                # Carried on the synthetic attachment so resolve_inputs can
+                # stamp provenance without a second extractor call.
+                "_vision": {"from": record.image_sha256, "by": record.model},
+            }
+        )
     return found
 
 
