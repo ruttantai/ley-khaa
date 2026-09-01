@@ -42,6 +42,38 @@ def test_build_vision_extractor_wires_a_real_fetcher(session):
     assert extractor.fetcher is not None
     assert "files.slack.com" in extractor.fetcher.allowed_hosts
     assert extractor.fetcher.max_bytes == real_settings.image_max_bytes
+    # The extraction repository must be built on the SAME session this call
+    # was given, not a fresh one of its own — otherwise every extraction row
+    # lands in a session the caller never commits or rolls back, and every
+    # build_orchestrator call leaks an unclosed connection.
+    assert extractor.extractions.session is session
+
+
+def test_build_vision_extractor_reads_the_configured_max_bytes(session, monkeypatch):
+    """max_bytes has to come from settings, not a hardcoded default — the
+    default and the configured value coincide under test, so a test that only
+    checks against real_settings.image_max_bytes cannot tell a hardcoded
+    5*1024*1024 apart from a real setting read."""
+    monkeypatch.setattr(app_module, "settings", replace(real_settings, image_max_bytes=12345))
+    extractor = app_module.build_vision_extractor(session)
+    assert extractor.fetcher.max_bytes == 12345
+
+
+def test_build_vision_extractor_reads_the_configured_llm_backend(session, monkeypatch):
+    """build_llm must be called with settings.llm_backend, not a hardcoded
+    backend — conftest.py sets LEY_KHAA_LLM=heuristic globally, so any test
+    that merely checks the resulting LLM's TYPE cannot tell a hardcoded
+    'heuristic' apart from a real settings read."""
+    recorded = []
+
+    def _fake_build_llm(backend):
+        recorded.append(backend)
+        return HeuristicLLM()
+
+    monkeypatch.setattr(app_module, "build_llm", _fake_build_llm)
+    monkeypatch.setattr(app_module, "settings", replace(real_settings, llm_backend="distinctive-backend"))
+    app_module.build_vision_extractor(session)
+    assert recorded == ["distinctive-backend"]
 
 
 def test_build_vision_extractor_respects_the_off_switch(session, monkeypatch):
@@ -85,10 +117,17 @@ def test_the_extractor_dead_letters_through_the_repository(session, monkeypatch)
 
 def test_a_mixed_case_configured_host_still_matches(session, monkeypatch):
     """channel_set() strips whitespace but does not lowercase, and urlparse's
-    .hostname ALWAYS lowercases. An operator writing `Files.Slack.Com` must
-    still get a working allowlist entry, not a silent, unexplained refusal."""
+    .hostname ALWAYS lowercases. An operator writing `Files.Example.Com` must
+    still get a working allowlist entry, not a silent, unexplained refusal.
+
+    Deliberately a host ABSENT from the built-in default (files.slack.com IS
+    in the default, so asserting membership alone cannot tell a real
+    settings.image_hosts read apart from a hardcoded default string). The
+    equality assertion below pins the setting read and the lowercasing
+    together: it fails if either the read or the .lower() is dropped.
+    """
     monkeypatch.setattr(
-        app_module, "settings", replace(real_settings, image_hosts="Files.Slack.Com")
+        app_module, "settings", replace(real_settings, image_hosts="Files.Example.Com")
     )
     extractor = app_module.build_vision_extractor(session)
-    assert "files.slack.com" in extractor.fetcher.allowed_hosts
+    assert extractor.fetcher.allowed_hosts == frozenset({"files.example.com"})
