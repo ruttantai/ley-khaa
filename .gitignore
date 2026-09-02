@@ -5,3 +5,12 @@ __pycache__/
 *.pyc
 .worktrees/
 task-workspaces/
+
+# Local SQLite databases. GETTING_STARTED §6 tells you to run the dev loop with
+# DATABASE_URL="sqlite:///./leykhaa.db", so this file is created by following the
+# docs — and since 0.7.0 it can hold real message content from a live Slack or
+# Discord channel. Never committable.
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

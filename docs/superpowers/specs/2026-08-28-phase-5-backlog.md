@@ -350,7 +350,7 @@ plan justified a safety property with "the bonus (0.15) is smaller than one miss
 absolute. Executing it showed a `certainty=1.0` spec with a known gap reaching AUTO. Pre-scanning
 each task brief against the real code before dispatching caught that and four more brief defects.
 
-## 15. A poisoned task fails without telling anyone
+## 16. A poisoned task fails without telling anyone
 
 **What is broken.** `Dispatcher._fail_poison` moves a task to FAILED when it has outlived
 `max_lease_attempts` workers. It does that with a bare `TaskRepository`, and the notifier lives on
@@ -368,7 +368,7 @@ notifier and FastAPI, which is why it is not simply given a `TaskDriver`.
 outside world, first credentials — and this adds a constructor parameter to the one component whose
 concurrency correctness the whole queue rests on.
 
-## 16. A second clarifying question is never delivered
+## 17. A second clarifying question is never delivered
 
 **What is broken.** `TaskDriver._announce` guards re-notification with
 `mark_notified(row.id, row.state)` — a compare-and-swap on the STATE string. There are three
@@ -390,7 +390,7 @@ re-arms the guard while a re-drive in the same state still does not.
 **Why it was deferred.** It is a schema change to the exact column whose compare-and-swap stops a
 re-entrant `advance()` spamming the channel, landed at the end of the phase that introduced it.
 
-## 17. `dead_letters` has no retention
+## 18. `dead_letters` has no retention
 
 **What is broken.** `MAX_PAYLOAD_CHARS` bounds row SIZE, not row COUNT, and nothing prunes. A
 permanently bad token makes `AdapterSupervisor._supervise` crash-loop at its 60s backoff cap,

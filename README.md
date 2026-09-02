@@ -337,7 +337,7 @@ What the channel is for, and what it is not:
   dashboard's Answer box.
 - **One question per state.** Notification fires when a task's state *changes*, so if a task is
   re-asked a second question without leaving `needs_clarification` in between, that second question
-  is not sent to the channel. It is visible in the dashboard (backlog item 16).
+  is not sent to the channel. It is visible in the dashboard (backlog item 17).
 - **It is not a control panel.** Approve, reject and mode override stay in the dashboard, because
   approval releases work to run unattended and a channel has no notion of who may do that.
 - **The bot never ingests its own messages**, so a notification cannot become a new request.

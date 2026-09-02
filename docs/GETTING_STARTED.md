@@ -327,10 +327,10 @@ The channel adapters shipped in 0.7.0 (see §5.5), with these limits:
   phone-only workflow is not possible.
 - Notification is best-effort with dead-lettering, not a durable outbox.
 - A task the dispatcher fails after it outlives `max_lease_attempts` does not notify — that one
-  path has no notifier (backlog item 15).
+  path has no notifier (backlog item 16).
 - A second question asked without the task leaving `needs_clarification` in between is not sent to
-  the channel; notification is keyed on a state change (backlog item 16).
-- `dead_letters` has no retention (backlog item 17).
+  the channel; notification is keyed on a state change (backlog item 17).
+- `dead_letters` has no retention (backlog item 18).
 - Non-image attachments are carried, not understood — a PDF or a spreadsheet reaches the interpreter
   as a URL, never fetched. Images are read (see §5.6 above), except with no `ANTHROPIC_API_KEY`,
   where an image is carried the same way.
