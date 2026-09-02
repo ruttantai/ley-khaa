@@ -452,10 +452,14 @@ notice. Both warnings say so; restart the backend after fixing either cause.
 **Under `docker compose up`**, Ollama runs on the host, not in a container, so `localhost` inside the
 backend container is the wrong machine. Compose points `LEY_KHAA_OLLAMA_HOST` at
 `http://host.docker.internal:11434` by default and maps that name to the host via `extra_hosts`; that
-mapping alone is not sufficient, because Ollama itself binds `127.0.0.1` by default — a daemon
-started the normal way still refuses every connection that doesn't originate on the host machine
-itself, `host.docker.internal` included. Run the daemon with `OLLAMA_HOST=0.0.0.0` (or otherwise bind
-it to all interfaces) for the container to reach it at all.
+mapping alone is not sufficient, because Ollama itself binds `127.0.0.1` by default — on Linux, where
+the container reaches the host at a bridge address, a daemon started the normal way still refuses
+every connection that doesn't originate on the host machine itself, `host.docker.internal` included.
+(On Docker Desktop for macOS and Windows, `host.docker.internal` is serviced by the Docker Desktop
+host proxy and commonly does reach a loopback-bound host service without any rebind — but that is
+platform behavior, not a guarantee this project relies on.) Run the daemon with
+`OLLAMA_HOST=0.0.0.0` (or otherwise bind it to all interfaces) for the container to reach it
+reliably on every platform.
 
 ### Local dev (no Docker)
 

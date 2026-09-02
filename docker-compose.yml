@@ -23,9 +23,10 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       LEY_KHAA_LLM: ${LEY_KHAA_LLM:-anthropic}
       # Ollama runs on the HOST, not in this container, so localhost inside the
-      # container is the wrong machine. host.docker.internal is how a container
-      # reaches the host; without it the probe fails and the backend silently
-      # falls back to the regex stand-in.
+      # container is the wrong machine. host.docker.internal points the
+      # container at the host, but a loopback-bound daemon can still refuse
+      # that connection — see the README's "running without an API key"
+      # section for the full story and the OLLAMA_HOST=0.0.0.0 fix.
       LEY_KHAA_OLLAMA_MODEL: ${LEY_KHAA_OLLAMA_MODEL:-}
       LEY_KHAA_OLLAMA_HOST: ${LEY_KHAA_OLLAMA_HOST:-http://host.docker.internal:11434}
       # Channel adapters (spec §5). Unset -> that adapter does not start, which

@@ -83,7 +83,9 @@ daemon) needs a backend restart before it takes effect — the running process k
 `HeuristicLLM` and won't say so again. Under `docker compose up`, Ollama runs on the host rather than
 in a container, so `LEY_KHAA_OLLAMA_HOST` needs to reach it as `http://host.docker.internal:11434` —
 compose sets that default for you, but the daemon itself must also be started with
-`OLLAMA_HOST=0.0.0.0` (it binds `127.0.0.1` by default), or the container still can't reach it. See
+`OLLAMA_HOST=0.0.0.0` (it binds `127.0.0.1` by default) — on Linux, where the container reaches the
+host at a bridge address, a loopback-bound daemon still refuses it, so without this the container
+can't reach it at all. See
 [Running without an API key](../README.md#running-without-an-api-key) in the README for the full
 picture, including what happens when the daemon isn't reachable.
 
