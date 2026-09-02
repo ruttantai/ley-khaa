@@ -14,7 +14,7 @@ from ..executor.runner import ExecutionRunner
 from ..executor.sandbox import SandboxUnavailable
 from ..interpreter.interpreter import Interpreter, MalformedSpec
 from ..interpreter.spec import TaskSpec
-from ..llm.client import LLMClient
+from ..llm.client import EmptyModelResponse, LLMClient
 from ..memory.fingerprint import request_fingerprint
 from ..memory.matcher import MemoryMatcher
 from ..persistence.candidate_repository import CandidateRepository
@@ -250,27 +250,50 @@ class TaskDriver:
             return self.repo.claim(
                 row.id, expected=TaskState.CLASSIFIED, target=TaskState.NEEDS_CLARIFICATION
             )
+        except EmptyModelResponse as exc:
+            # A content problem, not a broken connection: the model returned
+            # no parsed output (most likely max_tokens truncating an
+            # oversized prompt). This must not be recorded as "unavailable"
+            # — that label sends an operator hunting for a network or
+            # API-key problem that does not exist, and the real cause (the
+            # prompt was too long) appears nowhere. Same retry bookkeeping as
+            # any other interpretation failure (see _fail_interpret); whether
+            # to retry with a shortened prompt or escalate to a human sooner
+            # is a design decision, filed to the phase's closure task — out
+            # of scope here.
+            return self._fail_interpret(row, cause=str(exc))
         except Exception:
             # A broken connection is not a broken request. Leave the task in
             # CLASSIFIED and let the sweeper try again — that retry loop already
             # exists, so no backoff machinery is needed here.
-            attempts = self.repo.increment_interpret_attempts(row.id)
-            logger.exception("interpreting task %s failed (attempt %d)", row.id, attempts)
-            if attempts >= _MAX_INTERPRET_ATTEMPTS:
-                # Claim before recording: the same inversion c043c46 fixed in
-                # reject(). Recording first would stamp a failure_reason onto a
-                # task whose transition to FAILED then lost the race (another
-                # caller already moved it), corrupting the record of whatever
-                # that caller's outcome was.
-                if self.repo.claim(
-                    row.id, expected=TaskState.CLASSIFIED, target=TaskState.FAILED
-                ):
-                    self.repo.record_failure(
-                        row.id, f"interpreter unavailable after {attempts} attempts"
-                    )
-            return False
+            return self._fail_interpret(row, cause=None)
 
         return self._after_spec(row, spec)
+
+    def _fail_interpret(self, row: TaskRow, *, cause: str | None) -> bool:
+        """Shared bookkeeping for every interpretation failure: same attempt
+        counter, same retry threshold, same claim-before-record ordering
+        (c043c46) regardless of what went wrong. Only `cause` differs by
+        branch — when known, it replaces the generic "unavailable" label so
+        the recorded reason names what actually happened rather than lumping
+        every failure into one bucket.
+        """
+        attempts = self.repo.increment_interpret_attempts(row.id)
+        logger.exception("interpreting task %s failed (attempt %d)", row.id, attempts)
+        if attempts >= _MAX_INTERPRET_ATTEMPTS:
+            # Claim before recording: the same inversion c043c46 fixed in
+            # reject(). Recording first would stamp a failure_reason onto a
+            # task whose transition to FAILED then lost the race (another
+            # caller already moved it), corrupting the record of whatever
+            # that caller's outcome was.
+            if self.repo.claim(row.id, expected=TaskState.CLASSIFIED, target=TaskState.FAILED):
+                reason = (
+                    f"interpreter failed after {attempts} attempts: {cause}"
+                    if cause is not None
+                    else f"interpreter unavailable after {attempts} attempts"
+                )
+                self.repo.record_failure(row.id, reason)
+        return False
 
     def _recall(self, row: TaskRow) -> MemoryRow | None:
         if self.memory is None:

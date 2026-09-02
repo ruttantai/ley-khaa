@@ -8,6 +8,17 @@ from .router import ModelChoice
 T = TypeVar("T", bound=BaseModel)
 
 
+class EmptyModelResponse(ValueError):
+    """response.parsed_output was None -- most likely max_tokens truncated the
+    response before it could be parsed. A ValueError subclass so any existing
+    `except ValueError` still behaves exactly as before, but a distinguishable
+    type so a caller (the interpreter driver, for one) can name the real cause
+    instead of lumping this in with a generic/transport failure. Content
+    problem, not a connection problem: pydantic.ValidationError -- caught
+    specifically by Interpreter.interpret -- is itself a ValueError subclass,
+    but this is not a ValidationError and must not be confused for one."""
+
+
 class LLMClient(Protocol):
     """The single seam every LLM call goes through.
 
@@ -154,7 +165,7 @@ class AnthropicLLM:
             # interpreter both dereference the result immediately — and the
             # traceback then names THEIR line, not this one. Shared by parse()
             # and extract_image(): both hit the same SDK call shape.
-            raise ValueError(
+            raise EmptyModelResponse(
                 f"{choice.model} returned no parsed output "
                 f"(stop_reason may be max_tokens for {output_format.__name__})"
             )

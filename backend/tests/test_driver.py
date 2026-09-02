@@ -5,7 +5,7 @@ from ley_khaa.crystallizer.candidate import CandidateState
 from ley_khaa.domain.models import Message
 from ley_khaa.domain.states import TaskState
 from ley_khaa.interpreter.spec import TaskSpec
-from ley_khaa.llm.client import FakeLLM
+from ley_khaa.llm.client import EmptyModelResponse, FakeLLM
 from ley_khaa.orchestrator.driver import TaskDriver
 from ley_khaa.persistence.candidate_repository import CandidateRepository
 from ley_khaa.persistence.message_repository import MessageRepository
@@ -100,6 +100,25 @@ def test_repeated_transport_failures_eventually_fail_the_task(session):
     result = repo.get(task.id)
     assert result.state == TaskState.FAILED.value
     assert "unavailable" in result.failure_reason
+
+
+def test_a_max_tokens_response_names_the_real_cause_not_unavailable(session):
+    """A response that stops on max_tokens parses to None; AnthropicLLM now
+    raises EmptyModelResponse for it (task 1). This is a content problem, not
+    a broken connection -- the recorded failure must say so, not "interpreter
+    unavailable", which sends an operator hunting for a network or API-key
+    problem that does not exist (task 1's labelling fix, phase 9)."""
+    exc = EmptyModelResponse(
+        "claude-opus-5 returned no parsed output (stop_reason may be max_tokens for TaskSpec)"
+    )
+    repo, driver, task = _setup(session, [exc] * 3)
+    for _ in range(3):
+        driver.advance(task.id)
+    result = repo.get(task.id)
+
+    assert result.state == TaskState.FAILED.value
+    assert "unavailable" not in result.failure_reason
+    assert "no parsed output" in result.failure_reason
 
 
 def test_a_lost_race_on_the_final_transport_failure_does_not_stamp_the_task(session):
