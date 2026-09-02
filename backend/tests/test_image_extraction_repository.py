@@ -47,22 +47,65 @@ def test_a_recorded_extraction_comes_back(session):
 
 
 def test_recording_the_same_image_twice_updates_rather_than_raising(session):
-    """A re-extraction can happen legitimately — two workers racing on the same
-    image. The second write must not blow up on the primary key."""
-    repo = ImageExtractionRepository(session)
-    repo.record(
-        image_sha256=sha256_of(IMAGE), extraction=_extraction(),
-        media_type="image/png", byte_size=1, model="heuristic",
-    )
-    repo.record(
-        image_sha256=sha256_of(IMAGE),
-        extraction=_extraction(content="x,y\n3,4", summary="different"),
-        media_type="image/png", byte_size=1, model="anthropic",
-    )
+    """Genuinely drives the IntegrityError recovery branch in record().
 
-    row = repo.get(sha256_of(IMAGE))
-    assert row.content == "x,y\n3,4"
-    assert row.model == "anthropic"
+    Same technique as CandidateRepository's
+    test_upsert_recovers_when_a_concurrent_insert_wins_the_race: a
+    before_flush hook on the primary session opens a SECOND session on the
+    same connection and commits a competing row under the SAME image_sha256
+    right after this session's own get() has already missed it. The primary
+    session's INSERT then collides for real, and the IntegrityError, the
+    rollback and the recovery UPDATE are all real — not simulated.
+
+    The previous shape of this test called repo.record() twice, sequentially,
+    on ONE session: the second call's own session.get() would already see
+    the first row and take the plain UPDATE branch, never touching the
+    except IntegrityError branch at all. That passed whether or not the
+    guard existed, and pinned nothing.
+    """
+    from sqlalchemy import event
+    from sqlalchemy.orm import sessionmaker
+
+    other_session = sessionmaker(
+        bind=session.get_bind(), autoflush=False, expire_on_commit=False, future=True
+    )
+    repo = ImageExtractionRepository(session)
+    digest = sha256_of(IMAGE)
+    fired: list[int] = []
+
+    def commit_the_winner(sess, flush_context, instances):
+        if fired:  # only race the first flush; the recovery path flushes again
+            return
+        fired.append(1)
+        other = other_session()
+        try:
+            ImageExtractionRepository(other).record(
+                image_sha256=digest,
+                extraction=_extraction(content="x,y\n3,4", summary="different"),
+                media_type="image/png", byte_size=1, model="anthropic",
+            )
+        finally:
+            other.close()
+
+    event.listen(session, "before_flush", commit_the_winner)
+    try:
+        result = repo.record(
+            image_sha256=digest, extraction=_extraction(),
+            media_type="image/png", byte_size=1, model="heuristic",
+        )
+    finally:
+        event.remove(session, "before_flush", commit_the_winner)
+
+    assert fired, "the race was never interposed"
+    # Last write wins per record()'s own docstring: the row that wins the
+    # INSERT race (the "other" session, above) is not necessarily the row
+    # that survives — the recovering caller's own values are applied ON TOP
+    # of it, so THIS call's fields (not the other session's) are final.
+    row = repo.get(digest)
+    assert row.content == "a,b\n1,2"
+    assert row.model == "heuristic"
+    assert result.content == "a,b\n1,2"
+    assert result.model == "heuristic"
 
 
 def test_an_unread_record_is_storable(session):
