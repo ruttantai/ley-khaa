@@ -262,3 +262,66 @@ def test_notify_raises_when_neither_thread_nor_channel_is_visible():
                 "the question",
             )
         )
+
+
+class _FakeForum:
+    """A forum channel: it holds threads, not messages, so discord.py gives it
+    no get_partial_message. Exactly the shape notify() used to crash on."""
+
+    async def send(self, text):  # forums do have send(); the anchor does not exist
+        raise AssertionError("a forum post must never be made by notify()")
+
+
+def test_notify_names_the_cause_when_the_parent_cannot_hold_a_message():
+    """A forum post IS a thread, so its conversation id carries the FORUM as
+    the parent channel. Once that thread leaves the client's cache (a restart,
+    an archive) notify() falls through to the parent — and a forum has no
+    get_partial_message. Unguarded that was a bare AttributeError, dead-lettered
+    under a name that says nothing about what went wrong."""
+
+    class FakeClient:
+        def get_channel(self, channel_id):
+            if channel_id == 998877665544332211:
+                return _FakeForum()
+            return None
+
+    adapter, _, _ = _adapter()
+    adapter.client = FakeClient()
+    with pytest.raises(AdapterError) as caught:
+        asyncio.run(
+            adapter.notify(
+                Destination(
+                    source="discord",
+                    conversation_id="discord:112233445566778899:998877665544332211:1180000000000000002",
+                ),
+                "the question",
+            )
+        )
+    assert "_FakeForum" in str(caught.value), "the error must name what it actually found"
+    assert not isinstance(caught.value, AttributeError)
+
+
+class _FakeCategory:
+    """Resolves as a channel but cannot be posted into."""
+
+
+def test_notify_names_the_cause_when_the_anchor_cannot_be_posted_into():
+    class FakeClient:
+        def get_channel(self, channel_id):
+            if channel_id == 1180000000000000002:
+                return _FakeCategory()
+            return None
+
+    adapter, _, _ = _adapter()
+    adapter.client = FakeClient()
+    with pytest.raises(AdapterError) as caught:
+        asyncio.run(
+            adapter.notify(
+                Destination(
+                    source="discord",
+                    conversation_id="discord:112233445566778899:998877665544332211:1180000000000000002",
+                ),
+                "the question",
+            )
+        )
+    assert "_FakeCategory" in str(caught.value)
