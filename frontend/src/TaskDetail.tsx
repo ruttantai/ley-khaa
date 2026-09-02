@@ -25,9 +25,13 @@ const pct = (value: number | null) => (value === null ? "—" : `${Math.round(va
 export default function TaskDetail({
   task,
   onChanged,
+  onWorkflowPromoted,
 }: {
   task: Task;
   onChanged: (task: Task) => void;
+  // Optional: only App wires this, to tell the sibling Registry to refresh.
+  // Standalone renders (e.g. tests) don't need it.
+  onWorkflowPromoted?: () => void;
 }) {
   const [answer, setAnswer] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -154,7 +158,9 @@ export default function TaskDetail({
         </div>
       )}
 
-      {task.workspace_path && <BundlePanel taskId={task.id} />}
+      {task.workspace_path && (
+        <BundlePanel taskId={task.id} onPromoted={onWorkflowPromoted} />
+      )}
     </div>
   );
 }

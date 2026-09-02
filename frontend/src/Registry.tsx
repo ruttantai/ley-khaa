@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { deleteWorkflow, fetchWorkflows, unquarantineWorkflow, type Workflow } from "./api";
 
 const ORIGIN_STYLES: Record<string, string> = {
@@ -6,26 +6,37 @@ const ORIGIN_STYLES: Record<string, string> = {
   promoted: "bg-blue-100 text-blue-800",
 };
 
-export default function Registry() {
+// `refreshSignal` is a value App bumps whenever something elsewhere on the
+// page (a promotion made from a BundlePanel) should invalidate this list.
+// Registry itself doesn't interpret the value, only reacts to it changing.
+export default function Registry({ refreshSignal }: { refreshSignal?: number } = {}) {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = () =>
-    fetchWorkflows()
-      .then((w) => {
-        setWorkflows(w);
-        setError(null);
-        setLoaded(true);
-      })
-      .catch((e) => {
-        setError(String(e));
-        setLoaded(true);
-      });
+  // Memoised: `load` sits in the effect's own dependency array below (it's
+  // used inside the effect, so exhaustive-deps wants it there). An
+  // unmemoised `load` would get a fresh identity every render, and with
+  // refreshSignal also in that array the effect would then re-fire on every
+  // render — not just when refreshSignal actually changes.
+  const load = useCallback(
+    () =>
+      fetchWorkflows()
+        .then((w) => {
+          setWorkflows(w);
+          setError(null);
+          setLoaded(true);
+        })
+        .catch((e) => {
+          setError(String(e));
+          setLoaded(true);
+        }),
+    [],
+  );
 
   useEffect(() => {
     load();
-  }, []);
+  }, [refreshSignal, load]);
 
   if (!loaded) return <p className="text-sm text-gray-500">Loading the registry…</p>;
   if (error) return <p className="text-red-600 text-sm">{error}</p>;

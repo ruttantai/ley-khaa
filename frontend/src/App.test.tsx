@@ -173,3 +173,67 @@ test("a healthy dashboard shows no dead-letter panel", async () => {
   await waitFor(() => expect(screen.getByText("compare universes")).toBeTruthy());
   expect(screen.queryByText(/Dead letters/)).toBeNull();
 });
+
+test("promoting a bundle from the task panel refreshes the Registry list on the same page", async () => {
+  // Registry.tsx loads once on mount with no external trigger, and Registry
+  // renders as a sibling of the task list in App — a promotion made in
+  // BundlePanel (nested under TaskDetail) has no path back to it unless App
+  // threads a refresh signal through. This test fails without that wiring:
+  // the registry stays "No workflows cached yet" after the promotion.
+  let workflows: unknown[] = [];
+  const promoted = {
+    name: "universe_check",
+    description: "",
+    operation_aliases: [],
+    output_format: "xlsx",
+    inputs: [],
+    origin: "promoted",
+    promoted_from_task_id: "t1",
+    runs_ok: 0,
+    runs_failed: 0,
+    quarantined: false,
+    source_sha256: "0".repeat(64),
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (u.includes("/bundle/file")) return { ok: true, json: async () => ({ content: "" }) };
+      if (u.includes("/bundle")) {
+        return {
+          ok: true,
+          json: async () => ({
+            task_id: "t1",
+            root: "/work/task-workspaces/task-t1",
+            manifest: { lane: "synthesis", verdict: { ok: true } },
+            files: [],
+            deliverables: [],
+          }),
+        };
+      }
+      if (method === "POST" && u.includes("/promote")) {
+        workflows = [promoted];
+        return { ok: true, status: 200, json: async () => promoted };
+      }
+      if (u.includes("/registry")) return { ok: true, json: async () => workflows };
+      if (u.includes("/dead-letters")) return { ok: true, json: async () => [] };
+      if (u.includes("/candidates")) return { ok: true, json: async () => [] };
+      if (u.includes("/projects")) return { ok: true, json: async () => [project()] };
+      if (u.includes("/triage")) return { ok: true, json: async () => [] };
+      return { ok: true, json: async () => [task({ workspace_path: "/work/task-workspaces/task-t1" })] };
+    }),
+  );
+
+  render(<App />);
+  await waitFor(() => expect(screen.getByText("compare universes")).toBeTruthy());
+  expect(screen.getByText(/no workflows cached yet/i)).toBeTruthy();
+
+  fireEvent.click(screen.getByText("compare universes"));
+  fireEvent.click(await screen.findByRole("button", { name: /promote/i }));
+  fireEvent.change(screen.getByLabelText(/name/i), { target: { value: "universe_check" } });
+  fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+  await waitFor(() => expect(screen.getByText("universe_check")).toBeTruthy());
+  expect(screen.queryByText(/no workflows cached yet/i)).toBeNull();
+});
