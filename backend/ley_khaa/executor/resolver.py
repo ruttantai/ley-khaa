@@ -61,9 +61,30 @@ class ResolvedInput:
 class UnresolvedInputs(Exception):
     """Raised with EVERY unresolved name, so the human is asked once."""
 
-    def __init__(self, names: list[str]) -> None:
+    def __init__(self, names: list[str], unread_images: list["UnreadImage"] | None = None) -> None:
         super().__init__(", ".join(names))
         self.names = names
+        # Carried on the exception, not just returned on the happy path: the
+        # manifest must record an unread image (review B2) even on the round
+        # that never produces a single ResolvedInput.
+        self.unread_images = unread_images or []
+
+
+@dataclass(frozen=True)
+class UnreadImage:
+    """An image that was supplied but could not be read (spec §3.6, §7).
+
+    Kept out of `ResolvedInput` on purpose: an unread image carries no bytes
+    a script can compute on, so folding it in would let it slip into
+    inputs/ as an empty file -- the exact thing the B1 fix exists to stop.
+    This is what lets the manifest say plainly "an image was supplied and
+    not read" instead of staying silent about it.
+    """
+
+    name: str
+    image_sha256: str
+    model: str
+    summary: str
 
 
 def _stem_tokens(name: str) -> frozenset[str]:
@@ -76,14 +97,17 @@ def _collides(tokens: frozenset[str], others: list[frozenset[str]]) -> bool:
     return any(tokens <= other or other <= tokens for other in others)
 
 
-def _attachments_for(task: TaskRow, messages: MessageRepository, extractor=None) -> list[dict]:
+def _attachments_for(
+    task: TaskRow, messages: MessageRepository, extractor=None
+) -> tuple[list[dict], list[UnreadImage]]:
     rows = messages.get_many(list(task.source_message_ids or []))
     all_attachments = [a for row in rows for a in (row.attachments or [])]
 
     textual = [a for a in all_attachments if a.get("kind") in _TEXTUAL]
     found: list[dict] = list(textual)
+    unread_images: list[UnreadImage] = []
     if extractor is None:
-        return found
+        return found, unread_images
 
     # A pasted CSV/table beats a screenshot of the same data, regardless of
     # which attachment the human happened to paste first: the module
@@ -99,13 +123,25 @@ def _attachments_for(task: TaskRow, messages: MessageRepository, extractor=None)
         if attachment.get("kind") != AttachmentKind.IMAGE.value:
             continue
         record = extractor.extract(attachment)
+        name = attachment.get("name") or "image"
         # Empty (or whitespace-only) content is the "was not read" signal.
         # Binding it would hand a generated script an empty file and let it
         # compute a confident wrong answer, which is worse than asking the
-        # human.
+        # human. It must also not vanish silently: recorded here so
+        # resolve_inputs can both refuse to let the name fall through to the
+        # catalog (review B1) and let the manifest say an image was supplied
+        # and not read (review B2).
         if not record.content.strip():
+            unread_images.append(
+                UnreadImage(
+                    name=name,
+                    image_sha256=record.image_sha256,
+                    model=record.model,
+                    summary=record.summary,
+                )
+            )
             continue
-        stem = (attachment.get("name") or "image").rsplit(".", 1)[0]
+        stem = name.rsplit(".", 1)[0]
         if _collides(catalog.tokens(stem), textual_stems):
             continue
         suffix = "csv" if record.kind == "table" else "txt"
@@ -119,7 +155,7 @@ def _attachments_for(task: TaskRow, messages: MessageRepository, extractor=None)
                 "_vision": {"from": record.image_sha256, "by": record.model},
             }
         )
-    return found
+    return found, unread_images
 
 
 def _from_attachments(name: str, attachments: list[dict], used: set[int]) -> dict | None:
@@ -161,8 +197,14 @@ def _unique(filename: str, taken: set[str]) -> str:
 
 def resolve_inputs(
     spec: TaskSpec, task: TaskRow, messages: MessageRepository, extractor=None
-) -> list[ResolvedInput]:
-    attachments = _attachments_for(task, messages, extractor)
+) -> tuple[list[ResolvedInput], list[UnreadImage]]:
+    attachments, unread_images = _attachments_for(task, messages, extractor)
+    # Same token-subset test _from_attachments already uses to decide a
+    # collision, reused here rather than invented fresh: an unread image's
+    # filename stem "claims" the spec input names it could plausibly have
+    # answered, and that claim must block the catalog exactly like a bound
+    # attachment would -- see review B1.
+    unread_stems = [_stem_tokens(img.name) for img in unread_images]
     used_attachments: set[int] = set()
     taken_filenames: set[str] = set()
     resolved: list[ResolvedInput] = []
@@ -186,6 +228,15 @@ def resolve_inputs(
             )
             continue
 
+        # An unread image claiming this name must NOT fall through to the
+        # catalog: a human who pasted a screenshot meant that screenshot, and
+        # answering with the synthetic demo dataset instead -- silently, with
+        # a manifest that attests a clean `source: "catalog"` -- is the
+        # defect review B1 exists to close. Ask a human instead.
+        if _collides(catalog.tokens(name), unread_stems):
+            missing.append(name)
+            continue
+
         dataset = catalog.resolve_name(name)
         if dataset is not None:
             resolved.append(
@@ -201,5 +252,5 @@ def resolve_inputs(
         missing.append(name)
 
     if missing:
-        raise UnresolvedInputs(missing)
-    return resolved
+        raise UnresolvedInputs(missing, unread_images)
+    return resolved, unread_images

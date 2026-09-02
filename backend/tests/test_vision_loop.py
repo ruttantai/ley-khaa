@@ -113,8 +113,13 @@ def test_offline_an_image_is_carried_not_read_and_the_task_still_completes(sessi
     assert extraction.model == "heuristic", "must credit the offline stand-in, never an Anthropic model"
 
 
-def test_the_manifest_credits_who_actually_read_the_image(session):
-    """Offline, the manifest must say heuristic — never claude-opus-5."""
+def test_offline_extraction_credits_the_heuristic_stand_in(session):
+    """Offline, the extraction row must say heuristic -- never claude-opus-5.
+    (Renamed from test_the_manifest_credits_who_actually_read_the_image: this
+    is the unit-level check on the extraction row. The manifest-level claim
+    that name promised is now pinned by
+    test_an_unread_image_reaches_the_manifest_as_a_carried_not_read_image
+    below, which actually opens a manifest.json.)"""
     llm = _CountingLLM()  # no result -> the real offline stand-in
     extractor = VisionExtractor(
         llm=llm, extractions=ImageExtractionRepository(session), fetcher=None
@@ -187,6 +192,58 @@ def test_the_bundle_holds_the_extracted_text_the_manifest_points_at(tmp_path, se
     content = bundle_file.read_text(encoding="utf-8")
     assert content == "ticker,qty\nAAA,10\n", "must hold the extracted TEXT, not be empty or wrong"
     assert PNG not in bundle_file.read_bytes(), "must hold extracted text, not the image bytes"
+
+
+def test_an_unread_image_reaches_the_manifest_as_a_carried_not_read_image(tmp_path, session):
+    """Review B2: on the default (no-account) path an unread image never
+    becomes a ResolvedInput, so without this fix the manifest would say
+    NOTHING about it -- a confident audit trail for a run whose screenshot
+    was ignored. Drives a REAL ExecutionRunner to a REAL tmp_path workspace
+    and opens manifest.json, the way the read-successfully test above does.
+    This is the fix for the test that used to be named for the manifest
+    (test_the_manifest_credits_who_actually_read_the_image) but never opened
+    one -- see test_offline_extraction_credits_the_heuristic_stand_in for the
+    unit-level half of that claim."""
+    message = _image_message(session)  # attaches holdings.png
+    created = TaskRepository(session).create(
+        project="demo", title="compare", source_message_ids=[message.id]
+    )
+    extraction_llm = _CountingLLM()  # no result -> the real offline stand-in, unread
+    extractor = VisionExtractor(
+        llm=extraction_llm, extractions=ImageExtractionRepository(session), fetcher=None
+    )
+    runner = ExecutionRunner(
+        llm=HeuristicLLM(),
+        messages=MessageRepository(session),
+        sandbox=_WritesDeliverable(),
+        workspace_root=tmp_path,
+        extractor=extractor,
+    )
+    # "portfolio" is a real catalog dataset whose name does not collide with
+    # the image's own filename stem ("holdings"), so this spec resolves
+    # normally -- the B1 refusal path is exercised elsewhere
+    # (test_an_unread_image_is_NOT_bindable); this test is only about
+    # whether the manifest RECORDS the unread image once the round completes.
+    spec = TaskSpec(
+        intent="compare the holdings against the portfolio",
+        inputs=["portfolio"],
+        operation="set_difference",
+        output_format="csv",
+        certainty=0.9,
+    )
+
+    outcome = runner.run(created, spec)
+
+    assert outcome.verdict.ok, outcome.verdict.reason
+    bundle_root = tmp_path / f"task-{created.id}"
+    manifest = json.loads((bundle_root / MANIFEST_NAME).read_text())
+
+    assert manifest["images"], "an unread image must not vanish from the manifest"
+    image_entry = manifest["images"][0]
+    assert image_entry["name"] == "holdings.png"
+    assert image_entry["sha256"] == sha256_of(PNG)
+    assert image_entry["model"] == "heuristic", "must credit the offline stand-in, never an Anthropic model"
+    assert "not read" in image_entry["summary"]
 
 
 def test_the_whole_offline_path_opens_no_socket(session, monkeypatch):
