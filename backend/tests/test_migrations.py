@@ -99,7 +99,8 @@ def _revisions() -> builtins.list[str]:
     trip below the day it is added, instead of the day someone remembers to
     extend a list.
     """
-    return [script.revision for script in ScriptDirectory.from_config(_config("sqlite://")).walk_revisions()][::-1]
+    scripts = ScriptDirectory.from_config(_config("sqlite://")).walk_revisions()
+    return [script.revision for script in scripts][::-1]
 
 
 @pytest.mark.parametrize("stop_at", _revisions()[:-1] + ["base"])
