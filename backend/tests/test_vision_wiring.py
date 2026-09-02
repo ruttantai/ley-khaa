@@ -2,7 +2,6 @@ from dataclasses import replace
 
 from ley_khaa.api import app as app_module
 from ley_khaa.config import settings as real_settings
-from ley_khaa.crystallizer.gate import ReadinessGate
 from ley_khaa.llm.heuristic import HeuristicLLM
 from ley_khaa.orchestrator.driver import TaskDriver
 from ley_khaa.persistence.candidate_repository import CandidateRepository
@@ -104,12 +103,22 @@ def test_the_extractor_dead_letters_through_the_repository(session, monkeypatch)
     reusing the caller's, by design (see build_vision_extractor's docstring).
     Pinned to the test's session the same way test_adapter_startup.py does,
     so this stays hermetic instead of depending on a real Postgres being up.
+
+    Drives the REAL failure path -- extractor.extract() on a non-allowlisted
+    host, through VisionExtractor._record_drop -- rather than calling
+    extractor.dead_letter(...) with hand-typed keywords. This is the ONLY
+    visibility surface for a dropped image, and typing _record_drop's
+    keyword shape by hand would let a real mismatch there pass silently:
+    _record_drop's own `except Exception` swallows the TypeError a keyword
+    typo would raise, so only actually calling it proves the wiring works.
     """
     from ley_khaa.persistence.dead_letter_repository import DeadLetterRepository
 
     monkeypatch.setattr(app_module, "SessionLocal", lambda: session)
     extractor = app_module.build_vision_extractor(session)
-    extractor.dead_letter(source="vision", kind="inbound", reason="refused", payload={"name": "a.png"})
+    extractor.extract(
+        {"kind": "image", "name": "a.png", "content": "https://not-allowlisted.example/a.png"}
+    )
 
     rows = DeadLetterRepository(session).list()
     assert len(rows) == 1 and rows[0].source == "vision"

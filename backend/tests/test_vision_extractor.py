@@ -7,7 +7,7 @@ from ley_khaa.persistence.image_extraction_repository import (
 )
 from ley_khaa.vision.contract import VisionExtraction
 from ley_khaa.vision.extractor import VisionExtractor
-from ley_khaa.vision.fetcher import FetchRefused
+from ley_khaa.vision.fetcher import FetchRefused, ImageFetcher
 
 PNG = b"\x89PNG\r\n\x1a\nbytes"
 B64 = base64.standard_b64encode(PNG).decode()
@@ -138,6 +138,45 @@ def test_a_disabled_extractor_makes_no_call_and_returns_the_unread_record(sessio
 
     assert llm.calls == []
     assert row.content == ""
+
+
+class _RecordingTransport:
+    """Records every call the fetcher would have made, headers included --
+    same shape as test_image_fetcher.py's _Transport. A disabled extractor
+    must never reach this at all (review B4): before the fix, `enabled` was
+    checked AFTER _bytes_for, so a disabled extractor still spent a full
+    HTTP request (bot token attached, for a Slack host) on a url nobody
+    asked to read."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, url, *, headers, timeout, allow_redirects):
+        self.calls.append({"url": url, "headers": headers})
+        raise AssertionError("a disabled extractor must never reach the transport")
+
+
+def test_a_disabled_extractor_fetches_nothing_and_sends_no_token(session):
+    """LEY_KHAA_VISION=off must turn the whole path off, not just the model
+    call: this drives it through a REAL ImageFetcher over a REAL Slack
+    url_private, and proves zero fetches happen and no Authorization header
+    is ever produced -- not merely that the returned record is empty."""
+    transport = _RecordingTransport()
+    fetcher = ImageFetcher(
+        allowed_hosts=frozenset({"files.slack.com"}),
+        max_bytes=1024,
+        slack_token="xoxb-secret",
+        transport=transport,
+    )
+    llm = _CountingLLM(result=VisionExtraction(kind="table", content="a", summary="s"))
+    extractor = _extractor(session, llm=llm, fetcher=fetcher, enabled=False)
+
+    row = extractor.extract(_image(content="https://files.slack.com/f/a.png"))
+
+    assert transport.calls == [], "a disabled extractor must fetch nothing at all"
+    assert llm.calls == []
+    assert row.content == ""
+    assert row.model == ""
 
 
 def test_a_refused_fetch_dead_letters_and_still_returns_a_record(session):

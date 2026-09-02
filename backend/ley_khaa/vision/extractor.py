@@ -77,6 +77,21 @@ class VisionExtractor:
             # be handed to a vision model as if it were a picture.
             return self._unread(b"", name, reason="not an image attachment", media_type="")
 
+        if not self.enabled:
+            # Checked BEFORE _bytes_for, not after: _bytes_for is what
+            # actually performs the outbound HTTP fetch (with the Slack bot
+            # token attached, for a url_private), so a disabled extractor
+            # must never reach it at all — "vision off" has to mean zero
+            # fetches, not "fetch it anyway and only skip the model call".
+            # This does mean a disabled call can no longer consult the cache
+            # by the image's real digest (that digest comes from bytes this
+            # path now never reads) — an acceptable trade for fetching
+            # nothing, and the next ENABLED call still repopulates it. model
+            # is still "": nothing ran on this path, so there is no backend
+            # to credit, and an empty model is what lets the cache's
+            # re-extract rule retry once vision comes back on.
+            return self._unread(b"", name, reason="vision is disabled", media_type="")
+
         try:
             image, media_type = self._bytes_for(attachment)
         except (FetchRefused, ValueError, binascii.Error) as exc:
@@ -98,14 +113,6 @@ class VisionExtractor:
             # same failure — fall through and try again.
             if cached.content or (cached.model and cached.model == current_model):
                 return cached
-
-        if not self.enabled:
-            # No client ran, so nothing did the work: the manifest must not
-            # credit self.llm.name for zero calls. This is also load-bearing
-            # for the cache-hit check above — an empty model always retries.
-            return self._store(
-                digest, image, media_type, self._unread_extraction(name, "vision is disabled"), model=""
-            )
 
         try:
             extraction = self.llm.extract_image(
