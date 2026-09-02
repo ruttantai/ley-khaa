@@ -19,6 +19,12 @@ jobs:
       # sandbox, and the §5.10 guarantees that are its whole reason to exist,
       # would have no automated coverage anywhere.
       - run: docker build -t ley-khaa-sandbox backend/sandbox
+      # Spec §7 has required "typecheck clean" since v0.1.0 with nothing
+      # enforcing it. mypy exits non-zero on any error, so this fails the build
+      # rather than warning. Configuration (default settings, not --strict)
+      # lives in backend/pyproject.toml.
+      - run: python -m mypy
+        working-directory: backend
       - run: python -m pytest -v
         working-directory: backend
 
