@@ -92,20 +92,33 @@ class TaskDriver:
         self._announce(row)
         return row
 
+    def _require(self, task_id: str) -> TaskRow:
+        """The task, or KeyError — the same answer every entry point in this
+        class already gives for a task id it cannot resolve.
+
+        Every re-read below happens after the row has already been read once,
+        so this only fires if the row went away underneath us. Returning the
+        None instead would hand a caller (or _announce) a task-shaped hole
+        typed as a TaskRow, which is how a missing row turns into an
+        AttributeError several frames from the cause.
+        """
+        row = self.repo.get(task_id)
+        if row is None:
+            raise KeyError(task_id)
+        return row
+
     def _drive(self, task_id: str) -> TaskRow:
         for _ in range(_MAX_STEPS):
-            row = self.repo.get(task_id)
-            if row is None:
-                raise KeyError(task_id)
+            row = self._require(task_id)
             state = TaskState(row.state)
             if state in _WAITING:
                 return row
             if not _STEPS[state](self, row):
                 # No progress: a lost claim (another caller won the race) or a
                 # retryable failure. Either way, stop here.
-                return self.repo.get(task_id)
+                return self._require(task_id)
         logger.warning("task %s hit the step ceiling; leaving it where it is", task_id)
-        return self.repo.get(task_id)
+        return self._require(task_id)
 
     def hand_off(self, task_id: str) -> TaskRow:
         """Carry on after something made this task runnable.
@@ -120,7 +133,7 @@ class TaskDriver:
         """
         if settings.dispatch_mode == "inline":
             return self.advance(task_id)
-        return self.repo.get(task_id)
+        return self._require(task_id)
 
     # --- human actions ----------------------------------------------------
 
@@ -143,7 +156,7 @@ class TaskDriver:
         if not self.repo.claim(task_id, expected=state, target=TaskState.FAILED):
             raise InvalidTransition(f"task {task_id} cannot be rejected from {row.state}")
         self.repo.record_failure(task_id, reason)
-        row = self.repo.get(task_id)
+        row = self._require(task_id)
         # reject() moves a task to FAILED on its own, so advance()'s single exit
         # point does not cover it. Without this the human who was waiting on the
         # question is never told the task is over.
@@ -173,7 +186,7 @@ class TaskDriver:
             raise InvalidTransition(
                 f"task {task_id} moved on from {state.value} before the mode change applied"
             )
-        row = self.repo.get(task_id)
+        row = self._require(task_id)
         if TaskState(row.state) is TaskState.AWAITING_APPROVAL:
             # Send it back through the gate so the new mode is actually applied.
             # This is what makes flipping the dial to Auto release a parked task.

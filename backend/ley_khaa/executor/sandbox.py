@@ -31,8 +31,13 @@ try:
     # subprocess.run would time out, and the manifest would record ley-khaa's own
     # deadlock as "the generated script ran too long".
     import resource
+
+    _HAVE_RESOURCE = True
 except ImportError:  # not POSIX; _limits() already returns None there
-    resource = None
+    # A flag rather than `resource = None`: rebinding the name would declare
+    # the module optional at every use site, and _limits() below is the one
+    # place that has to know.
+    _HAVE_RESOURCE = False
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +176,7 @@ class SubprocessSandbox:
         self.memory_mb = memory_mb
 
     def _limits(self, timeout_s: int):
-        if os.name != "posix" or resource is None:
+        if os.name != "posix" or not _HAVE_RESOURCE:
             return None
         memory_mb = self.memory_mb
 

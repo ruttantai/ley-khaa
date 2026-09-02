@@ -188,7 +188,11 @@ class ExecutionRunner:
         workspace.write_inputs(resolved)
         target = f"deliverable/{deliverable_filename(spec.output_format)}"
 
-        match = self.matcher.match(spec, resolved) if self.matcher is not None else None
+        # Bound to a local because `matcher` and `self.workflows` are set or
+        # unset together (see __init__), and the local is what lets the registry
+        # lane below reach the repository without re-asserting that invariant.
+        matcher = self.matcher
+        match = matcher.match(spec, resolved) if matcher is not None else None
         # Bind under the workflow's role names when one matched, and under the
         # spec's own input names otherwise. input_hashes is computed AFTER this,
         # and again after any rewrite below: hashing a params.json that is about
@@ -200,7 +204,7 @@ class ExecutionRunner:
         workflow_record: dict | None = None
         verdict = Verdict(ok=False, reason=_SYNTHESIS_FAILED, checks={})
 
-        if match is not None:
+        if match is not None and matcher is not None:
             number = first_attempt
             # Built before the sandbox even runs, and with quarantined=False:
             # if SandboxUnavailable strikes below, that is ley-khaa's daemon
@@ -256,7 +260,7 @@ class ExecutionRunner:
             )
             workflow_record["quarantined"] = not verdict.ok
             if verdict.ok:
-                self.workflows.record_success(
+                matcher.workflows.record_success(
                     match.workflow.name,
                     # Only a phrasing the model found is worth learning; a
                     # fingerprint hit already knew this operation.
@@ -278,7 +282,7 @@ class ExecutionRunner:
             # Proven code that just produced a wrong answer is not proven any
             # more. Quarantine it, re-bind under the spec's names, and let
             # synthesis rescue this run with its own full attempt budget.
-            self.workflows.record_failure(match.workflow.name)
+            matcher.workflows.record_failure(match.workflow.name)
             first_attempt = number + 1
             input_hashes = self._bind(workspace, spec, resolved, None, target)
             # Discards the cached lane's verdict so the synthesis loop below
