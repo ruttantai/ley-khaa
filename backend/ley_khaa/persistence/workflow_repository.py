@@ -5,6 +5,7 @@ constructed anywhere else.
 """
 from __future__ import annotations
 
+import builtins
 import hashlib
 import uuid
 from datetime import datetime, timezone
@@ -12,7 +13,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from .orm import WorkflowRow
+from .orm import WorkflowRow, rows_affected
 
 
 class DuplicateWorkflow(Exception):
@@ -65,10 +66,12 @@ class WorkflowRepository:
             select(WorkflowRow).where(WorkflowRow.name == name)
         ).one_or_none()
 
-    def list(self) -> list[WorkflowRow]:
+    def list(self) -> builtins.list[WorkflowRow]:
+        # builtins.list, here and below: this method shadows the builtin inside
+        # the class body, so a bare `list[...]` annotation names the method.
         return list(self.session.scalars(select(WorkflowRow).order_by(WorkflowRow.name)))
 
-    def active(self) -> list[WorkflowRow]:
+    def active(self) -> builtins.list[WorkflowRow]:
         """What the matcher is allowed to consider."""
         return [row for row in self.list() if not row.quarantined]
 
@@ -111,7 +114,7 @@ class WorkflowRepository:
                     .values(operation_aliases=current + [learned_alias])
                 )
                 self.session.commit()
-                if result.rowcount == 1:
+                if rows_affected(result) == 1:
                     break
                 self.session.expire(row)
 

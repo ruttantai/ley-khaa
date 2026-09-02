@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
+from typing import Any, cast
 
 from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.engine import CursorResult, Result
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
@@ -31,6 +33,19 @@ def as_utc(value: datetime) -> datetime:
     mechanism — it cannot be expressed as a datetime helper.
     """
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def rows_affected(result: Result[Any]) -> int:
+    """How many rows an UPDATE or DELETE actually touched.
+
+    `Session.execute` is declared to return the read-shaped `Result`, which has
+    no `rowcount`; a DML statement always yields a `CursorResult`, which does.
+    The cast says that out loud in one place instead of every `.rowcount` call
+    site claiming an attribute its declared type does not have.
+
+    Only ever call this on the result of an UPDATE or a DELETE.
+    """
+    return cast(CursorResult[Any], result).rowcount
 
 
 class TaskRow(Base):
