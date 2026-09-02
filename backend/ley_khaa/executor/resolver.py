@@ -85,6 +85,12 @@ class UnreadImage:
     image_sha256: str
     model: str
     summary: str
+    # 0 for every path that never got as far as reading actual bytes (an
+    # unfetchable/expired URL, a disabled extractor, a non-image attachment):
+    # image_sha256 on those is sha256(b""), a constant every such image
+    # shares, not a real identity. The manifest reads this to decide whether
+    # attesting that hash would mean anything (review B2's follow-up).
+    byte_size: int = 0
 
 
 def _stem_tokens(name: str) -> frozenset[str]:
@@ -94,7 +100,12 @@ def _stem_tokens(name: str) -> frozenset[str]:
 def _collides(tokens: frozenset[str], others: list[frozenset[str]]) -> bool:
     if not tokens:
         return False
-    return any(tokens <= other or other <= tokens for other in others)
+    # An empty `other` ("---", ".png", a name with no alphanumerics at all)
+    # is a subset of everything, same failure mode _from_attachments already
+    # guards against with its own `if not stem: continue` -- without this, one
+    # oddly-named unread image would collide with (and so block) EVERY spec
+    # input, and with LEY_KHAA_VISION=off every image is unread.
+    return any(other and (tokens <= other or other <= tokens) for other in others)
 
 
 def _attachments_for(
@@ -138,6 +149,7 @@ def _attachments_for(
                     image_sha256=record.image_sha256,
                     model=record.model,
                     summary=record.summary,
+                    byte_size=record.byte_size,
                 )
             )
             continue

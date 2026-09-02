@@ -486,7 +486,16 @@ class ExecutionRunner:
                 "images": [
                     {
                         "name": img.name,
-                        "sha256": img.image_sha256,
+                        # None, not sha256(b""), when no bytes were ever
+                        # read: an unfetchable/expired URL, a disabled
+                        # extractor, and a non-image attachment all share
+                        # that same constant digest
+                        # (e3b0c44298fc...b855), which would let the
+                        # manifest attest a "hash" that identifies nothing
+                        # about THIS image -- worse than omitting it, since
+                        # a reader could mistake it for a real identity two
+                        # different bundles could be compared by.
+                        "sha256": img.image_sha256 if img.byte_size else None,
                         "model": img.model,
                         "summary": img.summary,
                     }

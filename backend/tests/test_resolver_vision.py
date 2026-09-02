@@ -167,6 +167,27 @@ def test_the_catalog_still_answers_a_name_with_no_image_involved(session):
     assert unread_images == []
 
 
+def test_an_unread_image_with_no_alphanumerics_in_its_name_hijacks_nothing(session):
+    """Whole-branch re-review, item 3: `_collides`' B1 guard has to skip an
+    empty token set on the OTHER side too, the same way _from_attachments'
+    own `if not stem: continue` already does. "---.png" tokenizes to the
+    empty set, which is a subset of every spec input's tokens -- without this
+    guard, one oddly-named unread image would collide with (and so refuse)
+    EVERY input in the spec, and with LEY_KHAA_VISION=off every image is
+    unread, so this would make a task permanently unresolvable rather than
+    failing safe."""
+    task, messages = _task_with_image(session, name="---.png")
+
+    resolved, unread_images = resolve_inputs(
+        _spec(inputs=["holdings"]), task, messages,
+        extractor=_Extractor(content=""),
+    )
+
+    assert resolved[0].source == "catalog"
+    assert len(unread_images) == 1
+    assert unread_images[0].name == "---.png"
+
+
 @pytest.mark.parametrize(
     "attachments",
     [

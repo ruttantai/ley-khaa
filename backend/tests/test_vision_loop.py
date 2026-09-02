@@ -246,6 +246,113 @@ def test_an_unread_image_reaches_the_manifest_as_a_carried_not_read_image(tmp_pa
     assert "not read" in image_entry["summary"]
 
 
+def test_an_unread_image_from_a_fetch_failure_does_not_attest_a_fake_hash(tmp_path, session):
+    """Whole-branch re-review, item 2: on the fetch-failure path (an
+    unfetchable or expired URL -- the same shape as an expired Discord CDN
+    link, or LEY_KHAA_VISION=off) no image bytes are ever read, so
+    record.image_sha256 is sha256(b"") -- a constant every such image
+    shares, not a real identity for THIS image. The manifest must not
+    attest that as though it meant something. This is the production-likely
+    path the manifest test above does NOT cover: that one decodes real
+    base64 bytes locally and only the MODEL declines, so its hash is
+    genuine."""
+    row = MessageRepository(session).add(
+        Message(
+            source="dashboard", client="me", conversation_id="c1", author="ana",
+            text="compare the holdings against the portfolio",
+            # A url with no fetcher configured is refused before any bytes
+            # are ever read -- FetchRefused out of _bytes_for, same as an
+            # expired CDN link.
+            attachments=[
+                Attachment(kind="image", name="holdings.png", content="https://cdn.discordapp.com/a.png")
+            ],
+        )
+    )
+    created = TaskRepository(session).create(
+        project="demo", title="compare", source_message_ids=[row.id]
+    )
+    extractor = VisionExtractor(
+        llm=_CountingLLM(), extractions=ImageExtractionRepository(session), fetcher=None,
+    )
+    runner = ExecutionRunner(
+        llm=HeuristicLLM(),
+        messages=MessageRepository(session),
+        sandbox=_WritesDeliverable(),
+        workspace_root=tmp_path,
+        extractor=extractor,
+    )
+    spec = TaskSpec(
+        intent="compare the holdings against the portfolio",
+        inputs=["portfolio"],
+        operation="set_difference",
+        output_format="csv",
+        certainty=0.9,
+    )
+
+    outcome = runner.run(created, spec)
+
+    assert outcome.verdict.ok, outcome.verdict.reason
+    bundle_root = tmp_path / f"task-{created.id}"
+    manifest = json.loads((bundle_root / MANIFEST_NAME).read_text())
+
+    assert manifest["images"], "an unread image must not vanish from the manifest"
+    image_entry = manifest["images"][0]
+    assert image_entry["name"] == "holdings.png"
+    assert image_entry["sha256"] is None, (
+        'no bytes were ever read on this path -- attesting sha256(b"") would '
+        "look like a real identity every such unread image shares"
+    )
+    assert "not read" in image_entry["summary"]
+
+
+def test_the_unresolved_inputs_manifest_still_names_the_unread_image(tmp_path, session):
+    """Whole-branch re-review, item 4: the round that raises UnresolvedInputs
+    is exactly where an unread image is most likely to BE the reason nothing
+    resolved (review B1) -- and it is the one _write_manifest call this
+    branch cannot fall through to by accident, since `resolved` is [] there
+    and every OTHER field comes from the verdict this except block builds by
+    hand. Nothing else in the suite pins unread_images=exc.unread_images at
+    runner.py's UnresolvedInputs handler specifically; setting it to None
+    there leaves every other test green."""
+    message = _image_message(session)  # attaches holdings.png, unread offline
+    created = TaskRepository(session).create(
+        project="demo", title="compare", source_message_ids=[message.id]
+    )
+    extractor = VisionExtractor(
+        llm=_CountingLLM(), extractions=ImageExtractionRepository(session), fetcher=None,
+    )
+    runner = ExecutionRunner(
+        llm=HeuristicLLM(),
+        messages=MessageRepository(session),
+        sandbox=_WritesDeliverable(),
+        workspace_root=tmp_path,
+        extractor=extractor,
+    )
+    # "holdings" collides with the unread image's own filename stem, so B1's
+    # guard blocks the catalog and resolve_inputs raises UnresolvedInputs
+    # rather than resolving anything at all.
+    spec = TaskSpec(
+        intent="compare the holdings against the portfolio",
+        inputs=["holdings"],
+        operation="set_difference",
+        output_format="csv",
+        certainty=0.9,
+    )
+
+    outcome = runner.run(created, spec)
+
+    assert not outcome.verdict.ok
+    assert "holdings" in outcome.verdict.reason
+    bundle_root = tmp_path / f"task-{created.id}"
+    manifest = json.loads((bundle_root / MANIFEST_NAME).read_text())
+
+    assert manifest["inputs"] == [], "nothing resolved on this round"
+    assert manifest["images"], (
+        "the round B1 and B2 exist to make visible must not go back to silence"
+    )
+    assert manifest["images"][0]["name"] == "holdings.png"
+
+
 def test_the_whole_offline_path_opens_no_socket(session, monkeypatch):
     """'Offline' enforced rather than claimed."""
     import socket
