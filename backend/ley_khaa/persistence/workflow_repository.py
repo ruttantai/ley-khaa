@@ -115,18 +115,6 @@ class WorkflowRepository:
                     break
                 self.session.expire(row)
 
-        # Bulk UPDATE bypasses the unit of work: it does not touch the
-        # identity map, so the caller's own in-session copy of this row (if
-        # one was already loaded) still shows the pre-update values until
-        # something expires it. expire() this one row, not expire_all() —
-        # the caller's session is shared with the rest of a request's
-        # read/write cycle (runner.py re-reads a TaskRow right after this
-        # call returns), and blanket-expiring every unrelated object in it
-        # for a write this method makes to one WorkflowRow is collateral
-        # damage, not a requirement.
-        cached = self.get(name)
-        if cached is not None:
-            self.session.expire(cached)
         return self._row(name)
 
     def record_failure(self, name: str) -> WorkflowRow:
@@ -136,9 +124,6 @@ class WorkflowRepository:
             .values(runs_failed=WorkflowRow.runs_failed + 1, quarantined=True)
         )
         self.session.commit()
-        cached = self.get(name)
-        if cached is not None:
-            self.session.expire(cached)
         return self._row(name)
 
     def unquarantine(self, name: str) -> WorkflowRow:

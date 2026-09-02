@@ -147,7 +147,10 @@ class PromoteIn(BaseModel):
 
 
 class ProjectIn(BaseModel):
-    name: str
+    # Same NAME_PATTERN guard as PromoteIn, and for the same reason: a
+    # malformed name should be FastAPI's native 422 rather than surfacing
+    # downstream (e.g. as an unaddressable row — see backlog item 13).
+    name: str = Field(pattern=NAME_PATTERN)
     display_name: str = ""
     description: str = ""
 

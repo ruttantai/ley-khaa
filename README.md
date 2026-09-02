@@ -91,10 +91,12 @@ docker compose up
     `project` the resulting task(s) landed in and whether it's `queued` (in the default
     `workers` mode the call returns as soon as a task exists, not once it's finished)
   - `GET /candidates` — task candidates and their state
-  - `GET /projects` — every active project, its queue depth, and the task (if any) currently leased
+  - `GET /projects` — every active project, its queue depth, and the task (if any) currently leased.
+    `queue_depth` counts only tasks still waiting for a worker (excludes DONE/FAILED and whatever is
+    `in_flight`) — it disagrees on purpose with the route below, which lists everything
   - `POST /projects` — create a project; needs a non-empty description, since that's what stage-2
     routing reasons over — an empty one would be unroutable by construction
-  - `GET /projects/{name}/queue` — every task in one project
+  - `GET /projects/{name}/tasks` — every task in one project, any state, DONE and FAILED included
   - `GET /triage` — candidates parked as a possible amendment to an active task, awaiting a human
     decision (see [Amendments](#amendments))
   - `POST /candidates/{id}/fold` — fold a parked candidate into the task it amends
