@@ -170,10 +170,20 @@ review. They are places where a regression would not turn anything red.
 carried-forward gaps`). Four of the five gaps were still real and now have mutation-verified tests:
 
 - **Migration downgrades.** `test_migrations.py` steps every revision down to `base` and asserts no
-  table is left behind, and separately round-trips head → `0001_baseline` → head and re-runs
-  `compare_metadata` — an `alter_column` that restores the wrong type shows up there and nowhere
-  else. Verified by mutation: a no-op `0009` downgrade fails the round trip on a duplicate column,
-  a `0001` that forgets `tasks` fails the base test.
+  table is left behind, and separately round-trips head → *each* revision → head, re-running
+  `compare_metadata` at every stopping point. Parametrised over every stopping point because a single
+  one only discriminates revisions whose leftovers survive down to it — stopping only at
+  `0001_baseline` catches a no-op `0009` downgrade but **not** a no-op `0010`, since `0008`'s
+  downgrade drops `image_extractions` and takes the leftover column with it. Mutation sweep over all
+  ten downgrades, each replaced by `pass` and the whole file run: **nine of ten turn it red**
+  (`0001` 2 failed, `0002` 1, `0003` 2, `0004` 5, `0005` 6, `0007` 8, `0008` 9, `0009` 8, `0010` 2).
+
+  **`0006_alias_jsonb` is the tenth, and it stays unexercised — 14 passed with its downgrade
+  deleted.** Its `alter_column` moves between `sa.JSON()` and `JSON().with_variant(JSONB(),
+  "postgresql")`, which render identically on SQLite, so no SQLite test can discriminate it. This
+  entry originally listed it as a gap and it is *still* a gap; what closed is the rest. It is
+  covered by item 26, not here — stating that is the point, since a guard that appears to cover a
+  type change it cannot see is worse than one that admits the gap.
 - **`fingerprint_candidates`' empty-operation early return.** Without it, a spec naming no operation
   matched any workflow whose aliases hold no alphanumerics.
 - **`confidence == CONFIDENCE_FLOOR` exactly, as a match**, for the registry and memory matchers
@@ -184,8 +194,8 @@ carried-forward gaps`). Four of the five gaps were still real and now have mutat
 
 The fifth — **case-insensitive suffix matching in `bind()` — had closed itself** before this phase.
 `test_suffix_matching_is_case_insensitive_declared_uppercase` and `_declared_mixed` cover both
-`.lower()` calls; confirmed by mutation rather than by reading. The downgrade tests run on SQLite
-only, like the rest of `test_migrations.py` — see item 26 below.
+`.lower()` calls; confirmed by mutation rather than by reading. All of `test_migrations.py` runs on
+SQLite only — see item 26 below, which is where `0006`'s type change would finally get a lane.
 
 ## 8. Frontend polish — CLOSED (`bf9b27f`)
 
@@ -615,8 +625,9 @@ URLs with their query tokens. A hit suppresses the duplicate dead letter; nothin
 retrying the real fetch, so a URL that becomes fetchable again recovers on the next drive for free.
 
 Note what this does **not** close: the durable half of B1 named above. `url_sha256` records the
-refusal, but a frozen *successful* extraction is still keyed on the image's own bytes, so an expired
-CDN URL still cannot be resolved back to it. A url→digest secondary index is the remaining piece.
+*refusal*, but a frozen *successful* extraction is still keyed on the image's own bytes, so an
+expired CDN URL still cannot be resolved back to it. That remainder is **re-filed as item 32** rather
+than left inside a closed entry — the README's Images section points there, not here.
 
 ## 20. A same-backend model failure stays frozen under that image's digest forever
 
@@ -702,7 +713,7 @@ that makes a bundle auditable at risk to save a startup flag.
 
 ## Filed at the close of Phase 9 (v0.10.0)
 
-Items 23–31 came out of Phase 9's task and whole-branch reviews. Every one is deliberately deferred:
+Items 23–32 came out of Phase 9's task and whole-branch reviews. Every one is deliberately deferred:
 none blocks 1.0.0, and each is recorded rather than discarded. Numbering continues from 22 — nothing
 above is renumbered, for the reason PR #9 exists.
 
@@ -791,6 +802,12 @@ guard, the pre-alembic stamping path, and Phase 9's new downgrade tests all run 
 `with_variant(JSONB(), "postgresql")` half of `operation_aliases` is still checked by nothing that
 runs automatically — which is the exact gap that let item 5's bug reach review.
 
+**`0006_alias_jsonb` is the concrete case, in both directions.** Its upgrade and downgrade are the
+only `alter_column` in the tree, and both move between `sa.JSON()` and the JSONB variant — types that
+render identically on SQLite. Phase 9's downgrade round trip reddens for nine of the ten revisions
+when their `downgrade()` is replaced by `pass`; `0006` is the one that stays green (observed: `14
+passed`). No SQLite test can discriminate it, so this entry is the only thing that would.
+
 **This entry also carries the finding item 9 raised and could not close:** upgrading a throwaway
 `postgres:16` database to head and running `compare_metadata` against `Base.metadata` still reports
 
@@ -866,7 +883,7 @@ anything but a name collision.
 **Shape of the fix.** Suffix the schema name with something per-run (the pid, or `PYTEST_XDIST_WORKER`
 when set) and drop it at session teardown as well as at start.
 
-## 31. `discord/client.py:108` turns a would-be crash into a silent `None`
+## 31. `adapters/discord/client.py:108` turns a would-be crash into a silent `None`
 
 `on_ready` reads `self.bot_user_id = str(user.id) if user is not None else None`. The `None` guard was
 added in Phase 9 because mypy proved `discord.Client.user` is Optional — correct as far as it goes,
@@ -881,3 +898,26 @@ storing `None`, so the supervisor dead-letters it under a name that says what ha
 because `on_ready` firing with `client.user` unset is not a state the library is documented to
 produce, so the change is a hardening of an unreachable path — worth doing, not worth doing under
 release pressure.
+
+## 32. A frozen successful extraction is still unreachable once its URL expires
+
+**The remainder of item 19, re-filed so a closed entry does not have to carry a live limit.**
+`aa62c66` gave *refusals* a second key space (`image_extractions.url_sha256`), so an unfetchable
+image is dead-lettered once instead of on every drive. A **successful** extraction is still keyed
+only on `sha256(image_bytes)`.
+
+The consequence is the one whole-branch review finding B1 named: channel CDN URLs expire (Discord's
+in about a day), and once one does, `_bytes_for` can no longer even re-derive the digest that would
+find the stored extraction. The work was done, the result is in the table, and nothing can reach it —
+a re-drive asks a human instead, which is safe but is a re-ask for an answer the system already has.
+
+**Shape of the fix.** Write the `url_sha256` row on the *success* path too, carrying the resulting
+digest, so it becomes a url→digest index: a re-drive hashes the URL, finds the digest, and reads the
+frozen extraction without needing the URL to still resolve. The column and its index already exist,
+and `_store` currently calls `record()` with no `url_sha256` at all (so it defaults to `None`) — what
+is missing is threading the source URL down to that success-path write, plus the lookup ahead of the
+fetch.
+
+**Why deferred.** It is a second lookup ahead of the fetch with its own invalidation question — what
+should happen when the same URL later serves different bytes — and that is a cache-semantics decision,
+not a one-line addition to the path `aa62c66` already touched.

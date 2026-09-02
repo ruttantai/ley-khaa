@@ -12,8 +12,10 @@ found while writing the spec — two quality gates added, and every statement th
 false corrected.
 
 ### Added
-- **A backend typechecker, enforced by CI (§4.1).** Spec §7 has required "typecheck clean" since
-  v0.1.0 while `backend/` had no typechecker configured at all. `mypy==2.3.1` at **default**
+- **A backend typechecker, enforced by CI (§4.1).** "Typecheck clean" has been a definition-of-done
+  line in every phase spec since Phase 4 (v0.5.0, 2026-08-27), and until now only the *frontend* had
+  a typechecker to satisfy it — `npm run typecheck` landed the same day; `backend/` had none
+  configured at all. `mypy==2.3.1` at **default**
   settings — not `--strict`, which is mostly annotation churn and is filed as a post-1.0.0 ratchet —
   runs over `ley_khaa` and `docker-entrypoint.py` and fails the build on any error. Proven to gate
   rather than warn: a deliberate wrong return type made the lane exit 1 while the full suite stayed
@@ -75,8 +77,11 @@ false corrected.
   overstate it; counting none of them would understate what the gate is for.
 
 ### Changed
-- Test coverage for the two gaps §4.3 names (items 7 and 12): migration downgrades at every revision
-  plus a down-and-up round trip against the models, `fingerprint_candidates`' empty-operation guard,
+- Test coverage for the two gaps §4.3 names (items 7 and 12): migration downgrades — `downgrade base`
+  leaves no table behind, and a head → *each* revision → head round trip is diffed against the models
+  (nine of the ten downgrades redden it when deleted; `0006`'s JSON↔JSONB `alter_column` cannot be
+  discriminated on SQLite and stays uncovered, see backlog item 26) — `fingerprint_candidates`'
+  empty-operation guard,
   `confidence == CONFIDENCE_FLOOR` exactly as a match, `_remember`'s own empty-fingerprint guard, and
   `HeuristicLLM`'s offline `ProjectChoice` rule — which nothing tested, because `ProjectRouter`'s
   blanket `except` turned a missing rule into a default differing only in a string nothing asserted

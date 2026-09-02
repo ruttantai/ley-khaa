@@ -36,9 +36,11 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
         working-directory: backend
-      # Spec §7 has required "typecheck clean" since v0.1.0 with nothing
-      # enforcing it. mypy exits non-zero on any error, so this fails the build
-      # rather than warning. Configuration (default settings, not --strict)
+      # "Typecheck clean" has been a definition-of-done line in every phase spec
+      # since Phase 4 (v0.5.0) with nothing enforcing it on the backend — the
+      # frontend's `npm run typecheck` below was the only typechecker in the
+      # repo. mypy exits non-zero on any error, so this fails the build rather
+      # than warning. Configuration (default settings, not --strict)
       # lives in backend/pyproject.toml. Placed before the image build because
       # it needs nothing but the pip install, so the cheap check fails fast.
       - run: python -m mypy
@@ -58,7 +60,7 @@ jobs:
       # on, and fails the step otherwise. It is on the command line rather than
       # in `env:` deliberately: the failure worth guarding against is this
       # `env:` block being deleted or misindented, which would leave the step
-      # silently re-running the SQLite lane and reporting `1013 passed` a second
+      # silently re-running the SQLite lane and reporting `1030 passed` a second
       # time. A check keyed on DATABASE_URL cannot catch that — the malformation
       # removes the variable the check reads — but the `run:` line survives it.
       #
