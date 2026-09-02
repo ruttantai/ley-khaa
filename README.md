@@ -25,6 +25,11 @@ generator code, exact inputs, seeded manifest — so any result can be audited a
 
 ## Status
 
+**v0.9.0 — Ollama offline fallback.** With no `ANTHROPIC_API_KEY`, `LEY_KHAA_LLM=ollama` runs a real
+local model (default `qwen2.5`) for every stage instead of the regex stand-in. The backend is chosen
+once at startup, not retried mid-session, and vision stays text-only either way. See
+[Running without an API key](#running-without-an-api-key) below.
+
 **v0.8.0 — vision intake.** A screenshot pasted into a channel or the dashboard is read once
 through Claude vision and frozen as a reproducible checkpoint keyed by a hash of its bytes: a
 table becomes data a generated script computes on, anything else becomes context the interpreter
@@ -57,7 +62,8 @@ relevance filtering and crystallization run on every message regardless, caches 
 | 5 | `v0.6.0` | **Project routing**, per-project queues, **amendment detection** | ✅ shipped |
 | 6 | `v0.7.0` | Real Slack and Discord **channel adapters**, ingesting and notifying | ✅ shipped |
 | 7 | `v0.8.0` | **Vision intake** — an image read once and frozen as a reproducible checkpoint | ✅ shipped |
-| — | `v1.0.0` | Definition of done (spec §11) | 🎯 target |
+| 8 | `v0.9.0` | **Ollama offline fallback** — a real local model with no API key, text-only | ✅ shipped |
+| — | `v1.0.0` | Definition of done (spec §11), release tagged | 🎯 target |
 
 Design spec: [`docs/superpowers/specs/2026-08-18-ley-khaa-design.md`](docs/superpowers/specs/2026-08-18-ley-khaa-design.md).
 Phase plans: [`docs/superpowers/plans/`](docs/superpowers/plans/).
@@ -65,7 +71,7 @@ Phase plans: [`docs/superpowers/plans/`](docs/superpowers/plans/).
 ## Run
 
 **New here?** [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) walks from a fresh clone to a
-finished task with a downloadable bundle, and says plainly which parts are not built yet.
+finished task with a downloadable bundle, and states its known limits plainly.
 
 ```bash
 docker compose up
@@ -391,9 +397,10 @@ regardless of which attachment happened to be pasted first.
 
 **Limits, stated plainly.**
 
-- With no `ANTHROPIC_API_KEY` an image is **carried, not read**: it is recorded, credited to the
-  offline `heuristic` stand-in, and its name still reaches the prompt, but nothing reads the
-  picture — the task proceeds on text alone. `docker compose up` still demos end to end.
+- With no `ANTHROPIC_API_KEY` an image is **carried, not read**: it is recorded, credited to
+  whichever text-only backend actually ran (`heuristic`, or `ollama:<model>` when that fallback is
+  configured — see below), and its name still reaches the prompt, but nothing reads the picture —
+  the task proceeds on text alone. `docker compose up` still demos end to end.
 - There is no re-extraction of a successful read: freezing is what makes a re-run reproducible, so
   if a table is misread the checkpoint stays wrong until its row is cleared.
 - Images are never stored, only their extraction — an image whose URL has expired cannot be
@@ -402,7 +409,57 @@ regardless of which attachment happened to be pasted first.
   re-drive skip needing the URL to still resolve at all.
 - **Not live-tested against a real Slack or Discord image.** Everything here is proven offline and
   against recorded transports, the same call made for the channel adapters in 0.7.0.
-- The Ollama fallback planned for 0.9.0 is text-only: vision will not work on that offline path.
+- The Ollama offline fallback (below) is text-only: vision does not work on that path either.
+
+### Running without an API key
+
+With no `ANTHROPIC_API_KEY`, set `LEY_KHAA_LLM=ollama` to run on a real local model instead of the
+`HeuristicLLM` regex stand-in described above.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LEY_KHAA_LLM` | `anthropic` | Set to `ollama` to select this backend. |
+| `LEY_KHAA_OLLAMA_MODEL` | `qwen2.5` | The local model, used for **every** stage. |
+| `LEY_KHAA_OLLAMA_HOST` | `http://localhost:11434` | Where the daemon lives. |
+
+**The backend is chosen once, at startup — there is no runtime step-down.** A Claude call that fails
+is not retried on Ollama, and vice versa (backlog item 22).
+
+**One local model handles every stage.** The Model Router still picks a tier per stage, but on this
+path its Claude model id is ignored — only its token budget is honoured. Requiring a second model
+would be friction on the exact path this exists to serve, since most people running Ollama have
+exactly one model pulled.
+
+**The manifest names the real producer** — `ollama:<model>`, e.g. `ollama:qwen2.5` — never a Claude
+id, so a bundle never credits Claude for work a local model did.
+
+**Vision stays text-only** (see [Images](#images) above): an image is carried, not read, the same
+carried-not-read shape `HeuristicLLM` already produces with no key set at all.
+
+**An unreachable daemon or an unpulled model degrades to the regex stand-in, loudly.** A one-time
+WARNING names the actual cause — daemon down, or `ollama pull <model>` needed — and `HeuristicLLM`
+takes over; `docker compose up` still demos. Output quality then depends entirely on which backend
+is actually running: even with Ollama up, a small quantised model produces weaker specs and scripts
+than Opus, and the system does not detect or warn about that beyond naming the model in the
+manifest.
+
+**Fixing the cause does not take effect until you restart the backend.** The resolved client is
+cached for the life of the process (that's what makes "probe once, at startup" true), so if you
+follow a WARNING's own instructions — start the daemon, `ollama pull <model>` — mid-session, the
+running process keeps using `HeuristicLLM` and logs nothing more: it already said its one-time
+notice. Both warnings say so; restart the backend after fixing either cause.
+
+**Under `docker compose up`**, Ollama runs on the host, not in a container, so `localhost` inside the
+backend container is the wrong machine. Compose points `LEY_KHAA_OLLAMA_HOST` at
+`http://host.docker.internal:11434` by default and maps that name to the host via `extra_hosts`; that
+mapping alone is not sufficient, because Ollama itself binds `127.0.0.1` by default — on Linux, where
+the container reaches the host at a bridge address, a daemon started the normal way still refuses
+every connection that doesn't originate on the host machine itself, `host.docker.internal` included.
+(On Docker Desktop for macOS and Windows, `host.docker.internal` is serviced by the Docker Desktop
+host proxy and commonly does reach a loopback-bound host service without any rebind — but that is
+platform behavior, not a guarantee this project relies on.) Run the daemon with
+`OLLAMA_HOST=0.0.0.0` (or otherwise bind it to all interfaces) for the container to reach it
+reliably on every platform.
 
 ### Local dev (no Docker)
 

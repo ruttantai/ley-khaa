@@ -54,16 +54,34 @@ class ExecutionOutcome:
 def _synthesis_author(llm: LLMClient) -> str:
     """Who actually wrote the script, for the manifest.
 
-    The router's model id is the truth only when a real model ran. With no
-    ANTHROPIC_API_KEY the offline stand-in writes a canned script, and stamping
-    "claude-opus-5" on that tells a reader they are looking at model output —
-    the exact confusion llm/factory.py logs a warning about when it falls back.
-    The generator's own docstring says it was written offline, so a manifest
-    naming a model would also contradict the very file it describes.
+    The question this answers is "did a real model run", not "is this
+    Anthropic" — that used to be the same question, back when there were only
+    two producers: a real model, or the regex stand-in that ran no model at
+    all. Phase 8 added a third producer, a real local model behind OllamaLLM,
+    and an `== "anthropic"` allowlist sent it down the "no model ran" branch
+    right alongside the stand-in, denying the manifest's own provenance for
+    every Ollama run.
+
+    So this is now a denylist of the two KNOWN non-producers, not an
+    allowlist of the one known producer: a backend added later defaults to
+    being NAMED (llm.name, whatever it is) rather than silently erased, and
+    only has to be added here if it too runs no model. anthropic's model id
+    still comes from the router rather than llm.name, because "anthropic"
+    alone does not say which of Haiku/Opus actually ran; every other real
+    producer already names itself in llm.name (see OllamaLLM.name).
+
+    With no ANTHROPIC_API_KEY the offline stand-in writes a canned script, and
+    stamping "claude-opus-5" on that tells a reader they are looking at model
+    output — the exact confusion llm/factory.py logs a warning about when it
+    falls back. The generator's own docstring says it was written offline, so
+    a manifest naming a model would also contradict the very file it
+    describes.
     """
+    if llm.name in {"heuristic", "fake"}:
+        return f"{llm.name} (no model ran)"
     if llm.name == "anthropic":
         return model_for(Stage.SYNTHESIS).model
-    return f"{llm.name} (no model ran)"
+    return llm.name
 
 
 def _attempt_record(number: int, result: SandboxResult, verdict: Verdict, reasoning: str) -> dict:

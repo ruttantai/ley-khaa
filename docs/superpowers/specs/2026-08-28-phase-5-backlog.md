@@ -472,19 +472,36 @@ which the single `model` column cannot express.
 policy on top of the existing model-mismatch rule. A schema change, deferred to the user's design
 call rather than decided under this phase's pressure.
 
-## 21. Vision will not work on the offline Ollama path (0.9.0)
+## 21. Vision does not work on the offline Ollama path
 
-**What is broken, stated before anyone discovers it the hard way.** The Ollama fallback planned for
-0.9.0 (§11, "not started") is scoped as a **text** offline model. `LLMClient.extract_image` has
-three implementations today — `AnthropicLLM`, `HeuristicLLM`, and the test double `FakeLLM` — and an
-Ollama-backed `LLMClient` due in 0.9.0 will need a fourth, satisfied by a model that can actually see
-an image. A text-only local model cannot; it can only produce the same carried-not-read shape
-`HeuristicLLM.extract_image` already produces today (name the image, read nothing).
+**What is broken, stated plainly.** The Ollama fallback shipped in 0.9.0 as a **text** offline model.
+`LLMClient.extract_image` has four implementations now — `AnthropicLLM`, `HeuristicLLM`, `OllamaLLM`,
+and the test double `FakeLLM` — and `OllamaLLM.extract_image` is written, but it does not read the
+image: it returns the same carried-not-read shape `HeuristicLLM.extract_image` already produces (name
+the image, read nothing), because a text-only local model cannot see an image at all.
 
 **Shape of the fix.** A vision-capable local model (e.g. a multimodal Ollama tag) is the roadmap
-item; nothing about this phase's `VisionExtraction` contract, the fetcher, or the cache needs to
-change for it — only a fourth `LLMClient` implementation that actually looks at the bytes.
+item; nothing about the `VisionExtraction` contract, the fetcher, or the cache needs to change for
+it — only `OllamaLLM.extract_image` (or a further `LLMClient` implementation alongside it) actually
+looking at the bytes instead of returning an empty extraction.
 
-**Why it is filed now rather than left implicit.** 0.9.0 is scoped as "offline fallback", and
+**Why it was filed before anyone hit it the hard way.** 0.9.0 was scoped as "offline fallback", and
 "offline" reads as "the same features, no network" unless stated otherwise. It is not, for images,
-and saying so now costs one paragraph against discovering it after the fact.
+and saying so cost one paragraph against discovering it after the fact.
+
+## 22. No runtime step-down between backends
+
+**What is broken.** `LEY_KHAA_LLM` selects the backend once, at startup (`build_llm`). A Claude call
+that fails mid-run is not retried on Ollama, and an Ollama call that fails is not retried on Claude —
+design spec §7 asks for exactly this ("LLM call failure → retry, then fall back to local Ollama") and
+0.9.0 does not implement it.
+
+**Shape of the fix.** The blocker is `LLMClient.name`: the manifest's "who actually did the work"
+contract currently treats the producer as a property of the *client* (one name per `LLMClient`
+instance, fixed for its lifetime). A per-call fallback makes the producer a property of the *call*
+instead — the same client could answer one request as `anthropic` and the next as `ollama:qwen2.5` —
+so the manifest attribution needs rework before step-down can be added safely.
+
+**Why it was deferred.** 0.9.0 scoped the Ollama backend as a static, startup-selected alternative
+(decision 1 of the phase 8 design) specifically to avoid this rework under phase pressure. It is a
+design change deserving its own phase, not a one-line addition to `build_llm`.

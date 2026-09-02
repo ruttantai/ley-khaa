@@ -72,6 +72,23 @@ docker compose up
 
 **Judge the product with the key set.** Without it, you are testing the pipeline, not the idea.
 
+**There is a third path: a local model instead of either.** Set `LEY_KHAA_LLM=ollama` (with Ollama
+running and a model pulled) for real language understanding with no API key at all — one local model
+handles every stage, and the manifest names it (`ollama:<model>`) so a bundle never credits Claude
+for local work. It is not a substitute for judging the product: output quality depends entirely on
+the local model, small quantised models included, and vision stays text-only regardless of this
+setting. The resolved backend is cached for the process's lifetime, so if the daemon wasn't reachable
+or the model wasn't pulled at startup, fixing that afterwards (`ollama pull <model>`, starting the
+daemon) needs a backend restart before it takes effect — the running process keeps using
+`HeuristicLLM` and won't say so again. Under `docker compose up`, Ollama runs on the host rather than
+in a container, so `LEY_KHAA_OLLAMA_HOST` needs to reach it as `http://host.docker.internal:11434` —
+compose sets that default for you, but the daemon itself must also be started with
+`OLLAMA_HOST=0.0.0.0` (it binds `127.0.0.1` by default) — on Linux, where the container reaches the
+host at a bridge address, a loopback-bound daemon still refuses it, so without this the container
+can't reach it at all. See
+[Running without an API key](../README.md#running-without-an-api-key) in the README for the full
+picture, including what happens when the daemon isn't reachable.
+
 ---
 
 ## 4. Your first task, end to end
@@ -311,15 +328,26 @@ docker build -t ley-khaa-sandbox backend/sandbox
 
 ---
 
-## 9. What is not built yet
+## 9. Known limits
 
-Stated plainly so you do not go looking for it:
+Every **feature** in the v1 definition of done (§11 of the design spec) has shipped, with one
+deliberate narrowing worth calling out by name: §11's Model Router line reads "…with Ollama
+fallback", which describes the router itself stepping down to Ollama per call when a tier is
+unavailable. What 0.9.0 actually built (see
+[Running without an API key](../README.md#running-without-an-api-key)) is Ollama as an
+explicitly-selected backend for a whole run (`LEY_KHAA_LLM=ollama`), chosen once at startup — not
+that automatic, per-call step-down, which remains backlog item 22 (see below). §11 also lists the
+`v1.0.0` release tag itself as part of that definition of done, and that tag has not been cut yet
+(see the phase table in the [README](../README.md#status)). Shipped is not the same as edge-free —
+stated plainly so you do not go looking for something that isn't there:
 
-- **Ollama offline fallback.** Not started. When it lands in 0.9.0 it is scoped as **text-only**, so
-  vision will still require `ANTHROPIC_API_KEY` even after this ships — see
-  [Images](../README.md#images).
-
-This is the remaining item in the v1 definition of done (§11 of the design spec).
+- **The Ollama offline fallback is text-only.** Vision still requires `ANTHROPIC_API_KEY` regardless
+  of which LLM backend is selected — see [Images](../README.md#images).
+- **The Ollama backend is chosen once, at startup — there is no runtime step-down.** A Claude call
+  that fails is not retried on Ollama, and vice versa (backlog item 22).
+- **Output quality on the Ollama path depends entirely on the local model.** A small quantised model
+  produces weaker specs and scripts than Opus, and nothing detects or warns about that beyond naming
+  the model in the manifest.
 
 The channel adapters shipped in 0.7.0 (see §5.5), with these limits:
 
