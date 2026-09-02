@@ -152,9 +152,15 @@ def _clean_database(_pg_engine):
     * a schema (or database) per test would re-run the full DDL a thousand
       times over.
 
-    TRUNCATE keeps commits real, keeps the two threads genuinely independent,
-    and RESTART IDENTITY resets the sequences so generated ids start from 1 in
-    each test exactly as they do on a fresh SQLite file.
+    TRUNCATE keeps commits real and keeps the two threads genuinely independent.
+
+    RESTART IDENTITY is inert against this schema and is kept anyway: every
+    mapped table's primary key is a `String` the application generates, so there
+    is not one sequence or identity column for it to reset. It costs nothing,
+    and it is the clause that would be missing on the day an integer key lands —
+    at which point a leftover sequence would make ids differ between a fresh
+    SQLite file and the shared Postgres schema, which is exactly the difference
+    this fixture exists to erase.
 
     autouse, so a test that builds its own session off `_pg_engine` still starts
     clean; `session` and `session_factory` also depend on it explicitly so the
