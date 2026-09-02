@@ -117,3 +117,29 @@ def test_projects_without_a_description_are_not_shown_to_the_model(session):
     prompt = llm.calls[0].user
     assert "acme" in prompt
     assert "default" not in prompt
+
+
+def test_the_offline_stand_in_routes_to_default_for_its_own_stated_reason(session):
+    """Backlog item 12, at the router. With a real `HeuristicLLM` in place of a
+    `FakeLLM`, every existing test in this file drives, the route still lands on
+    `default` — but for two different reasons depending on whether the stand-in
+    has a `ProjectChoice` rule at all.
+
+    Pinning `reason` is what separates them: the rule answers
+    "offline: no model routing", while a missing rule raises NotImplementedError
+    into `route`'s blanket `except` and answers "routing failed". Both are
+    `stage="default"`, `project="default"`, confidence 0.0, which is why every
+    other assertion in this file passes either way.
+    """
+    from ley_khaa.llm.heuristic import HeuristicLLM
+
+    projects = _repo(session)
+    decision = ProjectRouter(projects, HeuristicLLM()).route(
+        source="slack", client="newco", conversation_id="C1", title="universe check", summary="s"
+    )
+
+    assert decision.project == "default"
+    assert decision.stage == "default"
+    assert decision.reason == "offline: no model routing"
+    # And no binding: an offline route is a fallback, not something to learn.
+    assert projects.binding_for("slack", "newco", "C1") is None
