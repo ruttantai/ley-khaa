@@ -476,7 +476,19 @@ class TaskDriver:
                 # No originating message means no channel to answer into. A
                 # task created directly (a test, a future CLI) is not a failure.
                 return
-            if not self.repo.mark_notified(row.id, row.state):
+            # The question is only part of the compare-and-swap key for
+            # NEEDS_CLARIFICATION (backlog item 17: a second, different
+            # question asked without leaving the state must still be
+            # delivered). Every other NOTIFY_STATE keeps the original
+            # state-only behaviour — open_question is not guaranteed cleared
+            # by the time e.g. AWAITING_APPROVAL is reached, and folding it
+            # into the key there is not what this fix is for.
+            question = (
+                row.open_question
+                if row.state == TaskState.NEEDS_CLARIFICATION.value
+                else None
+            )
+            if not self.repo.mark_notified(row.id, row.state, question):
                 return
             self.notifier.notify(dest, text)
         except Exception:

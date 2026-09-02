@@ -85,6 +85,20 @@ class TaskRow(Base):
     # repeat its question every pass. NULL means nothing has been announced
     # yet, which is why it must not default to a state.
     last_notified_state: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The open_question text last announced alongside last_notified_state.
+    # State alone under-distinguishes: a task can be asked a SECOND, different
+    # question without ever leaving NEEDS_CLARIFICATION (a reply is answered,
+    # the task is re-interpreted, and a different field is still missing), and
+    # a state-only guard would wrongly treat that as a repeat (backlog item
+    # 17). Nullable like last_notified_state; server_default is only there so
+    # a column added by migration to existing rows lands on a real string
+    # rather than NULL-vs-empty-string ambiguity confusing the drift guard —
+    # see the CLAUDE.md rule on server_default=text("''") for non-null string
+    # columns. This column stays nullable, so the rule is applied defensively
+    # rather than because it is required here.
+    last_notified_question: Mapped[str | None] = mapped_column(
+        String, nullable=True, server_default=text("''")
+    )
 
     @property
     def effective_mode(self) -> str | None:

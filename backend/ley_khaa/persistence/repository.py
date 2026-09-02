@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import case, or_, select, update
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..domain.states import TERMINAL, WAITING, TaskState, can_transition, ensure_transition
@@ -311,14 +311,29 @@ class TaskRepository:
         self.session.commit()
         return row
 
-    def mark_notified(self, task_id: str, state: str) -> bool:
-        """Claim the right to announce `state` for this task. True if we won it.
+    def mark_notified(self, task_id: str, state: str, question: str | None = None) -> bool:
+        """Claim the right to announce `state` (and, within it, `question`)
+        for this task. True if we won it.
 
         Same compare-and-swap discipline as claim() and set_override(), applied
         to a side effect that leaves the process. advance() is re-entrant and
         the sweeper re-drives tasks, so an unguarded announcement would repeat a
         task's clarifying question on every pass; two workers reaching the same
         state at once would post it twice.
+
+        `question` is the second half of the key (backlog item 17). A task can
+        be asked a SECOND, DIFFERENT question without ever leaving
+        NEEDS_CLARIFICATION in between — a reply is answered, the task is
+        re-interpreted, and a different field is still missing — and a
+        state-only guard would wrongly read that as a repeat of the first
+        question, so the human never sees it. Comparing via
+        func.coalesce(..., "") rather than `!=` directly is deliberate: SQL's
+        `NULL != NULL` is NULL (falsy), not TRUE, so a bare `!=` would treat
+        "question went from NULL to NULL" as "changed" every single time and
+        turn this into a no-guard-at-all for the no-question case; coalescing
+        both sides to "" first makes NULL and "" compare equal to each other,
+        matching message_for()'s own (x or "").strip() fallback treatment of
+        the two as the same "nothing asked" case.
 
         The caller sends only after this returns True, which means a send that
         then fails is NOT retried — stated rather than hidden. §9 already says
@@ -333,9 +348,11 @@ class TaskRepository:
                 or_(
                     TaskRow.last_notified_state.is_(None),
                     TaskRow.last_notified_state != state,
+                    func.coalesce(TaskRow.last_notified_question, "")
+                    != func.coalesce(question, ""),
                 ),
             )
-            .values(last_notified_state=state)
+            .values(last_notified_state=state, last_notified_question=question)
         )
         self.session.commit()
         return result.rowcount == 1
