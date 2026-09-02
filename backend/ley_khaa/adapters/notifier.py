@@ -20,6 +20,8 @@ from concurrent.futures import Future
 from contextlib import suppress
 from typing import Protocol
 
+from sqlalchemy.orm import Session
+
 from ..config import settings
 from ..domain.states import TaskState
 from ..persistence.dead_letter_repository import DeadLetterRepository
@@ -173,7 +175,7 @@ class ChannelNotifier:
         adapters: dict[str, ChannelAdapter],
         *,
         loop: asyncio.AbstractEventLoop | None,
-        session_factory: Callable[[], object],
+        session_factory: Callable[[], Session],
     ) -> None:
         self.adapters = adapters
         self.loop = loop

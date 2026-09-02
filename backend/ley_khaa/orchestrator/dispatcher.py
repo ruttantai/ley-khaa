@@ -16,6 +16,8 @@ import uuid
 from collections.abc import Callable
 from contextlib import suppress
 
+from sqlalchemy.orm import Session
+
 from ..adapters.base import Destination
 from ..adapters.notifier import Notifier, NullNotifier, message_for
 from ..config import settings
@@ -26,8 +28,8 @@ from ..persistence.repository import TaskRepository
 
 logger = logging.getLogger(__name__)
 
-SessionFactory = Callable[[], object]
-Drive = Callable[[object, str], None]
+SessionFactory = Callable[[], Session]
+Drive = Callable[[Session, str], None]
 
 
 class Dispatcher:
@@ -279,7 +281,7 @@ class Dispatcher:
         finally:
             self._close(session)
 
-    def _close(self, session) -> None:
+    def _close(self, session: Session) -> None:
         """Tests hand in one long-lived session and must keep it; the app hands
         in SessionLocal and wants each unit of work to close its own."""
         if getattr(session, "_ley_khaa_shared", False):
