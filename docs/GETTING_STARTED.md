@@ -229,14 +229,19 @@ Paste an image into a channel already in `LEY_KHAA_SLACK_CHANNELS` / `LEY_KHAA_D
 into the dashboard directly. If it is a table, the resolver hands the generated script real CSV data
 extracted from it; if it is anything else, its summary reaches the interpreter as context. Vision
 runs once per image, keyed by a hash of its bytes — a re-drive or a second task quoting the same
-screenshot reuses that result rather than reading the picture again, which is what keeps a run with
-an image in it reproducible.
+screenshot reuses that result rather than reading the picture again, **as long as the source URL
+still resolves**: the checkpoint holds no image bytes of its own, so re-fetching is how a re-drive
+recomputes the cache key. Channel CDN URLs are not permanent (Discord's expire in about a day); once
+one stops resolving, the task asks a human rather than silently computing on the synthetic demo
+catalog instead.
 
 **No `ANTHROPIC_API_KEY` set?** The image is still carried, not read: it is recorded, credited to
 the offline stand-in, and its name still reaches the prompt, but nothing looks at the picture and
 the task proceeds on text alone. `docker compose up` still runs the demo end to end without one.
 
-`LEY_KHAA_VISION=off` turns the whole path off, the same shape as having no key. Only images from
+`LEY_KHAA_VISION=off` turns the whole path off — stronger than having no key: with no
+`ANTHROPIC_API_KEY` the image is still fetched and handed to the offline stand-in, but `off` skips
+the fetch itself, so no HTTP request goes out and no bot token is ever attached. Only images from
 `LEY_KHAA_IMAGE_HOSTS` (Slack + Discord CDNs by default) are ever fetched, and a fetch is capped at
 `LEY_KHAA_IMAGE_MAX_BYTES` (5 MB by default). See [Images](../README.md#images) in the README for
 the full boundary and its stated limits.

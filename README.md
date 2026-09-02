@@ -354,11 +354,16 @@ What the channel is for, and what it is not:
 Paste a screenshot into a channel or the dashboard and ley-khaa reads it — a table becomes data a
 generated script can compute on, anything else becomes context the interpreter can reason about.
 
-**The extraction is frozen.** An image is read once, keyed by a hash of its bytes, and every later
-step — a repair attempt, a re-drive, a second task quoting the same screenshot — reuses that stored
-result rather than re-reading the picture. That is what makes a run with an image in it
-reproducible. It also means a misread table stays wrong until its stored row is cleared — freezing
-buys reproducibility at the cost of self-correction.
+**The extraction is frozen, within a run and across re-drives, while the source URL still
+resolves.** An image is read once, keyed by a hash of its bytes, and every later step — a repair
+attempt, a re-drive, a second task quoting the same screenshot — reuses that stored result rather
+than re-reading the picture, as long as re-fetching the image (to compute the cache key) still
+succeeds. A channel CDN URL is not permanent — Discord's expire in about a day — and the checkpoint
+holds no bytes of its own, only the extraction, so a re-drive against an expired URL cannot re-read
+it either. When that happens the task asks a human rather than silently computing on something
+else: an unread image's name is never handed to the synthetic demo catalog, so a stale link becomes
+a clarification, not a confident wrong answer. It also means a misread table stays wrong until its
+stored row is cleared — freezing buys reproducibility at the cost of self-correction.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -382,7 +387,9 @@ regardless of which attachment happened to be pasted first.
 - There is no re-extraction of a successful read: freezing is what makes a re-run reproducible, so
   if a table is misread the checkpoint stays wrong until its row is cleared.
 - Images are never stored, only their extraction — an image whose URL has expired cannot be
-  re-read.
+  re-read, and re-driving a task past that point asks a human instead of guessing (see "The
+  extraction is frozen" above). Backlog item 19 tracks a secondary cache key that would let a
+  re-drive skip needing the URL to still resolve at all.
 - **Not live-tested against a real Slack or Discord image.** Everything here is proven offline and
   against recorded transports, the same call made for the channel adapters in 0.7.0.
 - The Ollama fallback planned for 0.9.0 is text-only: vision will not work on that offline path.

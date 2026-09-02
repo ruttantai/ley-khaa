@@ -421,10 +421,25 @@ a third.
 **Root cause.** The cache key IS the image's own bytes. A source that never produced bytes has
 nothing to key a "do not try again" record on, so there is nowhere to store the refusal.
 
-**Shape of the fix.** A second key space for unfetchable sources — e.g. a row keyed on the
-attachment's URL (or its own hash) rather than the image digest, with its own frozen-refusal
-semantics. Deferred rather than done under phase pressure: it is a second cache with its own
-invalidation question, not a one-line change to the existing one.
+**The same missing row is also what made the catalog fallback silent (whole-branch review,
+finding B1).** A frozen checkpoint IS the image's own bytes-derived digest, so once a channel CDN
+URL expires (Discord's do so in about a day), `_bytes_for` can no longer even re-derive the key that
+would have found the stored extraction — there is no url-keyed row to fall back on. Before B1's fix
+that dead end let the input name fall through to `catalog.resolve_name(...)` and compute on the
+synthetic demo dataset, with the manifest attesting a clean `source: "catalog"` and no hint an image
+was ever involved. B1 closed the silence (an unread image's name now raises `UnresolvedInputs`
+instead of reaching the catalog), but the underlying limit this item describes — a re-fetch is
+required to even ask "have I seen this one before" — is unchanged and is still the thing worth
+fixing here.
+
+**Shape of the fix.** A second key space for unfetchable sources — a row keyed on the attachment's
+URL (hashed to a `url_sha256`, since raw Slack/Discord URLs can be long and carry query tokens)
+rather than the image digest, with its own frozen-refusal semantics. That url→digest secondary key
+is also the durable fix for B1's underlying limit: it is what would let a re-drive recognize an
+already-frozen checkpoint even after the source URL has expired, rather than merely asking a human
+instead of guessing (which is as far as this phase's fix goes). Deferred rather than done under
+phase pressure: it is a second cache with its own invalidation question, not a one-line change to
+the existing one.
 
 ## 20. A same-backend model failure stays frozen under that image's digest forever
 

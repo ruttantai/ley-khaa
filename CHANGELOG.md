@@ -41,7 +41,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
   that image's digest — the cache re-extracts on a configuration change (a different or newly
   enabled backend) but not on a retry of the same one (backlog item 20).
 - Images are not stored, only their extraction, so an image whose URL has expired cannot be
-  re-read.
+  re-read. A re-drive past that point asks a human rather than silently computing on the synthetic
+  demo catalog instead — an unread image's name is never handed to the catalog fallback.
 - The offline fallback planned for 0.9.0 is text-only, so **vision will not work on the offline
   path** (backlog item 21). A local vision-capable model is roadmap.
 - Not live-tested against a real Slack or Discord image — proven offline and against recorded
