@@ -54,18 +54,26 @@ jobs:
       # matrix buys is independent results, and `if: !cancelled()` below buys
       # that for one line.
       #
+      # `--database` on each step asserts which database that step actually ran
+      # on, and fails the step otherwise. It is on the command line rather than
+      # in `env:` deliberately: the failure worth guarding against is this
+      # `env:` block being deleted or misindented, which would leave the step
+      # silently re-running the SQLite lane and reporting `1013 passed` a second
+      # time. A check keyed on DATABASE_URL cannot catch that — the malformation
+      # removes the variable the check reads — but the `run:` line survives it.
+      #
       # SQLite first: it is the fast local loop and the documented dev path
       # (backend/tests/conftest.py falls back to it whenever DATABASE_URL is
       # unset), so it stays the lane a contributor's failure is reported
       # against.
       - name: pytest (sqlite)
-        run: python -m pytest -v
+        run: python -m pytest -v --database=sqlite
         working-directory: backend
       # Runs even when the SQLite lane failed, so a red build says whether the
       # failure is Postgres-only — which is the entire point of having both.
       - name: pytest (postgres)
         if: ${{ !cancelled() }}
-        run: python -m pytest -v
+        run: python -m pytest -v --database=postgres
         working-directory: backend
         env:
           DATABASE_URL: postgresql+psycopg://ley:ley@localhost:5432/leykhaa

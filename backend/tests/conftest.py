@@ -31,9 +31,58 @@ from ley_khaa.persistence import orm  # noqa: F401 — register TaskRow
 # a Postgres-only behaviour difference can ever fail a build.
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 POSTGRES = DATABASE_URL.startswith("postgresql")
+LANE = "postgres" if POSTGRES else "sqlite"
 
 # The Postgres lane confines itself to a schema of its own (see _pg_engine).
 TEST_SCHEMA = "ley_khaa_test"
+
+
+def pytest_addoption(parser):
+    """`--database=postgres` asserts, on the command line, which lane ran.
+
+    Inferring the lane from DATABASE_URL is what keeps the SQLite lane
+    zero-configuration — bare `pytest` still gets SQLite, no new variable and no
+    new flag — but inference alone has a silent failure mode. Delete or misindent
+    the `env:` block on CI's `pytest (postgres)` step and DATABASE_URL is simply
+    gone: the step re-runs the SQLite lane, prints `1013 passed` a second time,
+    and the build goes green having never touched Postgres. That is this
+    project's signature defect — something that looks healthy and silently does
+    nothing — sitting inside the fix for it, and the whole value of this task is
+    that the second lane really is a second database.
+
+    Any check keyed on DATABASE_URL cannot catch that case, because the
+    malformation removes the very variable the check reads. So the expectation
+    is stated on the COMMAND LINE instead, where it is part of the `run:` line
+    and survives anything that happens to the step's environment. `--database`
+    does not select a lane or supply a URL; it only refuses to let a run claim to
+    be a lane it is not.
+    """
+    parser.addoption(
+        "--database",
+        action="store",
+        choices=("sqlite", "postgres"),
+        default=None,
+        help=(
+            "Assert which database this run is on and fail if it is not. "
+            "Omit (the default) to infer the lane from DATABASE_URL."
+        ),
+    )
+
+
+def pytest_configure(config):
+    expected = config.getoption("--database")
+    if expected is None or expected == LANE:
+        return
+    remedy = (
+        "set DATABASE_URL to a postgresql+psycopg:// URL"
+        if expected == "postgres"
+        else "unset DATABASE_URL"
+    )
+    raise pytest.UsageError(
+        f"--database={expected} was asked for, but this run is on {LANE} "
+        f"(DATABASE_URL={DATABASE_URL!r}). Refusing to run one lane and report "
+        f"it as the other — to run the {expected} lane, {remedy}."
+    )
 
 
 @pytest.fixture(scope="session")
