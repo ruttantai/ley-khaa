@@ -116,6 +116,61 @@ def test_a_configured_startup_runs_a_supervisor_and_installs_a_channel_notifier(
     assert app_module.app.state.supervisor is None
 
 
+def test_workers_mode_builds_the_dispatcher_after_the_channel_notifier_is_installed(
+    monkeypatch, session
+):
+    """The other half of item 16's fix. build_dispatcher() reads current_notifier()
+    once, at construction, and freezes it into the dispatcher for the process's whole
+    life -- unlike build_orchestrator, which is called fresh on every request/sweep
+    and always sees whatever is currently installed. Before this task, the workers-mode
+    dispatcher was started BEFORE this same test's sibling below installs the real
+    ChannelNotifier, so a poisoned task's notification would have silently gone to a
+    frozen NullNotifier in exactly the deployment shape (workers mode + Slack/Discord
+    configured) this fix exists to serve -- while every existing test stayed green,
+    because none of them combine workers mode with a real adapter. This pins the order
+    directly: what does build_dispatcher() see current_notifier() as, at the moment it
+    is actually called?
+    """
+
+    class StubAdapter:
+        name = "slack"
+
+        async def start(self):
+            started.append(1)
+            await asyncio.Event().wait()
+
+        async def stop(self): ...
+
+        async def notify(self, dest, text): ...
+
+    started = []
+    _pin(monkeypatch, disable_startup=False, dispatch_mode="workers")
+    monkeypatch.setattr(app_module, "run_migrations", lambda *a, **k: None)
+    monkeypatch.setattr(app_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(app_module, "build_adapters", lambda **kw: [StubAdapter()])
+
+    seen = []
+    real_build_dispatcher = app_module.build_dispatcher
+
+    def spying_build_dispatcher():
+        # The property under test is "the notifier is installed before the
+        # dispatcher reads it", not the object graph build_dispatcher() returns.
+        seen.append(current_notifier())
+        return real_build_dispatcher()
+
+    monkeypatch.setattr(app_module, "build_dispatcher", spying_build_dispatcher)
+
+    with TestClient(app_module.app) as client:
+        assert client.get("/health").status_code == 200
+        assert started, "the stub adapter never started"
+
+    assert seen, "workers mode never called build_dispatcher()"
+    assert seen[0].name == "channel", (
+        "build_dispatcher() read current_notifier() before set_notifier(ChannelNotifier(...)) "
+        f"ran; got {seen[0].name!r} instead"
+    )
+
+
 def test_the_ingest_callable_reaches_the_orchestrator(monkeypatch, session):
     """What build_adapters hands an adapter must actually create work, or the
     whole chain is wired to nothing."""
