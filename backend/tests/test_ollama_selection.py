@@ -129,3 +129,78 @@ def test_the_other_backends_are_untouched(monkeypatch):
     assert isinstance(factory.build_llm("heuristic"), HeuristicLLM)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     assert isinstance(factory.build_llm("anthropic"), HeuristicLLM)
+
+
+def test_the_unreachable_daemon_warning_says_to_restart_after_fixing(monkeypatch, caplog):
+    """C2: the resolved client is cached for the process's life, so following
+    this warning's own advice mid-session (starting the daemon) does nothing
+    until the backend restarts -- the warning must say so, or a user who
+    fixes the cause keeps getting regex output with no further signal."""
+    monkeypatch.setattr(
+        factory, "_ollama_client", lambda host: _Daemon(raises=ConnectionError("refused"))
+    )
+    with caplog.at_level(logging.WARNING):
+        factory.build_llm("ollama")
+    assert "restart" in caplog.text.lower()
+
+
+def test_the_unpulled_model_warning_says_to_restart_after_fixing(monkeypatch, caplog):
+    monkeypatch.setattr(
+        factory, "_ollama_client", lambda host: _Daemon(_Listing("llama3.1"))
+    )
+    with caplog.at_level(logging.WARNING):
+        factory.build_llm("ollama")
+    assert "restart" in caplog.text.lower()
+
+
+def test_the_probe_client_has_a_short_timeout(monkeypatch):
+    """Spec §3.4: "a cheap client.list() with a short timeout". ollama 0.6.2
+    defaults to timeout=None, which on a host that DROPs packets to 11434
+    (ufw's default) would block the startup path for ~127s. This must never
+    reach the network — it inspects the kwargs the real ollama.Client() is
+    constructed with."""
+    calls = []
+
+    class _RecordingClient:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr("ollama.Client", _RecordingClient)
+    factory._ollama_client("http://localhost:11434")
+    assert calls[0]["timeout"] is not None
+    assert 0 < calls[0]["timeout"] <= 30
+
+
+def test_a_listing_entry_with_no_model_name_degrades_rather_than_raising(monkeypatch, caplog):
+    """ollama._types.ListResponse.Model.model is Optional[str]. A listing
+    entry lacking a name used to reach `name.startswith(...)` OUTSIDE the
+    try/except that is supposed to make this probe crash-proof, raising
+    AttributeError past build_llm entirely."""
+    monkeypatch.setattr(
+        factory, "_ollama_client", lambda host: _Daemon(_Listing("qwen2.5", None))
+    )
+    with caplog.at_level(logging.WARNING):
+        llm = factory.build_llm("ollama")
+    assert isinstance(llm, OllamaLLM)
+    assert llm.name == "ollama:qwen2.5"
+
+
+def test_a_listing_entry_with_only_a_none_name_still_falls_back_cleanly(monkeypatch, caplog):
+    """The degenerate case of the above: NOTHING in the listing has a usable
+    name, so this must fall back to the heuristic (not crash)."""
+    monkeypatch.setattr(factory, "_ollama_client", lambda host: _Daemon(_Listing(None)))
+    with caplog.at_level(logging.WARNING):
+        llm = factory.build_llm("ollama")
+    assert isinstance(llm, HeuristicLLM)
+
+
+def test_a_tag_match_adopts_the_actually_pulled_tag(monkeypatch):
+    """LEY_KHAA_OLLAMA_MODEL=qwen2.5 with only qwen2.5:7b pulled must build
+    OllamaLLM(model="qwen2.5:7b") — the bare "qwen2.5" resolves to
+    ":latest", which was never pulled, and every request would fail forever
+    with the probe having passed and nothing logged."""
+    monkeypatch.setattr(factory, "_ollama_client", lambda host: _Daemon(_Listing("qwen2.5:7b")))
+    llm = factory.build_llm("ollama")
+    assert isinstance(llm, OllamaLLM)
+    assert llm.model == "qwen2.5:7b"
+    assert llm.name == "ollama:qwen2.5:7b"

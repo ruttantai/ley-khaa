@@ -23,13 +23,22 @@ _warned_about_fallback = False
 # startup" as documented, not "probe once per request".
 _ollama_client_cache: LLMClient | None = None
 
+# Spec §3.4: "a cheap client.list() with a short timeout". The `ollama`
+# package (0.6.2) defaults to timeout=None on the underlying httpx client, so
+# with nothing set here a firewall that DROPs packets to 11434 (ufw's default
+# on Linux) blocks the fresh-clone startup path for ~127s with no /health,
+# and indefinitely behind a stalling proxy. This probe's only job is "decide
+# which backend to use, never crash or hang deciding" — its failure mode is
+# "use the heuristic", so waiting is strictly worse than deciding quickly.
+_PROBE_TIMEOUT_SECONDS = 5.0
+
 
 def _ollama_client(host: str):
     """The one place the real client is constructed, so tests can replace it
     without ever opening a socket."""
     import ollama
 
-    return ollama.Client(host=host or None)
+    return ollama.Client(host=host or None, timeout=_PROBE_TIMEOUT_SECONDS)
 
 
 def build_llm(backend: str = "anthropic") -> LLMClient:
@@ -73,7 +82,13 @@ def _build_ollama() -> LLMClient:
     model, host = settings.ollama_model, settings.ollama_host
     try:
         listing = _ollama_client(host).list()
-        pulled = {m.model for m in listing.models}
+        # ollama._types.ListResponse.Model.model is Optional[str] — a listing
+        # entry with no name filtered out here rather than left to reach the
+        # membership check below, which happens OUTSIDE this try: a bare
+        # `None` in the set would make `None.startswith(...)` raise
+        # AttributeError past the very guard meant to prevent build_llm from
+        # ever crashing.
+        pulled = {m.model for m in listing.models if m.model}
     except Exception as exc:
         # Deliberately broad: this is a startup probe whose only job is "decide
         # which backend to use, never crash deciding". Every failure here means
@@ -90,21 +105,35 @@ def _build_ollama() -> LLMClient:
         _fall_back(
             f"LEY_KHAA_LLM=ollama but the Ollama daemon is not reachable at {host} "
             f"({type(exc).__name__}) — falling back to HeuristicLLM, the offline regex "
-            "stand-in. Start Ollama, or set LEY_KHAA_OLLAMA_HOST."
+            "stand-in. Start Ollama, or set LEY_KHAA_OLLAMA_HOST, then restart the backend "
+            "— the resolved client is cached for the life of the process, so fixing this "
+            "does not take effect until then."
         )
         _ollama_client_cache = HeuristicLLM()
         return _ollama_client_cache
 
-    if not any(name == model or name.startswith(f"{model}:") for name in pulled):
+    # A prefix match is real: Ollama tags a pull by version (`qwen2.5:7b`),
+    # and that is what most model cards tell you to pull, not the bare name.
+    # But OllamaLLM must be built with the tag that was ACTUALLY pulled, not
+    # the bare config name — the bare name resolves to `:latest`, which may
+    # not be on disk, and every request would then fail forever with "model
+    # not found" even though the probe passed and nothing was ever logged.
+    matched = next(
+        (name for name in pulled if name == model or name.startswith(f"{model}:")),
+        None,
+    )
+    if matched is None:
         _fall_back(
             f"LEY_KHAA_LLM=ollama and the daemon is reachable at {host}, but the model "
             f"{model!r} is not pulled — falling back to HeuristicLLM, the offline regex "
-            f"stand-in. Fix with: ollama pull {model}"
+            f"stand-in. Fix with: ollama pull {model}, then restart the backend — the "
+            "resolved client is cached for the life of the process, so fixing this does "
+            "not take effect until then."
         )
         _ollama_client_cache = HeuristicLLM()
         return _ollama_client_cache
 
-    _ollama_client_cache = OllamaLLM(model=model, host=host)
+    _ollama_client_cache = OllamaLLM(model=matched, host=host)
     return _ollama_client_cache
 
 
