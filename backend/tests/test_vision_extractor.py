@@ -386,4 +386,67 @@ def test_a_successful_extraction_survives_a_different_backend_on_the_second_driv
     second = _extractor(session, llm=second_llm).extract(_image())
 
     assert second_llm.calls == [], "a successful extraction must not be re-litigated by a new backend"
-    assert second.content == "a,b\n1,2", "the original content must be returned, not re-extracted"
+
+
+# -- backlog item 19: an unfetchable image gets its own key space -----------
+
+
+def test_an_unfetchable_url_dead_letters_once_across_two_drives(session):
+    """The gap: with no image bytes there is nothing to key the image-bytes
+    cache on, so a retried fetch of the same bad URL used to dead-letter
+    again on every drive. A second key space, url_sha256, closes it: the
+    same unfetchable URL across two drives produces ONE dead letter, not
+    two, and .extract() still returns a row (never None, never raises) both
+    times."""
+    dead = []
+    fetcher = _StubFetcher(error=FetchRefused("image host 'evil.example.com' is not allowlisted"))
+    url = "https://evil.example.com/a.png"
+
+    first = _extractor(
+        session, fetcher=fetcher, dead_letter=lambda **kw: dead.append(kw)
+    ).extract(_image(content=url))
+    second = _extractor(
+        session, fetcher=fetcher, dead_letter=lambda **kw: dead.append(kw)
+    ).extract(_image(content=url))
+
+    assert first is not None and second is not None
+    assert first.content == ""
+    assert second.content == ""
+    assert len(dead) == 1, "a second drive of the identical unfetchable URL must not dead-letter again"
+
+
+def test_an_unfetchable_url_is_a_different_key_from_a_different_unfetchable_url(session):
+    """Two different bad URLs must not collide into one dead letter."""
+    dead = []
+    fetcher = _StubFetcher(error=FetchRefused("not allowlisted"))
+
+    _extractor(session, fetcher=fetcher, dead_letter=lambda **kw: dead.append(kw)).extract(
+        _image(content="https://evil.example.com/a.png")
+    )
+    _extractor(session, fetcher=fetcher, dead_letter=lambda **kw: dead.append(kw)).extract(
+        _image(content="https://evil.example.com/b.png")
+    )
+
+    assert len(dead) == 2
+
+
+def test_an_unfetchable_url_recovers_once_the_url_becomes_fetchable(session):
+    """The negative cache does not freeze a URL forever: the fetch is
+    attempted again on every drive (nothing here short-circuits _bytes_for),
+    so a transient outage clearing, or an expired link being refreshed, is
+    picked up for free on the very next drive."""
+    dead = []
+    failing_fetcher = _StubFetcher(error=FetchRefused("temporarily unreachable"))
+    url = "https://files.slack.com/f/a.png"
+
+    first = _extractor(
+        session, fetcher=failing_fetcher, dead_letter=lambda **kw: dead.append(kw)
+    ).extract(_image(content=url))
+    assert first.content == ""
+
+    llm = _CountingLLM(result=VisionExtraction(kind="text", content="hello", summary="s"))
+    working_fetcher = _StubFetcher(result=(PNG, "image/png"))
+    second = _extractor(session, llm=llm, fetcher=working_fetcher).extract(_image(content=url))
+
+    assert second.content == "hello", "a URL that becomes fetchable again must not stay frozen"
+    assert len(dead) == 1

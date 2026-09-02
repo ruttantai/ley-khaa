@@ -96,8 +96,7 @@ class VisionExtractor:
             image, media_type = self._bytes_for(attachment)
         except (FetchRefused, ValueError, binascii.Error) as exc:
             reason = f"could not read {name}: {exc}"
-            self._record_drop(reason, name)
-            return self._unread(b"", name, reason=reason, media_type="")
+            return self._record_unfetchable(attachment, name, reason)
 
         digest = sha256_of(image)
         cached = self.extractions.get(digest)
@@ -198,6 +197,41 @@ class VisionExtractor:
             media_type=media_type,
             byte_size=len(image),
             model="",
+        )
+
+    def _record_unfetchable(self, attachment: dict, name: str, reason: str) -> ImageExtractionRow:
+        """A source that raised before producing any bytes (backlog #19,
+        spec §3.5): `_bytes_for` never returned an `image`, so there is
+        nothing to hash for the image-bytes cache — key on the SOURCE
+        string itself instead, so a second drive of the identical
+        unfetchable URL (or undecodable payload) dead-letters once, not
+        again on every drive.
+
+        This is a SEPARATE, negative cache with its own semantics, not a
+        second copy of the image-bytes cache's model-based retry rule:
+        nothing here skips calling `_bytes_for` again next time, so a URL
+        that becomes fetchable later (a transient host outage clears, a
+        deleted Slack file is restored) is picked up for free on the very
+        next drive — this only ever suppresses the DUPLICATE dead letter for
+        an identical, still-unfetchable source.
+        """
+        content = str(attachment.get("content") or "")
+        if not content:
+            # No source string at all — nothing to key a second cache on.
+            # Matches every other malformed-attachment path: unstored.
+            self._record_drop(reason, name)
+            return self._unread(b"", name, reason=reason, media_type="")
+
+        url_key = sha256_of(content.encode())
+        cached = self.extractions.get_by_url(url_key)
+        if cached is not None:
+            # Already recorded by an earlier drive of this identical
+            # source: return it without dead-lettering again.
+            return cached
+
+        self._record_drop(reason, name)
+        return self.extractions.record_unfetchable(
+            url_sha256=url_key, extraction=self._unread_extraction(name, reason)
         )
 
     def _store(

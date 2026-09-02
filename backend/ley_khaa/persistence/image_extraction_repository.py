@@ -1,5 +1,6 @@
 import hashlib
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -19,6 +20,31 @@ class ImageExtractionRepository:
     def get(self, image_sha256: str) -> ImageExtractionRow | None:
         return self.session.get(ImageExtractionRow, image_sha256)
 
+    def get_by_url(self, url_sha256: str) -> ImageExtractionRow | None:
+        """The second key space (backlog #19, spec §3.5): a source that never
+        produced image bytes has no `image_sha256` to look up by."""
+        stmt = select(ImageExtractionRow).where(ImageExtractionRow.url_sha256 == url_sha256)
+        return self.session.execute(stmt).scalar_one_or_none()
+
+    def record_unfetchable(
+        self, *, url_sha256: str, extraction: VisionExtraction
+    ) -> ImageExtractionRow:
+        """Record a source that raised before producing any bytes.
+
+        There is no image to hash, so `image_sha256` is set to the same
+        value as `url_sha256` — the source's own hash is this row's only
+        available identity. `model` stays "": nothing ran, so nothing can be
+        credited or blamed the way an actual extraction failure is.
+        """
+        return self.record(
+            image_sha256=url_sha256,
+            extraction=extraction,
+            media_type="",
+            byte_size=0,
+            model="",
+            url_sha256=url_sha256,
+        )
+
     def record(
         self,
         *,
@@ -27,6 +53,7 @@ class ImageExtractionRepository:
         media_type: str,
         byte_size: int,
         model: str,
+        url_sha256: str | None = None,
     ) -> ImageExtractionRow:
         """Upsert, not insert.
 
@@ -52,6 +79,7 @@ class ImageExtractionRepository:
         row.media_type = media_type
         row.byte_size = byte_size
         row.model = model
+        row.url_sha256 = url_sha256
         try:
             self.session.commit()
         except IntegrityError:
@@ -69,6 +97,7 @@ class ImageExtractionRepository:
             row.media_type = media_type
             row.byte_size = byte_size
             row.model = model
+            row.url_sha256 = url_sha256
             self.session.commit()
         self.session.refresh(row)
         return row

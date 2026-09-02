@@ -331,6 +331,20 @@ class ImageExtractionRow(Base):
     An empty `content` is the "was not read" record (spec §3.6) — no vision
     backend, or an extraction that failed. It is stored rather than skipped so
     a second drive does not retry a fetch that will fail again.
+
+    `url_sha256` is the SECOND key space (backlog #19, spec §3.5): when
+    `_bytes_for` never produces bytes at all — a fetch refused, a body over
+    the size cap, an undecodable payload — there is nothing to hash for
+    `image_sha256`, so the row's identity for that path is the hash of the
+    SOURCE string instead (`image_sha256` is set to the same value as
+    `url_sha256` for these rows; there is no image, so there is no other
+    identity to give the primary key). Nullable and unique: every ordinary
+    image-bytes row leaves it NULL, and a second unfetchable-source row for
+    the identical URL collides on this index rather than inserting a
+    duplicate. No server_default — NULL, not "", is what "not a
+    source-keyed row" must mean, since a shared "" would defeat the
+    uniqueness this column exists for (see MessageRow.external_id for the
+    same nullable+unique+no-default shape).
     """
 
     __tablename__ = "image_extractions"
@@ -343,4 +357,5 @@ class ImageExtractionRow(Base):
     byte_size: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     # Who ACTUALLY produced this — LLMClient.name, never the router's pick.
     model: Mapped[str] = mapped_column(String, default="", server_default=text("''"))
+    url_sha256: Mapped[str | None] = mapped_column(String, nullable=True, index=True, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
