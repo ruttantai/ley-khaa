@@ -68,5 +68,12 @@ class Settings:
     )
     image_max_bytes: int = int(os.getenv("LEY_KHAA_IMAGE_MAX_BYTES") or str(5 * 1024 * 1024))
 
+    # Ollama offline fallback (phase 8 design §4). The local model is used for
+    # EVERY stage: the router's Claude model id is ignored, because someone
+    # running Ollama typically has exactly one model pulled and requiring two
+    # is friction on the very path this exists to serve.
+    ollama_model: str = os.getenv("LEY_KHAA_OLLAMA_MODEL") or "qwen2.5"
+    ollama_host: str = os.getenv("LEY_KHAA_OLLAMA_HOST") or "http://localhost:11434"
+
 
 settings = Settings()
