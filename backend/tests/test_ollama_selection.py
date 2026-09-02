@@ -75,6 +75,19 @@ def test_an_ollama_response_error_also_falls_back(monkeypatch, caplog):
         assert isinstance(factory.build_llm("ollama"), HeuristicLLM)
 
 
+def test_an_unexpected_exception_type_also_degrades_rather_than_escaping(monkeypatch, caplog):
+    """The probe's job is "decide, never crash deciding" — any exception, not
+    just the ones seen so far, must degrade to the heuristic."""
+    monkeypatch.setattr(
+        factory, "_ollama_client", lambda host: _Daemon(raises=RuntimeError("kaboom"))
+    )
+    with caplog.at_level(logging.WARNING):
+        llm = factory.build_llm("ollama")
+    assert isinstance(llm, HeuristicLLM)
+    assert llm.name == "heuristic"
+    assert "RuntimeError" in caplog.text
+
+
 def test_the_fallback_warning_is_said_once_not_every_sweep(monkeypatch, caplog):
     """build_llm runs per request and per background sweep."""
     monkeypatch.setattr(

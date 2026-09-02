@@ -1,8 +1,6 @@
 import logging
 import os
 
-import ollama
-
 from ..config import settings
 from .client import AnthropicLLM, LLMClient
 from .heuristic import HeuristicLLM
@@ -56,10 +54,19 @@ def _build_ollama() -> LLMClient:
     try:
         listing = _ollama_client(host).list()
         pulled = {m.model for m in listing.models}
-    except (ConnectionError, ollama.RequestError, ollama.ResponseError) as exc:
-        # A dead daemon raises builtins.ConnectionError, NOT an ollama.* type —
-        # catching only the ollama ones means this never fires and the app dies
-        # at startup instead of degrading.
+    except Exception as exc:
+        # Deliberately broad: this is a startup probe whose only job is "decide
+        # which backend to use, never crash deciding". Every failure here means
+        # the same thing — the daemon is not usable right now — so every
+        # failure gets the same response: warn (naming the real exception type,
+        # so diagnosis isn't harmed) and hand back the heuristic. A dead daemon
+        # raises builtins.ConnectionError, NOT an ollama.* type, and ollama's own
+        # RequestError/ResponseError inherit straight from Exception with no
+        # shared base to catch instead — so any enumeration here is only ever a
+        # guess about a third-party library's exception surface. Catching too
+        # much costs nothing (there is no failure this probe should propagate);
+        # catching too little means the app crash-loops on `docker compose up`
+        # for the exact user this phase exists to serve.
         _fall_back(
             f"LEY_KHAA_LLM=ollama but the Ollama daemon is not reachable at {host} "
             f"({type(exc).__name__}) — falling back to HeuristicLLM, the offline regex "
