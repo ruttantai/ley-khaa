@@ -83,3 +83,21 @@ def test_a_quarantined_workflow_is_never_a_candidate():
     workflow = _workflow()
     workflow.quarantined = True
     assert fingerprint_candidates(_spec(), [workflow]) == []
+
+
+def test_a_spec_with_no_operation_matches_nothing_even_a_workflow_with_no_alias():
+    """Backlog item 7: the early return on an empty normalized operation.
+
+    The interpreter invents `operation` freely, so `""` and punctuation-only
+    strings both reach here and both normalize to `""`. Without the guard the
+    membership test is `"" in {"" }` for any workflow whose alias list is empty
+    of alphanumerics — a request that named no operation at all would be served
+    by frozen code proven for some other job, which is the one failure mode this
+    module says is worse than a cache miss.
+    """
+    junk_alias = _workflow(name="junk_aliases", aliases=("!!!",))
+    assert normalize_operation("!!!") == ""
+
+    assert fingerprint_candidates(_spec(operation=""), [junk_alias]) == []
+    assert fingerprint_candidates(_spec(operation="   "), [junk_alias]) == []
+    assert fingerprint_candidates(_spec(operation="!!!"), [junk_alias]) == []

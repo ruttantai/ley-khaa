@@ -67,3 +67,48 @@ def test_a_pre_alembic_database_is_stamped_rather_than_recreated(tmp_path):
 
     assert "alembic_version" in set(inspect(legacy).get_table_names())
     assert "spec" in {c["name"] for c in inspect(legacy).get_columns("tasks")}
+
+
+def test_every_migration_downgrades_back_to_an_empty_database(tmp_path):
+    """Backlog item 7: no downgrade was exercised by anything, at any revision.
+
+    `alembic downgrade base` is the operator's rollback path, and half of these
+    revisions do their work through `batch_alter_table`, which on SQLite is a
+    table rebuild rather than a real `ALTER` — a downgrade that names a column
+    the rebuild forgot fails only when someone runs it. Now it runs here.
+    """
+    url = f"sqlite:///{tmp_path / 'down.db'}"
+    config = _config(url)
+    command.upgrade(config, "head")
+    engine = create_engine(url, future=True)
+    assert "tasks" in set(inspect(engine).get_table_names())
+
+    command.downgrade(config, "base")
+
+    remaining = set(inspect(engine).get_table_names()) - {"alembic_version"}
+    assert remaining == set(), f"downgrade to base left tables behind: {sorted(remaining)}"
+
+
+def test_a_downgrade_and_re_upgrade_lands_on_the_same_schema(tmp_path):
+    """The stronger half: a downgrade that runs is not the same as one that is
+    correct. Stepping every revision down to the baseline and back up must
+    reproduce the schema `Base.metadata` declares — an `alter_column` that
+    restores the wrong type, or a `drop_column` whose upgrade partner adds a
+    different one, shows up here as drift and nowhere else.
+
+    `0006_alias_jsonb` is the reason this is worth its own test: it is the only
+    revision whose downgrade is a type change rather than a drop.
+    """
+    url = f"sqlite:///{tmp_path / 'roundtrip.db'}"
+    config = _config(url)
+    command.upgrade(config, "head")
+    command.downgrade(config, "0001_baseline")
+    command.upgrade(config, "head")
+
+    engine = create_engine(url, future=True)
+    with engine.connect() as connection:
+        context = MigrationContext.configure(
+            connection, opts={"compare_type": True, "compare_server_default": True}
+        )
+        diff = compare_metadata(context, Base.metadata)
+    assert diff == [], f"a down-then-up round trip did not restore the schema: {diff}"

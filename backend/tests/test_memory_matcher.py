@@ -67,6 +67,21 @@ def test_a_low_confidence_answer_is_not_a_match(session):
     assert MemoryMatcher(repo, llm).recall("acme", ["something entirely unrelated today"]) is None
 
 
+def test_confidence_exactly_at_the_floor_is_a_match(session):
+    """Backlog item 7, the memory half of the same boundary. `CONFIDENCE_FLOOR`
+    is the minimum evidence, so meeting it exactly recalls; only floor - 0.01
+    was pinned, which `<` and `<=` satisfy identically."""
+    repo, row = _seed(session)
+    llm = FakeLLM(responses=[
+        MemoryDecision(memory_id=row.id, confidence=CONFIDENCE_FLOOR, reason="exactly")
+    ])
+
+    match = MemoryMatcher(repo, llm).recall("acme", ["the same standing request, reworded"])
+
+    assert match is not None
+    assert match.id == row.id
+
+
 def test_a_model_naming_an_unknown_memory_is_not_a_match(session):
     """Model output is untrusted here exactly as it is in the registry matcher."""
     repo, row = _seed(session)
