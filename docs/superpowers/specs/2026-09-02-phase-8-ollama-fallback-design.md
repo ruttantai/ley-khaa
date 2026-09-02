@@ -98,7 +98,7 @@ later configures Anthropic — which is the correct behaviour, and falls out of 
 
 ### 3.4 Selection, probing, and failure
 
-`build_llm` gains an `ollama` branch. Before returning the client it probes **once**, at startup:
+`build_llm` gains an `ollama` branch. Before returning the client it probes **once per process**:
 
 1. **Is the daemon reachable?** A cheap `client.list()` with a short timeout.
 2. **Is the configured model actually pulled?** Check it appears in that listing.
@@ -106,9 +106,15 @@ later configures Anthropic — which is the correct behaviour, and falls out of 
 Distinguishing these two matters for the user: a missing model should say
 `run: ollama pull <model>`, not fail cryptically on the first request half a minute later.
 
+**"Once" requires caching the resolved client, and this is easy to get wrong.** `build_llm` is NOT
+called once at startup — it runs per request and per background sweep (`build_orchestrator` alone is
+called from every request handler and the sweeper). So the resolved client must be cached at module
+level, or every request pays a blocking network round-trip to the daemon on the hot path, and the
+backend silently changes mid-session whenever the daemon's availability changes — which would
+contradict the "no runtime step-down" guarantee this phase rests on.
+
 Any failure → one-time WARNING naming the real cause → `HeuristicLLM`. The existing
-`_warned_about_fallback` pattern applies: `build_llm` runs per request and per background sweep, so
-the notice is said once, not every few seconds.
+`_warned_about_fallback` pattern applies to the notice itself.
 
 The warning must name the cause specifically. "Falling back" alone is what leads a reader to believe
 they are looking at model output when they are looking at regex output.
