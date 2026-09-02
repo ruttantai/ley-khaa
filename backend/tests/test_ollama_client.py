@@ -59,6 +59,21 @@ def test_the_routers_token_budget_is_honoured():
     assert choice.max_tokens == 16000
 
 
+def test_num_ctx_is_sent_alongside_num_predict():
+    """Ollama's default context window (4096) is smaller than synthesis's own
+    num_predict budget (16000) alone: with no num_ctx, the model is asked for
+    more output tokens than its window holds, and Ollama truncates the OLDEST
+    tokens to make room — on the repair path that is exactly the SYSTEM rules
+    the model must follow. num_ctx must be sent, and must be large enough to
+    hold at least the full output budget on top of the prompt."""
+    rec = _Recorder()
+    choice = model_for(Stage.SYNTHESIS)
+    _llm(rec).parse(choice=choice, system="s", user="u", output_format=Answer)
+    options = rec.calls[0]["options"]
+    assert "num_ctx" in options
+    assert options["num_ctx"] > choice.max_tokens
+
+
 def test_the_routers_claude_model_id_is_ignored():
     """The local model comes from config; a Claude id must never be sent to a
     local daemon that has never heard of it."""

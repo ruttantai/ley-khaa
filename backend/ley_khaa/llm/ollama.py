@@ -6,6 +6,22 @@ from .router import ModelChoice
 
 T = TypeVar("T", bound=BaseModel)
 
+# Ollama's default context window is 4096 tokens — smaller than Stage.
+# SYNTHESIS's own num_predict budget (16000) alone, so with no num_ctx set
+# the model is asked for up to 16000 output tokens inside a 4096-token
+# window, and Ollama truncates the OLDEST tokens to make room. On the repair
+# path what gets truncated is exactly the rules the model must follow: the
+# SYSTEM block ("pandas and numpy are NOT installed", "there is no network",
+# "never hardcode a filename"), the previous script, and up to 4000 chars of
+# stderr (synthesizer.py's _MAX_STDERR). num_ctx has to cover BOTH the prompt
+# (worst case: that whole repair prompt) and the requested output
+# (choice.max_tokens) — it is the same window, shared by input and output.
+# 32768 comfortably covers the largest max_tokens this codebase asks for
+# (16000, synthesis) plus a generous multiple of the largest realistic
+# prompt, without pinning this to synthesis's number exactly — a token
+# budget added for a future stage does not require re-deriving this.
+_NUM_CTX = 32768
+
 
 class OllamaLLM:
     """A local model behind the same seam as Claude (phase 8 design §3.1).
@@ -38,7 +54,7 @@ class OllamaLLM:
                 {"role": "user", "content": user},
             ],
             format=output_format.model_json_schema(),
-            options={"num_predict": choice.max_tokens},
+            options={"num_predict": choice.max_tokens, "num_ctx": _NUM_CTX},
         )
         content = response.message.content
         if not content:
