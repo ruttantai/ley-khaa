@@ -135,6 +135,26 @@ def test_a_raising_notifier_never_fails_the_task(session):
     assert TaskRepository(session).get(task.id).state == TaskState.NEEDS_CLARIFICATION.value
 
 
+def test_build_dispatcher_hands_it_the_installed_notifier():
+    """Pins `notifier=current_notifier()` in api/app.py's build_dispatcher().
+
+    Same class of wiring line as test_build_orchestrator_hands_the_driver_the_
+    installed_notifier in test_adapter_startup.py: deleting the keyword makes
+    _fail_poison's notification silently go back to nowhere while every other
+    test stays green, because nothing else constructs a Dispatcher through
+    build_dispatcher() at all.
+    """
+    from ley_khaa.adapters.notifier import NullNotifier, RecordingNotifier, set_notifier
+    from ley_khaa.api import app as app_module
+
+    recording = RecordingNotifier()
+    set_notifier(recording)
+    try:
+        assert app_module.build_dispatcher().notifier is recording
+    finally:
+        set_notifier(NullNotifier())
+
+
 def test_the_default_notifier_is_null_so_nothing_existing_changes(session):
     orchestrator = _orchestrator(session)
     assert orchestrator.driver.notifier.name == "null"

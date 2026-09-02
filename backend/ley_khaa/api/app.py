@@ -157,7 +157,10 @@ def _record_dead_letter(**kwargs) -> None:
 
 
 def build_dispatcher() -> Dispatcher:
-    return Dispatcher(SessionLocal, drive=_drive_task)
+    # Same fallback build_orchestrator uses: whatever the lifespan installed,
+    # NullNotifier when no tokens are set — so a poisoned task's failure is
+    # announced through the live notifier, not silently dropped.
+    return Dispatcher(SessionLocal, drive=_drive_task, notifier=current_notifier())
 
 
 async def _periodic_sweeper(interval: float, sweep: Callable[[], int] = _sweep_once) -> None:
@@ -210,11 +213,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         session.close()
 
     app.state.sweeper = asyncio.create_task(_periodic_sweeper(settings.sweep_interval_seconds))
-    app.state.dispatcher = None
-    if settings.dispatch_mode == "workers":
-        app.state.dispatcher = asyncio.create_task(
-            build_dispatcher().run_forever(settings.sweep_interval_seconds)
-        )
     app.state.supervisor = None
     adapters = build_adapters(ingest=_ingest_from_channel, dead_letter=_record_dead_letter)
     if adapters:
@@ -228,6 +226,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
         )
         app.state.supervisor = supervisor
+    # AFTER set_notifier: build_dispatcher() reads current_notifier() once, at
+    # construction, and holds onto it for the dispatcher's whole lifetime — unlike
+    # build_orchestrator, which re-reads it fresh on every call. Building the
+    # dispatcher before the block above would freeze it on the NullNotifier
+    # installed at import time, and a poisoned task would silently go back to
+    # telling nobody even with Slack/Discord configured.
+    app.state.dispatcher = None
+    if settings.dispatch_mode == "workers":
+        app.state.dispatcher = asyncio.create_task(
+            build_dispatcher().run_forever(settings.sweep_interval_seconds)
+        )
     try:
         yield
     finally:

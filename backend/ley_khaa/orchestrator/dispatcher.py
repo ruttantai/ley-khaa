@@ -16,8 +16,12 @@ import uuid
 from collections.abc import Callable
 from contextlib import suppress
 
+from ..adapters.base import Destination
+from ..adapters.notifier import Notifier, NullNotifier, message_for
 from ..config import settings
 from ..domain.states import TaskState
+from ..persistence.message_repository import MessageRepository
+from ..persistence.orm import TaskRow
 from ..persistence.repository import TaskRepository
 
 logger = logging.getLogger(__name__)
@@ -33,12 +37,17 @@ class Dispatcher:
         *,
         drive: Drive,
         owner: str | None = None,
+        notifier: Notifier | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.drive = drive
         # Identifies this dispatcher in the lease. Distinct per process so a
         # second backend cannot silently believe it holds another's tasks.
         self.owner = owner or f"dispatcher-{uuid.uuid4().hex[:8]}"
+        # NullNotifier by default, the same fallback TaskDriver uses, so every
+        # existing construction (a bare Dispatcher(...), every dispatcher test)
+        # keeps behaving exactly as it did before this notifier existed.
+        self.notifier = notifier or NullNotifier()
 
     async def run_forever(self, interval: float) -> None:
         """Tick until cancelled. A failing tick is logged, never fatal —
@@ -151,6 +160,43 @@ class Dispatcher:
             repo.record_failure(
                 task_id, f"abandoned after {attempts} lease attempts; no worker finished it"
             )
+            self._announce_poisoned(repo, task_id)
+
+    def _announce_poisoned(self, repo: TaskRepository, task_id: str) -> None:
+        """Tell the human this task died, the same shape TaskDriver._announce
+        uses (spec §3.6): claim-then-send via mark_notified, best-effort, and
+        nothing here can turn a notification failure into a task failure — the
+        task is already FAILED by the time this runs.
+        """
+        try:
+            row = repo.get(task_id)
+            if row is None:
+                return
+            text = message_for(row)
+            if text is None:
+                return
+            dest = self._destination(repo, row)
+            if dest is None:
+                # No originating message means no channel to answer into.
+                return
+            if not repo.mark_notified(row.id, row.state):
+                return
+            self.notifier.notify(dest, text)
+        except Exception:
+            logger.exception("could not announce poisoned task %s", task_id)
+
+    def _destination(self, repo: TaskRepository, row: TaskRow) -> Destination | None:
+        """Where this task's channel conversation is (mirrors
+        TaskDriver._destination): the FIRST source message is the anchor."""
+        sources = MessageRepository(repo.session).get_many(list(row.source_message_ids or []))
+        if not sources:
+            return None
+        first = sources[0]
+        return Destination(
+            source=first.source,
+            conversation_id=first.conversation_id,
+            external_id=first.external_id,
+        )
 
     def _drive(self, task_id: str) -> None:
         session = self.session_factory()
