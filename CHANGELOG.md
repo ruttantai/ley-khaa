@@ -5,6 +5,102 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-09-02
+
+Release hardening. No new features: ten backlog defects fixed, two quality gates added, and every
+statement this phase found to be false corrected.
+
+### Added
+- **A backend typechecker, enforced by CI (§4.1).** Spec §7 has required "typecheck clean" since
+  v0.1.0 while `backend/` had no typechecker configured at all. `mypy==2.3.1` at **default**
+  settings — not `--strict`, which is mostly annotation churn and is filed as a post-1.0.0 ratchet —
+  runs over `ley_khaa` and `docker-entrypoint.py` and fails the build on any error. Proven to gate
+  rather than warn: a deliberate wrong return type made the lane exit 1 while the full suite still
+  reported 1013 passed.
+- **A Postgres lane in CI (§4.2, backlog item 9).** The suite has always run on SQLite while
+  `docker compose up` deploys Postgres 16, so the database the project actually ships on was tested
+  by nothing. Setting `DATABASE_URL` now runs the *whole* suite against Postgres; CI runs both lanes
+  over one setup, with `if: !cancelled()` on the second so a red build says whether a failure is
+  Postgres-only. Isolation on that lane is a dedicated `ley_khaa_test` schema plus a per-test
+  `TRUNCATE`, which keeps commits real and keeps the concurrency tests' two threads genuinely
+  independent.
+- `pytest --database=sqlite|postgres` asserts which database a run actually used and refuses to
+  continue otherwise. It selects nothing and supplies no URL: it exists because deleting CI's `env:`
+  block would otherwise re-run SQLite, print the same pass count a second time, and go green having
+  never touched Postgres — and a check keyed on `DATABASE_URL` cannot catch that, since the
+  malformation removes the variable the check reads.
+- `dead_letters` retention (backlog item 18): `LEY_KHAA_DEAD_LETTER_MAX_ROWS`, default 1000, keeps
+  the newest rows. A permanently bad token previously wrote one row a minute for as long as the
+  process ran.
+- `tasks.last_notified_question` (migration `0009`) and `image_extractions.url_sha256` (migration
+  `0010`), backing the two fixes below.
+
+### Fixed
+- **A second, different clarifying question is delivered** (item 17). The re-notification guard was a
+  compare-and-swap on the task's *state*, so a task asked a new question without leaving
+  `NEEDS_CLARIFICATION` lost it silently — the run had failed, a human was blocked, and the channel
+  said nothing. The CAS now covers the question text as well, NULL-safely, so a new question re-arms
+  the guard while a re-drive with the same one still does not.
+- **A poisoned task now notifies when it fails** (item 16). `_fail_poison` was the one path to FAILED
+  that had no notifier at all. Wiring it exposed a live ordering bug: the workers-mode dispatcher is
+  built once at startup and freezes whatever notifier it was given, so it had to be built *after* the
+  real `ChannelNotifier` is installed — that ordering is now pinned by a test.
+- **A project drains its whole backlog per tick, and a slow project no longer paces the others**
+  (item 11). Review of the first fix found two head-of-line-blocking cases it did not remove: a
+  poison-failed or race-lost head task ended the drain as if the lane were empty, and the
+  per-project semaphore was held for a whole drain rather than per task.
+- **An unfetchable image is recorded once, not dead-lettered on every drive** (item 19), via a second
+  key space hashed from the source URL — there are no image bytes to key a refusal on when the fetch
+  itself failed.
+- `AnthropicLLM.parse` and `extract_image` raise instead of returning an unguarded `None` when the
+  model stops on `max_tokens`, and a truncated interpreter response is now labelled by its real cause
+  rather than as "interpreter unavailable", which sent operators hunting for a network problem that
+  did not exist.
+- `ProjectIn.name` is validated against the same `NAME_PATTERN` as its sibling `PromoteIn` (item 13);
+  `GET /projects/{name}/queue` is renamed `/projects/{name}/tasks`, which is what it always returned
+  (item 15); `workflow_repository.py`'s redundant post-UPDATE read and the false comment justifying it
+  are gone (item 10).
+- The dashboard's Registry list refreshes after a promotion made from a `BundlePanel` on the same
+  page (item 8), and Promote's Cancel no longer leaves stale input behind.
+- **One live-reachable crash and three latent defects found by adopting mypy.** The live one: the
+  Discord notifier reached for `get_partial_message` on a forum channel — a forum post is a thread,
+  so its conversation id carries the forum as the parent, and the moment that thread left the
+  client's cache the notification raised a bare `AttributeError` the dead-letter record could not
+  explain. The other three are latent — signatures declaring what the code cannot deliver, exposed by
+  the types rather than by a failure — and are fixed at cause rather than annotated away:
+  `ReadinessGate.should_emit` declared a non-Optional `last_message_at` its callers can pass `None`
+  for, `_route_reply` handed a nullable id to `Session.get`, and `TaskDriver`'s re-reads returned
+  `TaskRow | None` from methods declared `-> TaskRow`. Counting all four as bugs found would
+  overstate it; counting none of them would understate what the gate is for.
+
+### Changed
+- Test coverage for the two gaps §4.3 names (items 7 and 12): migration downgrades at every revision
+  plus a down-and-up round trip against the models, `fingerprint_candidates`' empty-operation guard,
+  `confidence == CONFIDENCE_FLOOR` exactly as a match, `_remember`'s own empty-fingerprint guard, and
+  `HeuristicLLM`'s offline `ProjectChoice` rule — which nothing tested, because `ProjectRouter`'s
+  blanket `except` turned a missing rule into a default differing only in a string nothing asserted
+  on. Every one was verified by deleting the behaviour and watching the test fail.
+- `backend/pyproject.toml` declares version `0.10.0`; it had said `0.6.0` since v0.7.0 shipped.
+
+### Known limits
+- **The suite's green depends on pytest's default collection order.** In reverse file order one test
+  fails, identically on both database lanes: `test_ollama_config.py` reloads `ley_khaa.config`, which
+  rebinds `settings` out from under modules that already imported it. The shipped code is not
+  involved. Filed as backlog item 25 with a three-file reproducer; it must be fixed before anything
+  introduces test-order randomisation or `pytest-xdist`.
+- **Alembic migrations are still exercised on SQLite only** (backlog item 26). The Postgres lane
+  builds its schema with `create_all`, deliberately, so that a failure there is unambiguously a
+  dialect difference rather than a migration bug — which leaves the drift guard, the downgrade tests
+  and the `JSONB` variant with no automatic Postgres coverage.
+- **mypy runs at default settings, and `ignore_missing_imports` is global** for the sake of one
+  untyped dependency (openpyxl), so a future untyped dependency would be exempted silently (item 24).
+  CI's mypy dependencies are also unpinned floors, so a stub release can redden the gate on a commit
+  that changed nothing (item 23).
+- Items 1, 2, 3, 20, 21 and 22 of the Phase 5 backlog remain open by decision, each with its reason
+  recorded in that file: memory still does not learn paraphrases, task memory still has no management
+  surface, vision is still text-only on the Ollama path, and there is still no runtime step-down
+  between backends.
+
 ## [0.9.0] — 2026-09-02
 
 ### Added
