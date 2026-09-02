@@ -68,12 +68,8 @@ class Dispatcher:
 
         limit = asyncio.Semaphore(settings.max_concurrent_projects)
 
-        async def guarded(project: str) -> list[str]:
-            async with limit:
-                return await self._work_one(project)
-
         results = await asyncio.gather(
-            *(guarded(project) for project in projects), return_exceptions=True
+            *(self._work_one(project, limit) for project in projects), return_exceptions=True
         )
         driven: list[str] = []
         for result in results:
@@ -85,11 +81,22 @@ class Dispatcher:
                 driven.extend(result)
         return driven
 
-    async def _work_one(self, project: str) -> list[str]:
+    async def _work_one(self, project: str, limit: asyncio.Semaphore) -> list[str]:
         """Drain this project's whole backlog for this tick (spec §3.6, item
         11): claim and drive tasks until nothing runnable is left, rather
         than stopping after one — so a project's queue depth no longer
         depends on how many external ticks it happens to get.
+
+        `limit` is held per TASK, not for the whole drain: `async with limit`
+        wraps one claim-drive-release cycle per loop iteration, then is
+        released before the next one is attempted. Holding it for the whole
+        loop instead (the first version of this fix) would have a project
+        with a deep backlog occupy a `max_concurrent_projects` slot for its
+        entire drain — trading the task-level head-of-line blocking this task
+        removes for the same problem one layer up, at the project level.
+        Releasing between tasks lets another project's own first task start
+        as soon as this one's CURRENT task finishes, not after this whole
+        backlog does.
 
         `attempted` guards termination. `release_lease` (in `_release`) does
         not touch `lease_attempts` — only reclaiming an EXPIRED lease does —
@@ -99,32 +106,36 @@ class Dispatcher:
         forever, starving every other task behind it in this project's queue
         and never returning. One attempt per task per tick is enough; a task
         that never recovers is handled by a later tick and, eventually, the
-        poison-attempt cap in `_claim_next`.
+        poison-attempt cap in `_claim_next` (which itself now steps past a
+        poisoned or lost-race head task rather than abandoning the rest of
+        the queue behind it — see `_claim_next`'s own docstring).
         """
         driven: list[str] = []
         attempted: set[str] = set()
         while True:
-            task_id = await asyncio.to_thread(self._claim_next, project)
-            if task_id is None:
-                return driven
-            if task_id in attempted:
-                # We just reclaimed the very task we already drove this tick
-                # (it never left the runnable set) — hand the lease straight
-                # back rather than leaking it, and stop this project's lane.
-                await asyncio.to_thread(self._release, task_id)
-                return driven
-            attempted.add(task_id)
+            async with limit:
+                task_id = await asyncio.to_thread(self._claim_next, project)
+                if task_id is None:
+                    return driven
+                if task_id in attempted:
+                    # We just reclaimed the very task we already drove this
+                    # tick (it never left the runnable set) — hand the lease
+                    # straight back rather than leaking it, and stop this
+                    # project's lane.
+                    await asyncio.to_thread(self._release, task_id)
+                    return driven
+                attempted.add(task_id)
 
-            beat = asyncio.create_task(self._heartbeat(task_id))
-            try:
-                await asyncio.to_thread(self._drive, task_id)
-            except Exception:
-                logger.exception("driving task %s failed", task_id)
-            finally:
-                beat.cancel()
-                with suppress(asyncio.CancelledError):
-                    await beat
-                await asyncio.to_thread(self._release, task_id)
+                beat = asyncio.create_task(self._heartbeat(task_id))
+                try:
+                    await asyncio.to_thread(self._drive, task_id)
+                except Exception:
+                    logger.exception("driving task %s failed", task_id)
+                finally:
+                    beat.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await beat
+                    await asyncio.to_thread(self._release, task_id)
             driven.append(task_id)
 
     async def _heartbeat(self, task_id: str) -> None:
@@ -151,24 +162,46 @@ class Dispatcher:
             self._close(session)
 
     def _claim_next(self, project: str) -> str | None:
+        """The next task this worker can actually claim in `project`, or
+        `None` if there genuinely is none right now.
+
+        `next_runnable` can hand back a head task this worker cannot use for
+        two different reasons that are NOT "the backlog is empty": it just
+        hit the poison-attempt cap (failed in `_fail_poison` below), or
+        another worker won the claim race first. Either way the row stops
+        being usable but the rest of the project's queue behind it is
+        unaffected — so this loops past it via `exclude_ids` instead of
+        returning `None`, which would otherwise abandon every task behind an
+        unclaimable head task for the whole tick (item 11's own symptom,
+        reappearing one level down from the per-tick drain this task added).
+
+        `skipped` guarantees this terminates: every iteration either returns
+        (claimed, or truly nothing runnable) or adds exactly one more id to
+        `skipped`, and a project's backlog is finite, so the loop can run at
+        most len(backlog) + 1 times.
+        """
         session = self.session_factory()
         try:
             repo = TaskRepository(session)
-            row = repo.next_runnable(project)
-            if row is None:
-                return None
-            # Read the attempt count BEFORE claiming: claim_lease increments it
-            # when it takes over an expired lease, so checking afterwards would
-            # be off by one and let a poison task have one extra run.
-            attempts = row.lease_attempts or 0
-            if attempts >= settings.max_lease_attempts:
-                self._fail_poison(repo, row.id, attempts)
-                return None
-            if not repo.claim_lease(
-                row.id, owner=self.owner, ttl_seconds=settings.lease_ttl_seconds
-            ):
-                return None
-            return row.id
+            skipped: set[str] = set()
+            while True:
+                row = repo.next_runnable(project, exclude_ids=skipped)
+                if row is None:
+                    return None
+                # Read the attempt count BEFORE claiming: claim_lease increments it
+                # when it takes over an expired lease, so checking afterwards would
+                # be off by one and let a poison task have one extra run.
+                attempts = row.lease_attempts or 0
+                if attempts >= settings.max_lease_attempts:
+                    self._fail_poison(repo, row.id, attempts)
+                    skipped.add(row.id)
+                    continue
+                if not repo.claim_lease(
+                    row.id, owner=self.owner, ttl_seconds=settings.lease_ttl_seconds
+                ):
+                    skipped.add(row.id)
+                    continue
+                return row.id
         finally:
             self._close(session)
 

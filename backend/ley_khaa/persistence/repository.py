@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import case, func, or_, select, update
@@ -492,16 +493,30 @@ class TaskRepository:
             )
         )
 
-    def next_runnable(self, project: str, now: datetime | None = None) -> TaskRow | None:
-        """The oldest runnable task in a project. FIFO: urgency-based reordering
-        is deliberately out of scope (spec §7) because urgency lives in the spec,
-        which is only known after the task has already been dequeued."""
+    def next_runnable(
+        self,
+        project: str,
+        now: datetime | None = None,
+        *,
+        exclude_ids: Iterable[str] = (),
+    ) -> TaskRow | None:
+        """The oldest runnable task in a project, skipping `exclude_ids`.
+        FIFO: urgency-based reordering is deliberately out of scope (spec §7)
+        because urgency lives in the spec, which is only known after the task
+        has already been dequeued.
+
+        `exclude_ids` lets a caller step past a head task it already knows it
+        can't use right now (dispatcher._claim_next, when the head was just
+        poison-failed or lost a claim race to another worker) without
+        re-querying and landing on that same still-technically-runnable row
+        again — which would otherwise block every task behind it.
+        """
         moment = now or datetime.now(timezone.utc)
-        return self.session.scalars(
-            select(TaskRow)
-            .where(TaskRow.project == project, *self._runnable_where(moment))
-            .order_by(TaskRow.created_at)
-        ).first()
+        exclude = list(exclude_ids)
+        query = select(TaskRow).where(TaskRow.project == project, *self._runnable_where(moment))
+        if exclude:
+            query = query.where(TaskRow.id.not_in(exclude))
+        return self.session.scalars(query.order_by(TaskRow.created_at)).first()
 
     def leased_task_id(self, project: str, now: datetime | None = None) -> str | None:
         """The task in this project currently held by a live lease, if any.

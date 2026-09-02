@@ -56,7 +56,7 @@ def test_a_tick_takes_the_oldest_task_in_a_project_first(session_factory):
     both get driven within the same tick now."""
     with session_factory() as session:
         first = _task(session, project="acme")
-        _task(session, project="acme")
+        second = _task(session, project="acme")
 
     order: list[str] = []
 
@@ -69,7 +69,11 @@ def test_a_tick_takes_the_oldest_task_in_a_project_first(session_factory):
         )
 
     asyncio.run(Dispatcher(session_factory, drive=drive).tick())
-    assert order[0] == first
+    # Both ids, not just order[0] == first: under single-claim behaviour
+    # order would be [first] and order[0] == first would still (vacuously)
+    # hold, so the ordering claim alone can't tell "FIFO within a drain"
+    # apart from "only ever claims one task, which happens to be the oldest."
+    assert order == [first, second]
 
 
 def test_a_project_drains_its_whole_backlog_in_one_sweep(session_factory):
@@ -112,15 +116,135 @@ def test_a_slow_project_does_not_pace_a_fast_project(session_factory):
             task_id, expected=TaskState.CLASSIFIED, target=TaskState.FAILED
         )
 
-    start = time.monotonic()
     result = asyncio.run(Dispatcher(session_factory, drive=drive).tick())
-    elapsed = time.monotonic() - start
 
+    # The id assertion alone fully discriminates the regression this test
+    # is for: under the old one-claim-per-tick behaviour `fast` contributes
+    # only one of its three ids here, regardless of timing. A companion
+    # `elapsed < ...` wall-clock assertion was deliberately dropped — it
+    # could never be the assertion that actually catches that regression
+    # (this one already does, first), only ever a flaky false failure on a
+    # loaded machine. See test_a_long_backlog_does_not_delay_another_projects_first_task
+    # for the timing-sensitive claim (the semaphore holding per-task, not
+    # per-drain), which needs wall-clock measurement to mean anything.
     assert sorted(result) == sorted([slow_id, *fast_ids])
-    # Both projects run concurrently (separate semaphore slots); the fast
-    # project's whole backlog should drain well within the slow task's own
-    # duration, not be serialized behind it across several ticks.
-    assert elapsed < 1.0
+
+
+def test_a_poison_capped_head_task_does_not_block_the_rest_of_the_backlog(
+    session_factory, monkeypatch
+):
+    """FIX 1 (item 11's own symptom, one level down from the per-tick drain):
+    `_claim_next` has three distinct `return None` sites — nothing runnable,
+    the head task just got poison-failed, and the head task lost a claim
+    race — and only the first of those means the project's lane is actually
+    empty. A poison-capped head task must not block the fresh tasks queued
+    behind it."""
+    with session_factory() as session:
+        poisoned_id = _task(session, project="acme")
+        row = TaskRepository(session).get(poisoned_id)
+        row.lease_attempts = 99
+        session.commit()
+        rest = [_task(session, project="acme") for _ in range(2)]
+
+    from ley_khaa.config import settings as real_settings
+
+    monkeypatch.setattr(dispatcher_module, "settings", replace(real_settings, max_lease_attempts=3))
+
+    def drive(session, task_id):
+        TaskRepository(session).claim(
+            task_id, expected=TaskState.CLASSIFIED, target=TaskState.FAILED
+        )
+
+    result = asyncio.run(Dispatcher(session_factory, drive=drive).tick())
+
+    assert sorted(result) == sorted(rest)
+    with session_factory() as session:
+        row = TaskRepository(session).get(poisoned_id)
+        assert TaskState(row.state) is TaskState.FAILED
+
+
+def test_a_lost_claim_race_on_the_head_task_does_not_block_the_rest_of_the_backlog(
+    session_factory, monkeypatch
+):
+    """Same symptom as the poison-cap test above, different one of
+    `_claim_next`'s three `return None` sites: the head task's `claim_lease`
+    call loses the race (another worker won it first). The rest of the
+    project's backlog must still drain in this tick rather than being
+    abandoned because the head couldn't be claimed.
+
+    `claim_lease` is mocked to always fail for one specific task id — never
+    recovering within this tick — the strongest version of "contested": if
+    the rest of the backlog drains anyway, it can only be because the drain
+    stepped past the contested head rather than stopping at it.
+    """
+    with session_factory() as session:
+        contested_id = _task(session, project="acme")
+        rest = [_task(session, project="acme") for _ in range(2)]
+
+    original_claim_lease = TaskRepository.claim_lease
+
+    def losing_claim_lease(self, task_id, **kwargs):
+        if task_id == contested_id:
+            return False  # another worker always wins this one, this tick
+        return original_claim_lease(self, task_id, **kwargs)
+
+    monkeypatch.setattr(TaskRepository, "claim_lease", losing_claim_lease)
+
+    def drive(session, task_id):
+        TaskRepository(session).claim(
+            task_id, expected=TaskState.CLASSIFIED, target=TaskState.FAILED
+        )
+
+    result = asyncio.run(Dispatcher(session_factory, drive=drive).tick())
+
+    assert sorted(result) == sorted(rest)
+    with session_factory() as session:
+        row = TaskRepository(session).get(contested_id)
+        # Never claimed by us — still sitting there for the next tick to try.
+        assert row.lease_owner is None
+        assert TaskState(row.state) is TaskState.CLASSIFIED
+
+
+def test_a_long_backlog_does_not_delay_another_projects_first_task(
+    session_factory, monkeypatch
+):
+    """FIX 2: the semaphore must be held per TASK, not for a whole project's
+    drain. With the cap forced to 1, `busy`'s five-task backlog (each task
+    ~0.2s) must not make `other`'s first task wait for the whole ~1.0s
+    drain — only for whichever single task (its own, or `busy`'s current
+    one) is already holding the one slot when it gets its turn.
+    """
+    from ley_khaa.config import settings as real_settings
+
+    monkeypatch.setattr(
+        dispatcher_module, "settings", replace(real_settings, max_concurrent_projects=1)
+    )
+
+    with session_factory() as session:
+        busy_ids = [_task(session, project="busy") for _ in range(5)]
+        other_id = _task(session, project="other")
+
+    started: dict[str, float] = {}
+    lock = threading.Lock()
+
+    def drive(session, task_id):
+        with lock:
+            started[task_id] = time.monotonic()
+        time.sleep(0.2)
+        TaskRepository(session).claim(
+            task_id, expected=TaskState.CLASSIFIED, target=TaskState.FAILED
+        )
+
+    t0 = time.monotonic()
+    result = asyncio.run(Dispatcher(session_factory, drive=drive).tick())
+
+    assert sorted(result) == sorted([*busy_ids, other_id])
+    # Regardless of which project's first task wins the initial race for the
+    # one slot, `other` must start within roughly one task's duration — not
+    # after `busy`'s whole five-task, ~1.0s backlog. 0.6s gives comfortable
+    # margin above the ~0.2-0.4s a correct implementation needs while
+    # staying well under the ~1.0s+ the bug this pins would produce.
+    assert started[other_id] - t0 < 0.6
 
 
 def test_the_lease_is_released_after_the_work_finishes(session_factory):
