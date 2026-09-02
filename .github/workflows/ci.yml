@@ -7,6 +7,28 @@ on:
 jobs:
   backend-tests:
     runs-on: ubuntu-latest
+    services:
+      # Spec §4.2: the suite has always run on SQLite while `docker compose up`
+      # deploys Postgres, so the database the project actually ships on was
+      # never tested. Mirrors docker-compose.yml's `db` service exactly —
+      # postgres:16, same user/password/database — so a difference this job
+      # finds is a difference a deployed ley-khaa would hit.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ley
+          POSTGRES_PASSWORD: ley
+          POSTGRES_DB: leykhaa
+        ports:
+          - 5432:5432
+        # The job's steps run on the runner, not inside a container, so the
+        # health check is what guarantees the server is accepting connections
+        # before the Postgres step opens one.
+        options: >-
+          --health-cmd "pg_isready -U ley -d leykhaa"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -14,19 +36,39 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
         working-directory: backend
+      # Spec §7 has required "typecheck clean" since v0.1.0 with nothing
+      # enforcing it. mypy exits non-zero on any error, so this fails the build
+      # rather than warning. Configuration (default settings, not --strict)
+      # lives in backend/pyproject.toml. Placed before the image build because
+      # it needs nothing but the pip install, so the cheap check fails fast.
+      - run: python -m mypy
+        working-directory: backend
       # Without the image, DockerSandbox.available() is False and every
       # [docker] param in tests/test_sandbox_contract.py skips — so the default
       # sandbox, and the §5.10 guarantees that are its whole reason to exist,
       # would have no automated coverage anywhere.
       - run: docker build -t ley-khaa-sandbox backend/sandbox
-      # Spec §7 has required "typecheck clean" since v0.1.0 with nothing
-      # enforcing it. mypy exits non-zero on any error, so this fails the build
-      # rather than warning. Configuration (default settings, not --strict)
-      # lives in backend/pyproject.toml.
-      - run: python -m mypy
+      # Two lanes over one setup, rather than a matrix: the pip install, the
+      # sandbox image and mypy are identical in both, so a matrix would run all
+      # of them twice to change one environment variable. The only thing a
+      # matrix buys is independent results, and `if: !cancelled()` below buys
+      # that for one line.
+      #
+      # SQLite first: it is the fast local loop and the documented dev path
+      # (backend/tests/conftest.py falls back to it whenever DATABASE_URL is
+      # unset), so it stays the lane a contributor's failure is reported
+      # against.
+      - name: pytest (sqlite)
+        run: python -m pytest -v
         working-directory: backend
-      - run: python -m pytest -v
+      # Runs even when the SQLite lane failed, so a red build says whether the
+      # failure is Postgres-only — which is the entire point of having both.
+      - name: pytest (postgres)
+        if: ${{ !cancelled() }}
+        run: python -m pytest -v
         working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg://ley:ley@localhost:5432/leykhaa
 
   frontend-tests:
     runs-on: ubuntu-latest
