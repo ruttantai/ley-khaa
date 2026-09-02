@@ -8,6 +8,8 @@ project row — startup does that (projects/seeds.py::ensure_default_project),
 the same division the seed workflows use. Saying otherwise here would be the
 false-statement class of defect that commit 8cebd1f cleaned up.
 """
+from typing import Any
+
 import sqlalchemy as sa
 from alembic import op
 
@@ -16,13 +18,17 @@ down_revision = "0004_registry_memory"
 branch_labels = None
 depends_on = None
 
-_TASK_COLUMNS = [
+# Annotated because the element types differ (String, DateTime, Integer, ...)
+# and mypy would otherwise join them to `object`, which has neither a
+# `.name` for downgrade() nor a type add_column() accepts. Annotation only:
+# it emits no DDL and cannot change what this shipped revision does.
+_TASK_COLUMNS: list[sa.Column[Any]] = [
     sa.Column("lease_owner", sa.String(), nullable=True),
     sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("lease_attempts", sa.Integer(), nullable=False, server_default="0"),
 ]
 
-_CANDIDATE_COLUMNS = [
+_CANDIDATE_COLUMNS: list[sa.Column[Any]] = [
     sa.Column("amends_task_id", sa.String(), nullable=True),
     sa.Column("amendment_reason", sa.String(), nullable=True),
     sa.Column("amendment_confidence", sa.Float(), nullable=True),

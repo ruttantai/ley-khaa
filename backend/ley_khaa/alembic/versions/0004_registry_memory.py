@@ -3,6 +3,8 @@
 Revision ID: 0004_registry_memory
 Revises: 0003_executor
 """
+from typing import Any
+
 import sqlalchemy as sa
 from alembic import op
 
@@ -11,7 +13,11 @@ down_revision = "0003_executor"
 branch_labels = None
 depends_on = None
 
-_TASK_COLUMNS = [
+# Annotated because the element types differ (String, DateTime, Integer, ...)
+# and mypy would otherwise join them to `object`, which has neither a
+# `.name` for downgrade() nor a type add_column() accepts. Annotation only:
+# it emits no DDL and cannot change what this shipped revision does.
+_TASK_COLUMNS: list[sa.Column[Any]] = [
     sa.Column("remembered_from_task_id", sa.String(), nullable=True),
     sa.Column("familiarity", sa.Integer(), nullable=False, server_default="0"),
 ]
