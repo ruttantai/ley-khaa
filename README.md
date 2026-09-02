@@ -25,8 +25,8 @@ generator code, exact inputs, seeded manifest — so any result can be audited a
 
 ## Status
 
-**v0.10.0 — release hardening.** No new features: ten backlog defects fixed, each pinned by a test
-that fails without the fix, plus two gates that did not exist. The backend is typechecked by **mypy**
+**v0.10.0 — release hardening.** No new features: ten defects fixed — nine of them carried in the
+project's own backlog — each pinned by a test that fails without the fix, plus two gates that did not exist. The backend is typechecked by **mypy**
 in CI, closing a "typecheck clean" line the spec had required since v0.1.0 with nothing enforcing it;
 and the suite now runs a second time against **Postgres 16**, the database `docker compose up`
 actually deploys, so a dialect-dependent defect can no longer pass everywhere it is checked. See the

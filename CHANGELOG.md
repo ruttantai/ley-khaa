@@ -7,16 +7,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
 
 ## [0.10.0] — 2026-09-02
 
-Release hardening. No new features: ten backlog defects fixed, two quality gates added, and every
-statement this phase found to be false corrected.
+Release hardening. No new features: ten defects fixed — nine carried in the Phase 5 backlog, one
+found while writing the spec — two quality gates added, and every statement this phase found to be
+false corrected.
 
 ### Added
 - **A backend typechecker, enforced by CI (§4.1).** Spec §7 has required "typecheck clean" since
   v0.1.0 while `backend/` had no typechecker configured at all. `mypy==2.3.1` at **default**
   settings — not `--strict`, which is mostly annotation churn and is filed as a post-1.0.0 ratchet —
   runs over `ley_khaa` and `docker-entrypoint.py` and fails the build on any error. Proven to gate
-  rather than warn: a deliberate wrong return type made the lane exit 1 while the full suite still
-  reported 1013 passed.
+  rather than warn: a deliberate wrong return type made the lane exit 1 while the full suite stayed
+  green, which is the whole point — the lane catches what the tests cannot see.
 - **A Postgres lane in CI (§4.2, backlog item 9).** The suite has always run on SQLite while
   `docker compose up` deploys Postgres 16, so the database the project actually ships on was tested
   by nothing. Setting `DATABASE_URL` now runs the *whole* suite against Postgres; CI runs both lanes
