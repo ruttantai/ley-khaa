@@ -40,7 +40,7 @@ def test_an_attachment_satisfies_a_spec_input(session):
         session,
         [Attachment(kind=AttachmentKind.TABLE, name="holdings.csv", content="ticker\nAAA\n")],
     )
-    resolved = resolve_inputs(_spec(["holdings"]), task, messages)
+    resolved, _ = resolve_inputs(_spec(["holdings"]), task, messages)
     assert [r.source for r in resolved] == ["attachment"]
     assert resolved[0].content == "ticker\nAAA\n"
 
@@ -51,14 +51,14 @@ def test_attachments_win_over_the_catalog(session):
         session,
         [Attachment(kind=AttachmentKind.TABLE, name="holdings.csv", content="ticker\nAAA\n")],
     )
-    resolved = resolve_inputs(_spec(["holdings"]), task, messages)
+    resolved, _ = resolve_inputs(_spec(["holdings"]), task, messages)
     assert resolved[0].source == "attachment"
     assert "SYN" not in resolved[0].content
 
 
 def test_the_catalog_covers_a_name_no_attachment_provides(session):
     task, messages = _task_with(session, [])
-    resolved = resolve_inputs(_spec(["Bloomberg universe", "FactSet"]), task, messages)
+    resolved, _ = resolve_inputs(_spec(["Bloomberg universe", "FactSet"]), task, messages)
     assert [r.source for r in resolved] == ["catalog", "catalog"]
     assert [r.filename for r in resolved] == ["bloomberg_universe.csv", "factset_universe.csv"]
 
@@ -91,13 +91,13 @@ def test_colliding_filenames_stay_distinct(session):
             Attachment(kind=AttachmentKind.TABLE, name="data.csv", content="b\n2\n"),
         ],
     )
-    resolved = resolve_inputs(_spec(["data", "data"]), task, messages)
+    resolved, _ = resolve_inputs(_spec(["data", "data"]), task, messages)
     assert len({r.filename for r in resolved}) == 2
 
 
 def test_sha256_is_content_addressed(session):
     task, messages = _task_with(session, [])
-    resolved = resolve_inputs(_spec(["holdings"]), task, messages)
+    resolved, _ = resolve_inputs(_spec(["holdings"]), task, messages)
     assert len(resolved[0].sha256) == 64
 
 
@@ -109,7 +109,7 @@ def test_attachment_with_path_traversal_payload_resolves_to_safe_basename(sessio
             Attachment(kind=AttachmentKind.TABLE, name="../../../../etc/passwd.csv", content="root:x:0:0:root:/root:/bin/bash\n"),
         ],
     )
-    resolved = resolve_inputs(_spec(["passwd"]), task, messages)
+    resolved, _ = resolve_inputs(_spec(["passwd"]), task, messages)
     # Basename extracted safely; the file ends up in inputs/ not /etc/
     assert resolved[0].filename == "passwd.csv"
     assert resolved[0].content == "root:x:0:0:root:/root:/bin/bash\n"
@@ -123,7 +123,7 @@ def test_attachment_named_with_dot_dot_falls_back_to_default(session):
             Attachment(kind=AttachmentKind.TABLE, name="holdings/..", content="data\n"),
         ],
     )
-    resolved = resolve_inputs(_spec(["holdings"]), task, messages)
+    resolved, _ = resolve_inputs(_spec(["holdings"]), task, messages)
     # Falls back to f"{name}.csv" when basename is . or ..
     assert resolved[0].filename == "holdings.csv"
     # And it is still the ATTACHMENT, not the catalog dataset of the same name.
@@ -138,7 +138,7 @@ def test_attachment_named_with_backslash_only_falls_back_to_default(session):
             Attachment(kind=AttachmentKind.TABLE, name="holdings\\", content="data\n"),
         ],
     )
-    resolved = resolve_inputs(_spec(["holdings"]), task, messages)
+    resolved, _ = resolve_inputs(_spec(["holdings"]), task, messages)
     # Falls back to f"{name}.csv" when basename contains backslash
     assert resolved[0].filename == "holdings.csv"
     # And it is still the ATTACHMENT, not the catalog dataset of the same name.
@@ -153,7 +153,7 @@ def test_attachment_with_backslash_traversal_resolves_to_safe_filename(session):
             Attachment(kind=AttachmentKind.TABLE, name=r"\..\..\evil.csv", content="malicious\n"),
         ],
     )
-    resolved = resolve_inputs(_spec(["evil"]), task, messages)
+    resolved, _ = resolve_inputs(_spec(["evil"]), task, messages)
     # Backslash traversal payload falls back to safe default
     assert resolved[0].filename == "evil.csv"
     assert resolved[0].content == "malicious\n"
@@ -169,6 +169,6 @@ def test_an_attachment_with_no_tokens_in_its_name_hijacks_nothing(session, name)
         session,
         [Attachment(kind=AttachmentKind.TABLE, name=name, content="ticker\nHIJACK\n")],
     )
-    resolved = resolve_inputs(_spec(["holdings"]), task, messages)
+    resolved, _ = resolve_inputs(_spec(["holdings"]), task, messages)
     assert [r.source for r in resolved] == ["catalog"]
     assert "HIJACK" not in resolved[0].content

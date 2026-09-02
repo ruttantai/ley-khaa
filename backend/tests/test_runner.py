@@ -2,14 +2,29 @@ import json
 
 import pytest
 
-from ley_khaa.domain.models import Message
+from ley_khaa.domain.models import Attachment, Message
 from ley_khaa.executor.runner import ExecutionRunner
 from ley_khaa.executor.sandbox import SandboxResult, SandboxUnavailable
 from ley_khaa.executor.synthesizer import SynthesizedScript
 from ley_khaa.interpreter.spec import TaskSpec
 from ley_khaa.llm.client import FakeLLM
 from ley_khaa.persistence.message_repository import MessageRepository
+from ley_khaa.persistence.orm import ImageExtractionRow
 from ley_khaa.persistence.repository import TaskRepository
+
+
+class _Extractor:
+    """A stand-in vision extractor: always returns the same successful read."""
+
+    def __init__(self):
+        self.row = ImageExtractionRow(
+            image_sha256="b" * 64, kind="table", content="ticker,qty\nAAA,10",
+            summary="a holdings table", media_type="image/png",
+            byte_size=99, model="anthropic",
+        )
+
+    def extract(self, attachment):
+        return self.row
 
 
 class FakeSandbox:
@@ -195,6 +210,52 @@ def test_the_manifest_records_what_actually_happened(tmp_path, task):
         "bloomberg_universe.csv", "factset_universe.csv"
     }
     assert manifest["spec"]["operation"] == "set_difference"
+
+
+def test_the_manifest_attests_an_image_s_hash_and_the_model_that_read_it(tmp_path, session):
+    """Spec §7: a vision-sourced manifest entry must attest which IMAGE it
+    came from and which model read it -- neither of which the existing
+    `sha256` (of the extracted TEXT) can answer. A non-vision entry in the
+    same manifest must carry None, not an empty string, for both fields:
+    an empty string would read as "attested nothing" rather than "there is
+    no image provenance to attest"."""
+    messages = MessageRepository(session)
+    row = messages.add(
+        Message(
+            source="slack", client="demo", conversation_id="conv-vision",
+            author="boss", text="compare them",
+            attachments=[
+                Attachment(kind="image", name="holdings.png", content="https://x/img.png"),
+            ],
+        )
+    )
+    created = TaskRepository(session).create(
+        project="demo", title="compare", source_message_ids=[row.id]
+    )
+    runner = ExecutionRunner(
+        llm=FakeLLM([_script()]),
+        messages=messages,
+        sandbox=FakeSandbox([_writes_csv]),
+        workspace_root=tmp_path,
+        extractor=_Extractor(),
+    )
+
+    outcome = runner.run(created, _spec(inputs=["holdings", "portfolio"]))
+
+    assert outcome.verdict.ok
+    manifest = json.loads((tmp_path / f"task-{created.id}" / "manifest.json").read_text())
+    by_source = {i["source"]: i for i in manifest["inputs"]}
+
+    vision_entry = by_source["vision"]
+    assert vision_entry["extracted_from"] == "b" * 64
+    assert vision_entry["extracted_by"] == "anthropic"
+    # The trap this task exists to avoid, re-checked at the manifest layer:
+    # sha256 hashes the extracted CONTENT, extracted_from is the IMAGE.
+    assert vision_entry["sha256"] != vision_entry["extracted_from"]
+
+    catalog_entry = by_source["catalog"]
+    assert catalog_entry["extracted_from"] is None
+    assert catalog_entry["extracted_by"] is None
 
 
 def test_the_manifest_never_credits_a_model_that_did_not_write_the_script(tmp_path, task):

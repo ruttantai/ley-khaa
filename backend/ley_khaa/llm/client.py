@@ -24,6 +24,25 @@ class LLMClient(Protocol):
     def parse(self, *, choice: ModelChoice, system: str, user: str, output_format: type[T]) -> T:
         ...
 
+    def extract_image(
+        self,
+        *,
+        choice: ModelChoice,
+        system: str,
+        user: str,
+        image: bytes,
+        media_type: str,
+        output_format: type[T],
+    ) -> T:
+        """Read one image into a structured result (spec §3.4).
+
+        Separate from parse() rather than an optional argument on it: every
+        implementation must consciously answer "what do I do with an image?",
+        and the offline ones answer "nothing, and I say so" — which is a
+        different behaviour, not a degenerate case of text parsing.
+        """
+        ...
+
 
 @dataclass
 class RecordedCall:
@@ -52,6 +71,12 @@ class FakeLLM:
             raise response
         return response
 
+    def extract_image(
+        self, *, choice: ModelChoice, system: str, user: str,
+        image: bytes, media_type: str, output_format: type[T],
+    ) -> T:
+        return self.parse(choice=choice, system=system, user=user, output_format=output_format)
+
 
 class AnthropicLLM:
     """Production client. Never instantiated from tests."""
@@ -75,6 +100,47 @@ class AnthropicLLM:
         }
         # Adaptive thinking only exists on the 5-series models; sending it to
         # Haiku 4.5 is a 400.
+        if choice.supports_thinking:
+            kwargs["thinking"] = {"type": "adaptive"}
+        response = self._client.messages.parse(**kwargs)
+        return response.parsed_output
+
+    def extract_image(
+        self, *, choice: ModelChoice, system: str, user: str,
+        image: bytes, media_type: str, output_format: type[T],
+    ) -> T:
+        """parse(), with an image content block ahead of the text.
+
+        The block order is Anthropic's documented shape for vision. The bytes
+        go in the image block and nowhere else: pasting base64 into the text
+        would double the token bill for no benefit.
+        """
+        import base64
+
+        kwargs: dict[str, Any] = {
+            "model": choice.model,
+            "max_tokens": choice.max_tokens,
+            "system": system,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": base64.standard_b64encode(image).decode("ascii"),
+                            },
+                        },
+                        {"type": "text", "text": user},
+                    ],
+                }
+            ],
+            "output_format": output_format,
+        }
+        # Same gate as parse(): adaptive thinking exists only on the 5-series,
+        # and sending it to Haiku 4.5 is a 400.
         if choice.supports_thinking:
             kwargs["thinking"] = {"type": "adaptive"}
         response = self._client.messages.parse(**kwargs)

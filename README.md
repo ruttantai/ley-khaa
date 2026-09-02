@@ -25,6 +25,12 @@ generator code, exact inputs, seeded manifest — so any result can be audited a
 
 ## Status
 
+**v0.8.0 — vision intake.** A screenshot pasted into a channel or the dashboard is read once
+through Claude vision and frozen as a reproducible checkpoint keyed by a hash of its bytes: a
+table becomes data a generated script computes on, anything else becomes context the interpreter
+reasons about. With no `ANTHROPIC_API_KEY` an image is carried, not read, and the task still runs
+on its text alone. See [Images](#images) below.
+
 **v0.6.0 — project routing, per-project queues, and amendment detection.** Every task now lands in
 a **project**, decided by a two-stage router at promotion time; each project drains through its own
 concurrent, per-project worker instead of one shared lane; and a follow-up message that modifies a
@@ -49,6 +55,8 @@ relevance filtering and crystallization run on every message regardless, caches 
 | 3 | `v0.4.0` | Synthesis-first executor, validator, Output Bundle | ✅ shipped |
 | 4 | `v0.5.0` | **Workflow registry** + **task memory** | ✅ shipped |
 | 5 | `v0.6.0` | **Project routing**, per-project queues, **amendment detection** | ✅ shipped |
+| 6 | `v0.7.0` | Real Slack and Discord **channel adapters**, ingesting and notifying | ✅ shipped |
+| 7 | `v0.8.0` | **Vision intake** — an image read once and frozen as a reproducible checkpoint | ✅ shipped |
 | — | `v1.0.0` | Definition of done (spec §11) | 🎯 target |
 
 Design spec: [`docs/superpowers/specs/2026-08-18-ley-khaa-design.md`](docs/superpowers/specs/2026-08-18-ley-khaa-design.md).
@@ -340,6 +348,61 @@ What the channel is for, and what it is not:
   an `sk_live_`-style key — none has a distinctive shape. Nothing writes those into a payload today;
   treat the panel as diagnostics, not as a guaranteed-clean surface.
 - **Threads only.** DMs are not ingested in this release.
+
+### Images
+
+Paste a screenshot into a channel or the dashboard and ley-khaa reads it — a table becomes data a
+generated script can compute on, anything else becomes context the interpreter can reason about.
+
+**The extraction is frozen, within a run and across re-drives, while the source URL still
+resolves.** An image is read once, keyed by a hash of its bytes, and every later step — a repair
+attempt, a re-drive, a second task quoting the same screenshot — reuses that stored result rather
+than re-reading the picture, as long as re-fetching the image (to compute the cache key) still
+succeeds. A channel CDN URL is not permanent — Discord's expire in about a day — and the checkpoint
+holds no bytes of its own, only the extraction, so a re-drive against an expired URL cannot re-read
+it either. When that happens, a human is asked only if the image's own filename shares a token
+with the spec input it could be satisfying — the same collision test the resolver already applies to
+a successfully-read image, so the guard is symmetric with the read path. An unread image named after
+what it shows (`holdings.png` for an input called "holdings") is caught this way; one with a generic
+or auto-generated name — a raw clipboard paste (`image.png`) or a macOS screenshot
+(`Screenshot 2026-09-01 at 10.20.31.png`) — is not recognized as any particular input, and the run
+proceeds on catalog data instead. Either way the substitution is never silent: the manifest's
+`images` block records the unread image explicitly (its name, who tried to read it, and why) even
+on the runs that proceed — a real content hash is attested only when actual bytes were read and
+failed to parse; an unfetchable or disabled read never had bytes to hash in the first place, so
+that field is recorded as `null` rather than filled with a value that would look like an identity
+it is not.
+It also means a misread table stays wrong until its stored row is cleared — freezing buys
+reproducibility at the cost of self-correction.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LEY_KHAA_VISION` | `on` | `off` carries images without reading them |
+| `LEY_KHAA_IMAGE_HOSTS` | Slack + Discord CDNs | exact hostnames an image may be fetched from |
+| `LEY_KHAA_IMAGE_MAX_BYTES` | `5242880` | hard cap on a fetched image, enforced on the bytes read |
+
+**The fetch boundary matches the channel adapters' spirit.** Only https, only an allowlisted host,
+no redirects followed, and the Slack bot token is attached only when the host is a Slack CDN — an
+allowlisted host is not automatically a trusted recipient of a credential.
+
+**A pasted CSV beats a screenshot of the same table.** If their filenames collide, the resolver
+binds the real bytes and drops the vision extraction — a human who pasted data meant that data,
+regardless of which attachment happened to be pasted first.
+
+**Limits, stated plainly.**
+
+- With no `ANTHROPIC_API_KEY` an image is **carried, not read**: it is recorded, credited to the
+  offline `heuristic` stand-in, and its name still reaches the prompt, but nothing reads the
+  picture — the task proceeds on text alone. `docker compose up` still demos end to end.
+- There is no re-extraction of a successful read: freezing is what makes a re-run reproducible, so
+  if a table is misread the checkpoint stays wrong until its row is cleared.
+- Images are never stored, only their extraction — an image whose URL has expired cannot be
+  re-read, and re-driving a task past that point asks a human instead of guessing (see "The
+  extraction is frozen" above). Backlog item 19 tracks a secondary cache key that would let a
+  re-drive skip needing the URL to still resolve at all.
+- **Not live-tested against a real Slack or Discord image.** Everything here is proven offline and
+  against recorded transports, the same call made for the channel adapters in 0.7.0.
+- The Ollama fallback planned for 0.9.0 is text-only: vision will not work on that offline path.
 
 ### Local dev (no Docker)
 

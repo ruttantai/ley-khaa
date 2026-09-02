@@ -5,6 +5,53 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-01
+
+### Added
+- **Vision intake (§5.2, §11).** A pasted image is read through Claude vision and frozen as a
+  reproducible checkpoint. `Stage.VISION_EXTRACTION` has existed in the model router since 0.3.0
+  and nothing called it; it now routes a real call.
+- One extraction serves two consumers: the interpreter gets a one-line summary so the request is
+  understood, and the resolver binds the extracted content as a script input under
+  `inputs/extracted_<stem>.csv`, with the manifest attesting `source: "vision"`, the image's hash
+  and the model that read it.
+- `ImageFetcher` with an explicit boundary — https only, exact host allowlist, **the Slack bot
+  token attached to Slack hosts and nowhere else**, no redirects, and a size cap enforced on the
+  body rather than on the server-supplied `Content-Length`.
+- `LLMClient.extract_image`, satisfied by all three implementations, so the offline stand-in stays
+  deterministic and CI never reaches the network.
+- `LEY_KHAA_VISION` (default `on`) turns the whole path off; `LEY_KHAA_IMAGE_HOSTS` and
+  `LEY_KHAA_IMAGE_MAX_BYTES` (default 5 MB) bound what gets fetched.
+
+### Changed
+- A pasted CSV now beats a screenshot of the same table when their filenames collide (the resolver
+  binds textual attachments first, then drops any vision-extracted attachment whose stem collides
+  with one already bound) — real bytes win over a model's reading of a picture.
+
+### Known limits
+- With no `ANTHROPIC_API_KEY` an image is carried, not read: it is recorded, credited to the
+  offline `HeuristicLLM` stand-in, and its name still reaches the prompt, but the task proceeds on
+  text alone. `docker compose up` still demos end to end.
+- **No re-extraction of a successful read.** If vision misreads a table the frozen checkpoint stays
+  wrong until its row is deleted — freezing on the image's hash is what makes a re-run
+  reproducible.
+- An unfetchable or undecodable image has no bytes to key a cache row on, so the failure is retried
+  on every drive and dead-lettered again each time (backlog item 19).
+- A same-backend model failure (a transient 503, a rate limit) is stored and stays frozen under
+  that image's digest — the cache re-extracts on a configuration change (a different or newly
+  enabled backend) but not on a retry of the same one (backlog item 20).
+- Images are not stored, only their extraction, so an image whose URL has expired cannot be
+  re-read. A re-drive past that point asks a human rather than silently computing on the synthetic
+  demo catalog instead, but only when the image's own filename shares a token with the input it
+  could be satisfying (`holdings.png` for an input named "holdings") — a generic or auto-generated
+  name (`image.png`, a macOS `Screenshot ....png`) is not recognized as any particular input, and
+  the run proceeds on catalog data with the manifest recording the unread image explicitly rather
+  than staying silent about it.
+- The offline fallback planned for 0.9.0 is text-only, so **vision will not work on the offline
+  path** (backlog item 21). A local vision-capable model is roadmap.
+- Not live-tested against a real Slack or Discord image — proven offline and against recorded
+  transports, the same call made for the channel adapters in 0.7.0.
+
 ## [0.7.0] — 2026-08-31
 
 ### Added

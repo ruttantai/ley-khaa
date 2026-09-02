@@ -402,3 +402,89 @@ stays visible, and a retention window would quietly delete evidence.
 
 **Why it was deferred.** Not a correctness bug, and the dashboard makes the crash-loop obvious long
 before row count matters.
+
+**18 is reserved.** PR #9 renumbers this file's duplicate `## 15.` (the two sections above with that
+number) to 15/16/17/18; that renumbering is not repeated here to avoid colliding with it. The three
+items below are numbered 19–21 on the assumption PR #9 has merged.
+
+## 19. An unfetchable or undecodable image is retried on every drive, and dead-lettered every time
+
+**What is broken.** `VisionExtractor.extract` (`vision/extractor.py`) keys its cache on
+`sha256(image_bytes)`. When `_bytes_for` raises — the fetch was refused, the host is not
+allowlisted, the body exceeded the size cap, or a base64 payload failed to decode — there are no
+image bytes to hash, so the extractor returns an `_unread()` record built directly as an
+`ImageExtractionRow`, never passed through `ImageExtractionRepository.record`. Nothing is written.
+The next drive of the same task reaches the same URL, fails the same way, and
+`_record_drop` writes a second `dead_letters` row for the identical failure — a third drive writes
+a third.
+
+**Root cause.** The cache key IS the image's own bytes. A source that never produced bytes has
+nothing to key a "do not try again" record on, so there is nowhere to store the refusal.
+
+**The same missing row is also what made the catalog fallback silent (whole-branch review,
+finding B1).** A frozen checkpoint IS the image's own bytes-derived digest, so once a channel CDN
+URL expires (Discord's do so in about a day), `_bytes_for` can no longer even re-derive the key that
+would have found the stored extraction — there is no url-keyed row to fall back on. Before B1's fix
+that dead end let the input name fall through to `catalog.resolve_name(...)` and compute on the
+synthetic demo dataset, with the manifest attesting a clean `source: "catalog"` and no hint an image
+was ever involved. B1 closed the silence, but only for the case where the image's own filename
+shares a token with the input it could be satisfying — that case now raises `UnresolvedInputs`
+instead of reaching the catalog. A generically- or auto-named image (`image.png`, a macOS
+`Screenshot ....png`) isn't recognized as any particular input, so the run still proceeds on catalog
+data even after B1; the difference is that B2's manifest `images` block now names the unread image
+explicitly, so that substitution is no longer silent even when it happens. The underlying limit
+this item describes — a re-fetch is required to even ask "have I seen this one before" — is
+unchanged and is still the thing worth fixing here.
+
+**Shape of the fix.** A second key space for unfetchable sources — a row keyed on the attachment's
+URL (hashed to a `url_sha256`, since raw Slack/Discord URLs can be long and carry query tokens)
+rather than the image digest, with its own frozen-refusal semantics. That url→digest secondary key
+is also the durable fix for B1's underlying limit: it is what would let a re-drive recognize an
+already-frozen checkpoint even after the source URL has expired, rather than merely asking a human
+instead of guessing (which is as far as this phase's fix goes). Deferred rather than done under
+phase pressure: it is a second cache with its own invalidation question, not a one-line change to
+the existing one.
+
+## 20. A same-backend model failure stays frozen under that image's digest forever
+
+**What is broken.** When `self.llm.extract_image(...)` raises — a transient 503, a rate limit, a
+timeout — the extractor DOES store the failure, credited to the backend that produced it
+(`model=getattr(self.llm, "name", "")`, e.g. `"anthropic"`). The cache-hit check in `extract()` then
+reads:
+
+```python
+if cached.content or (cached.model and cached.model == current_model):
+    return cached
+```
+
+A stored failure with `model == current_model` short-circuits forever. There is no distinction
+between "this backend will never manage to read this image" and "this backend hit one bad
+response".
+
+**This is deliberate, not an oversight.** The same check is what makes every *configuration*
+change re-extract for free — offline to online, a disabled vision path turned on, one backend
+switched for another all show up as `cached.model != current_model` (or `cached.model == ""`) and
+retry automatically, with no operator action. Widening that same check to also retry a same-backend
+transient error would require distinguishing "different config" from "same config, unlucky call",
+which the single `model` column cannot express.
+
+**Shape of the fix.** A retry-count (or a `last_failed_at`) column, with a small bounded-retry
+policy on top of the existing model-mismatch rule. A schema change, deferred to the user's design
+call rather than decided under this phase's pressure.
+
+## 21. Vision will not work on the offline Ollama path (0.9.0)
+
+**What is broken, stated before anyone discovers it the hard way.** The Ollama fallback planned for
+0.9.0 (§11, "not started") is scoped as a **text** offline model. `LLMClient.extract_image` has
+three implementations today — `AnthropicLLM`, `HeuristicLLM`, and the test double `FakeLLM` — and an
+Ollama-backed `LLMClient` due in 0.9.0 will need a fourth, satisfied by a model that can actually see
+an image. A text-only local model cannot; it can only produce the same carried-not-read shape
+`HeuristicLLM.extract_image` already produces today (name the image, read nothing).
+
+**Shape of the fix.** A vision-capable local model (e.g. a multimodal Ollama tag) is the roadmap
+item; nothing about this phase's `VisionExtraction` contract, the fetcher, or the cache needs to
+change for it — only a fourth `LLMClient` implementation that actually looks at the bytes.
+
+**Why it is filed now rather than left implicit.** 0.9.0 is scoped as "offline fallback", and
+"offline" reads as "the same features, no network" unless stated otherwise. It is not, for images,
+and saying so now costs one paragraph against discovering it after the fact.

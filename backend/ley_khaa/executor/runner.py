@@ -26,7 +26,7 @@ from ..registry.matcher import RegistryMatcher
 from ..registry.models import Match
 from . import catalog
 from .formats import deliverable_filename
-from .resolver import ResolvedInput, UnresolvedInputs, resolve_inputs
+from .resolver import ResolvedInput, UnreadImage, UnresolvedInputs, resolve_inputs
 from .sandbox import SandboxRunner, SandboxResult, SandboxUnavailable, pick_sandbox
 from .synthesizer import SynthesizedScript, Synthesizer
 from .validator import Verdict, validate
@@ -94,6 +94,7 @@ class ExecutionRunner:
         sandbox: SandboxRunner | None = None,
         workspace_root: Path | str | None = None,
         workflows: WorkflowRepository | None = None,
+        extractor=None,
     ) -> None:
         self.synthesizer = Synthesizer(llm)
         self.messages = messages
@@ -103,6 +104,9 @@ class ExecutionRunner:
         # exactly the Phase 3 runner, which is what every existing test builds.
         self.workflows = workflows
         self.matcher = RegistryMatcher(workflows, llm) if workflows is not None else None
+        # None is a supported configuration: without an extractor an image
+        # attachment is ignored exactly as it was before phase 7.
+        self.extractor = extractor
 
     @property
     def sandbox(self) -> SandboxRunner:
@@ -135,7 +139,7 @@ class ExecutionRunner:
         earlier = first_attempt - 1
 
         try:
-            resolved = resolve_inputs(spec, row, self.messages)
+            resolved, unread_images = resolve_inputs(spec, row, self.messages, extractor=self.extractor)
         except UnresolvedInputs as exc:
             # Returned, not raised: EXECUTING -> NEEDS_CLARIFICATION is not a
             # legal edge, so the question reaches the human through _validate.
@@ -156,6 +160,10 @@ class ExecutionRunner:
                 attempts=[],
                 verdict=verdict,
                 earlier_attempts=earlier,
+                # This is exactly the round where an unread image is most
+                # likely to be the REASON nothing resolved (review B1) -- the
+                # manifest must say so even though `resolved` is empty here.
+                unread_images=exc.unread_images,
             )
             return ExecutionOutcome(verdict, str(workspace.root), 0)
 
@@ -219,6 +227,7 @@ class ExecutionRunner:
                     earlier_attempts=earlier,
                     lane="registry",
                     workflow=workflow_record,
+                    unread_images=unread_images,
                 )
                 raise
             attempts.append(
@@ -244,6 +253,7 @@ class ExecutionRunner:
                     workspace, row, spec, resolved=resolved, attempts=attempts,
                     verdict=verdict, earlier_attempts=earlier,
                     lane="registry", workflow=workflow_record,
+                    unread_images=unread_images,
                 )
                 return ExecutionOutcome(verdict, str(workspace.root), len(attempts))
 
@@ -303,6 +313,7 @@ class ExecutionRunner:
                         checks={"sandbox_available": False},
                     ),
                     earlier_attempts=earlier,
+                    unread_images=unread_images,
                 )
                 raise
             verdict = validate(spec, workspace, result, input_hashes)
@@ -327,6 +338,7 @@ class ExecutionRunner:
             # verdict is being written really is synthesis.
             lane="synthesis",
             workflow=workflow_record,
+            unread_images=unread_images,
         )
         return ExecutionOutcome(verdict, str(workspace.root), len(attempts))
 
@@ -417,6 +429,7 @@ class ExecutionRunner:
         earlier_attempts: int = 0,
         lane: str = "synthesis",
         workflow: dict | None = None,
+        unread_images: list[UnreadImage] | None = None,
     ) -> None:
         workspace.write_manifest(
             {
@@ -449,8 +462,44 @@ class ExecutionRunner:
                 "catalog_seed": catalog.CATALOG_SEED,
                 "spec": spec.model_dump(mode="json"),
                 "inputs": [
-                    {"name": i.name, "file": i.filename, "source": i.source, "sha256": i.sha256}
+                    {
+                        "name": i.name,
+                        "file": i.filename,
+                        "source": i.source,
+                        "sha256": i.sha256,
+                        # None (never "") for non-vision inputs: an empty
+                        # string would read as "attested nothing", when the
+                        # honest statement is "this input carries no image
+                        # provenance to attest".
+                        "extracted_from": i.extracted_from,
+                        "extracted_by": i.extracted_by,
+                    }
                     for i in resolved
+                ],
+                # An image that was supplied but never became a ResolvedInput
+                # (review B2): unlike inputs above, this is not something the
+                # script computed on, so it does not get a "source" or a
+                # content hash -- it is a plain record that a picture was
+                # carried and NOT read, naming which one, who tried, and what
+                # they said about it. Empty when no image was supplied, or
+                # every supplied image was read successfully.
+                "images": [
+                    {
+                        "name": img.name,
+                        # None, not sha256(b""), when no bytes were ever
+                        # read: an unfetchable/expired URL, a disabled
+                        # extractor, and a non-image attachment all share
+                        # that same constant digest
+                        # (e3b0c44298fc...b855), which would let the
+                        # manifest attest a "hash" that identifies nothing
+                        # about THIS image -- worse than omitting it, since
+                        # a reader could mistake it for a real identity two
+                        # different bundles could be compared by.
+                        "sha256": img.image_sha256 if img.byte_size else None,
+                        "model": img.model,
+                        "summary": img.summary,
+                    }
+                    for img in (unread_images or [])
                 ],
                 "attempts": attempts,
                 # Only THIS round's attempts are listed above, and their numbers

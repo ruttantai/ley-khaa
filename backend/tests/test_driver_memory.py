@@ -118,9 +118,9 @@ def test_inputs_are_re_resolved_not_remembered(session, monkeypatch):
     from ley_khaa.executor import resolver as resolver_module
     original = resolver_module.resolve_inputs
 
-    def _spy(spec, row, msgs):
+    def _spy(spec, row, msgs, extractor=None):
         seen_rows.append(row)
-        return original(spec, row, msgs)
+        return original(spec, row, msgs, extractor=extractor)
 
     monkeypatch.setattr("ley_khaa.executor.runner.resolve_inputs", _spy)
 
