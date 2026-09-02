@@ -443,10 +443,19 @@ is actually running: even with Ollama up, a small quantised model produces weake
 than Opus, and the system does not detect or warn about that beyond naming the model in the
 manifest.
 
+**Fixing the cause does not take effect until you restart the backend.** The resolved client is
+cached for the life of the process (that's what makes "probe once, at startup" true), so if you
+follow a WARNING's own instructions — start the daemon, `ollama pull <model>` — mid-session, the
+running process keeps using `HeuristicLLM` and logs nothing more: it already said its one-time
+notice. Both warnings say so; restart the backend after fixing either cause.
+
 **Under `docker compose up`**, Ollama runs on the host, not in a container, so `localhost` inside the
 backend container is the wrong machine. Compose points `LEY_KHAA_OLLAMA_HOST` at
-`http://host.docker.internal:11434` by default and maps that name to the host via `extra_hosts`;
-without that mapping the probe fails and the backend silently falls back to the regex stand-in.
+`http://host.docker.internal:11434` by default and maps that name to the host via `extra_hosts`; that
+mapping alone is not sufficient, because Ollama itself binds `127.0.0.1` by default — a daemon
+started the normal way still refuses every connection that doesn't originate on the host machine
+itself, `host.docker.internal` included. Run the daemon with `OLLAMA_HOST=0.0.0.0` (or otherwise bind
+it to all interfaces) for the container to reach it at all.
 
 ### Local dev (no Docker)
 

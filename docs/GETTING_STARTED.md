@@ -77,10 +77,15 @@ running and a model pulled) for real language understanding with no API key at a
 handles every stage, and the manifest names it (`ollama:<model>`) so a bundle never credits Claude
 for local work. It is not a substitute for judging the product: output quality depends entirely on
 the local model, small quantised models included, and vision stays text-only regardless of this
-setting. Under `docker compose up`, Ollama runs on the host rather than in a container, so
-`LEY_KHAA_OLLAMA_HOST` needs to reach it as `http://host.docker.internal:11434` — compose sets that
-default for you. See [Running without an API key](../README.md#running-without-an-api-key) in the
-README for the full picture, including what happens when the daemon isn't reachable.
+setting. The resolved backend is cached for the process's lifetime, so if the daemon wasn't reachable
+or the model wasn't pulled at startup, fixing that afterwards (`ollama pull <model>`, starting the
+daemon) needs a backend restart before it takes effect — the running process keeps using
+`HeuristicLLM` and won't say so again. Under `docker compose up`, Ollama runs on the host rather than
+in a container, so `LEY_KHAA_OLLAMA_HOST` needs to reach it as `http://host.docker.internal:11434` —
+compose sets that default for you, but the daemon itself must also be started with
+`OLLAMA_HOST=0.0.0.0` (it binds `127.0.0.1` by default), or the container still can't reach it. See
+[Running without an API key](../README.md#running-without-an-api-key) in the README for the full
+picture, including what happens when the daemon isn't reachable.
 
 ---
 
@@ -323,9 +328,13 @@ docker build -t ley-khaa-sandbox backend/sandbox
 
 ## 9. Known limits
 
-Every **feature** in the v1 definition of done (§11 of the design spec) has shipped, including the
-Ollama offline fallback in 0.9.0 (see
-[Running without an API key](../README.md#running-without-an-api-key)) — §11 also lists the
+Every **feature** in the v1 definition of done (§11 of the design spec) has shipped, with one
+deliberate narrowing worth calling out by name: §11's Model Router line reads "…with Ollama
+fallback", which describes the router itself stepping down to Ollama per call when a tier is
+unavailable. What 0.9.0 actually built (see
+[Running without an API key](../README.md#running-without-an-api-key)) is Ollama as an
+explicitly-selected backend for a whole run (`LEY_KHAA_LLM=ollama`), chosen once at startup — not
+that automatic, per-call step-down, which remains backlog item 22 (see below). §11 also lists the
 `v1.0.0` release tag itself as part of that definition of done, and that tag has not been cut yet
 (see the phase table in the [README](../README.md#status)). Shipped is not the same as edge-free —
 stated plainly so you do not go looking for something that isn't there:
