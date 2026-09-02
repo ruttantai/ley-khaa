@@ -42,7 +42,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
   enabled backend) but not on a retry of the same one (backlog item 20).
 - Images are not stored, only their extraction, so an image whose URL has expired cannot be
   re-read. A re-drive past that point asks a human rather than silently computing on the synthetic
-  demo catalog instead — an unread image's name is never handed to the catalog fallback.
+  demo catalog instead, but only when the image's own filename shares a token with the input it
+  could be satisfying (`holdings.png` for an input named "holdings") — a generic or auto-generated
+  name (`image.png`, a macOS `Screenshot ....png`) is not recognized as any particular input, and
+  the run proceeds on catalog data with the manifest recording the unread image explicitly rather
+  than staying silent about it.
 - The offline fallback planned for 0.9.0 is text-only, so **vision will not work on the offline
   path** (backlog item 21). A local vision-capable model is roadmap.
 - Not live-tested against a real Slack or Discord image — proven offline and against recorded

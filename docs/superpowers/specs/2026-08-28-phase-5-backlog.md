@@ -427,10 +427,14 @@ URL expires (Discord's do so in about a day), `_bytes_for` can no longer even re
 would have found the stored extraction — there is no url-keyed row to fall back on. Before B1's fix
 that dead end let the input name fall through to `catalog.resolve_name(...)` and compute on the
 synthetic demo dataset, with the manifest attesting a clean `source: "catalog"` and no hint an image
-was ever involved. B1 closed the silence (an unread image's name now raises `UnresolvedInputs`
-instead of reaching the catalog), but the underlying limit this item describes — a re-fetch is
-required to even ask "have I seen this one before" — is unchanged and is still the thing worth
-fixing here.
+was ever involved. B1 closed the silence, but only for the case where the image's own filename
+shares a token with the input it could be satisfying — that case now raises `UnresolvedInputs`
+instead of reaching the catalog. A generically- or auto-named image (`image.png`, a macOS
+`Screenshot ....png`) isn't recognized as any particular input, so the run still proceeds on catalog
+data even after B1; the difference is that B2's manifest `images` block now names the unread image
+explicitly, so that substitution is no longer silent even when it happens. The underlying limit
+this item describes — a re-fetch is required to even ask "have I seen this one before" — is
+unchanged and is still the thing worth fixing here.
 
 **Shape of the fix.** A second key space for unfetchable sources — a row keyed on the attachment's
 URL (hashed to a `url_sha256`, since raw Slack/Discord URLs can be long and carry query tokens)

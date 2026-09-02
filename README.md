@@ -360,10 +360,20 @@ attempt, a re-drive, a second task quoting the same screenshot — reuses that s
 than re-reading the picture, as long as re-fetching the image (to compute the cache key) still
 succeeds. A channel CDN URL is not permanent — Discord's expire in about a day — and the checkpoint
 holds no bytes of its own, only the extraction, so a re-drive against an expired URL cannot re-read
-it either. When that happens the task asks a human rather than silently computing on something
-else: an unread image's name is never handed to the synthetic demo catalog, so a stale link becomes
-a clarification, not a confident wrong answer. It also means a misread table stays wrong until its
-stored row is cleared — freezing buys reproducibility at the cost of self-correction.
+it either. When that happens, a human is asked only if the image's own filename shares a token
+with the spec input it could be satisfying — the same collision test the resolver already applies to
+a successfully-read image, so the guard is symmetric with the read path. An unread image named after
+what it shows (`holdings.png` for an input called "holdings") is caught this way; one with a generic
+or auto-generated name — a raw clipboard paste (`image.png`) or a macOS screenshot
+(`Screenshot 2026-09-01 at 10.20.31.png`) — is not recognized as any particular input, and the run
+proceeds on catalog data instead. Either way the substitution is never silent: the manifest's
+`images` block records the unread image explicitly (its name, who tried to read it, and why) even
+on the runs that proceed — a real content hash is attested only when actual bytes were read and
+failed to parse; an unfetchable or disabled read never had bytes to hash in the first place, so
+that field is recorded as `null` rather than filled with a value that would look like an identity
+it is not.
+It also means a misread table stays wrong until its stored row is cleared — freezing buys
+reproducibility at the cost of self-correction.
 
 | Variable | Default | Meaning |
 |---|---|---|

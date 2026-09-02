@@ -232,8 +232,12 @@ runs once per image, keyed by a hash of its bytes — a re-drive or a second tas
 screenshot reuses that result rather than reading the picture again, **as long as the source URL
 still resolves**: the checkpoint holds no image bytes of its own, so re-fetching is how a re-drive
 recomputes the cache key. Channel CDN URLs are not permanent (Discord's expire in about a day); once
-one stops resolving, the task asks a human rather than silently computing on the synthetic demo
-catalog instead.
+one stops resolving, a human is asked instead of silently computing on the synthetic demo catalog --
+but only when the image's own filename shares a token with the input it could be satisfying
+(`holdings.png` for an input named "holdings"). A generic or auto-generated name -- a raw clipboard
+paste (`image.png`) or a macOS screenshot (`Screenshot 2026-09-01 at 10.20.31.png`) -- isn't
+recognized as any particular input, so the run proceeds on catalog data instead; the manifest's
+`images` block still names the unread image, so that substitution is never silent either.
 
 **No `ANTHROPIC_API_KEY` set?** The image is still carried, not read: it is recorded, credited to
 the offline stand-in, and its name still reaches the prompt, but nothing looks at the picture and
