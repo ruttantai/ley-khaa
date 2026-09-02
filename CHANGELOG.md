@@ -5,6 +5,37 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-09-02
+
+### Added
+- **Ollama offline fallback (§11).** `OllamaLLM`, a third implementation of `LLMClient` alongside
+  `AnthropicLLM` and `HeuristicLLM`, talks to a local Ollama daemon so a clone with no
+  `ANTHROPIC_API_KEY` gets a real model instead of the regex stand-in. One implementation covers
+  every stage: Ollama takes a JSON schema as its `format` parameter, and every stage's output is
+  already a Pydantic model that can produce one.
+- `LEY_KHAA_LLM=ollama` selects the backend; `LEY_KHAA_OLLAMA_MODEL` (default `qwen2.5`) names the
+  local model used for every stage, and `LEY_KHAA_OLLAMA_HOST` (default `http://localhost:11434`)
+  says where the daemon lives.
+- The manifest names the real producer — `ollama:<model>`, e.g. `ollama:qwen2.5` — never a Claude
+  id, so a bundle never credits Claude for work a local model did.
+- `build_llm` probes the daemon once, at startup: is it reachable, and is the configured model
+  pulled. Either failure degrades to `HeuristicLLM` with a one-time WARNING naming the specific
+  cause, so `docker compose up` keeps demoing even with Ollama down or unconfigured.
+- `docker-compose.yml` maps `host.docker.internal` to the host (`extra_hosts`) and defaults
+  `LEY_KHAA_OLLAMA_HOST` to it under compose, since Ollama runs on the host, not in a container.
+
+### Known limits
+- **No runtime step-down.** The backend is chosen once, at startup. A Claude call that fails is not
+  retried on Ollama, and vice versa (backlog item 22). Design spec §7 asks for this; it is out of
+  scope here because a per-call fallback would make the producer a property of the call rather than
+  the client, which the manifest's attribution does not currently support.
+- **Vision stays text-only on the Ollama path.** `OllamaLLM.extract_image` returns the same
+  carried-not-read shape `HeuristicLLM.extract_image` already produces — an image is recorded and
+  named in the manifest, but nothing reads it (backlog item 21).
+- **Output quality depends entirely on the local model.** A small quantised model produces weaker
+  specs and scripts than Opus, and the system does not detect or warn about that beyond naming the
+  model in the manifest.
+
 ## [0.8.0] — 2026-09-01
 
 ### Added

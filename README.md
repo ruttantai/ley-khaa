@@ -402,7 +402,44 @@ regardless of which attachment happened to be pasted first.
   re-drive skip needing the URL to still resolve at all.
 - **Not live-tested against a real Slack or Discord image.** Everything here is proven offline and
   against recorded transports, the same call made for the channel adapters in 0.7.0.
-- The Ollama fallback planned for 0.9.0 is text-only: vision will not work on that offline path.
+- The Ollama offline fallback (below) is text-only: vision does not work on that path either.
+
+### Running without an API key
+
+With no `ANTHROPIC_API_KEY`, set `LEY_KHAA_LLM=ollama` to run on a real local model instead of the
+`HeuristicLLM` regex stand-in described above.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LEY_KHAA_LLM` | `anthropic` | Set to `ollama` to select this backend. |
+| `LEY_KHAA_OLLAMA_MODEL` | `qwen2.5` | The local model, used for **every** stage. |
+| `LEY_KHAA_OLLAMA_HOST` | `http://localhost:11434` | Where the daemon lives. |
+
+**The backend is chosen once, at startup — there is no runtime step-down.** A Claude call that fails
+is not retried on Ollama, and vice versa (backlog item 22).
+
+**One local model handles every stage.** The Model Router still picks a tier per stage, but on this
+path its Claude model id is ignored — only its token budget is honoured. Requiring a second model
+would be friction on the exact path this exists to serve, since most people running Ollama have
+exactly one model pulled.
+
+**The manifest names the real producer** — `ollama:<model>`, e.g. `ollama:qwen2.5` — never a Claude
+id, so a bundle never credits Claude for work a local model did.
+
+**Vision stays text-only** (see [Images](#images) above): an image is carried, not read, the same
+carried-not-read shape `HeuristicLLM` already produces with no key set at all.
+
+**An unreachable daemon or an unpulled model degrades to the regex stand-in, loudly.** A one-time
+WARNING names the actual cause — daemon down, or `ollama pull <model>` needed — and `HeuristicLLM`
+takes over; `docker compose up` still demos. Output quality then depends entirely on which backend
+is actually running: even with Ollama up, a small quantised model produces weaker specs and scripts
+than Opus, and the system does not detect or warn about that beyond naming the model in the
+manifest.
+
+**Under `docker compose up`**, Ollama runs on the host, not in a container, so `localhost` inside the
+backend container is the wrong machine. Compose points `LEY_KHAA_OLLAMA_HOST` at
+`http://host.docker.internal:11434` by default and maps that name to the host via `extra_hosts`;
+without that mapping the probe fails and the backend silently falls back to the regex stand-in.
 
 ### Local dev (no Docker)
 
