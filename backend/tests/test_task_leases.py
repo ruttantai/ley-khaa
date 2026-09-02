@@ -165,5 +165,8 @@ def test_leased_task_id_survives_sqlites_naive_round_trip(session_factory):
     assert writer.claim_lease(task.id, owner="w1", ttl_seconds=60) is True
     write.close()
 
-    reader = TaskRepository(session_factory())
-    assert reader.leased_task_id("acme") == task.id
+    read = session_factory()
+    try:
+        assert TaskRepository(read).leased_task_id("acme") == task.id
+    finally:
+        read.close()
