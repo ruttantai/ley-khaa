@@ -1,10 +1,13 @@
+import builtins
 from pathlib import Path
 
+import pytest
 import sqlalchemy as sa
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect
 
 from ley_khaa.db import ALEMBIC_DIR, Base
@@ -89,20 +92,44 @@ def test_every_migration_downgrades_back_to_an_empty_database(tmp_path):
     assert remaining == set(), f"downgrade to base left tables behind: {sorted(remaining)}"
 
 
-def test_a_downgrade_and_re_upgrade_lands_on_the_same_schema(tmp_path):
-    """The stronger half: a downgrade that runs is not the same as one that is
-    correct. Stepping every revision down to the baseline and back up must
-    reproduce the schema `Base.metadata` declares — an `alter_column` that
-    restores the wrong type, or a `drop_column` whose upgrade partner adds a
-    different one, shows up here as drift and nowhere else.
+def _revisions() -> builtins.list[str]:
+    """Every revision id, oldest first, read from the script directory.
 
-    `0006_alias_jsonb` is the reason this is worth its own test: it is the only
-    revision whose downgrade is a type change rather than a drop.
+    Enumerated rather than hardcoded so a new migration is covered by the round
+    trip below the day it is added, instead of the day someone remembers to
+    extend a list.
+    """
+    return [script.revision for script in ScriptDirectory.from_config(_config("sqlite://")).walk_revisions()][::-1]
+
+
+@pytest.mark.parametrize("stop_at", _revisions()[:-1] + ["base"])
+def test_a_downgrade_and_re_upgrade_lands_on_the_same_schema(tmp_path, stop_at):
+    """The stronger half: a downgrade that runs is not the same as one that is
+    correct. Going head -> `stop_at` -> head must reproduce the schema
+    `Base.metadata` declares; a `drop_column` whose upgrade partner adds a
+    different one shows up here as drift and nowhere else.
+
+    **Parametrised over every stopping point on purpose, not for thoroughness.**
+    A single stopping point only discriminates revisions whose leftovers survive
+    down to it: with `stop_at="0001_baseline"`, a no-op `0009` downgrade fails
+    loudly (`tasks` survives, so `last_notified_question` is still there and the
+    re-upgrade hits a duplicate column) while a no-op `0010` downgrade passes —
+    `0008`'s own downgrade drops `image_extractions` outright, taking the
+    leftover column with it. Stopping at each revision in turn is what puts
+    every downgrade in a position where its own leftovers can be observed.
+
+    **What this cannot discriminate: `0006_alias_jsonb`.** Its downgrade is an
+    `alter_column` between `sa.JSON()` and `JSON().with_variant(JSONB(),
+    "postgresql")`, and on SQLite those two render identically — mutating that
+    downgrade to `pass` leaves this whole file green. It is unexercised here and
+    everywhere else, because migrations run on SQLite only (backlog item 26).
+    Saying so is the point: a guard that appears to cover a type change it
+    cannot see is worse than one that admits the gap.
     """
     url = f"sqlite:///{tmp_path / 'roundtrip.db'}"
     config = _config(url)
     command.upgrade(config, "head")
-    command.downgrade(config, "0001_baseline")
+    command.downgrade(config, stop_at)
     command.upgrade(config, "head")
 
     engine = create_engine(url, future=True)
@@ -111,4 +138,4 @@ def test_a_downgrade_and_re_upgrade_lands_on_the_same_schema(tmp_path):
             connection, opts={"compare_type": True, "compare_server_default": True}
         )
         diff = compare_metadata(context, Base.metadata)
-    assert diff == [], f"a down-then-up round trip did not restore the schema: {diff}"
+    assert diff == [], f"head -> {stop_at} -> head did not restore the schema: {diff}"
