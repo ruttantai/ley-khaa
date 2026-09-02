@@ -68,7 +68,7 @@ class Dispatcher:
 
         limit = asyncio.Semaphore(settings.max_concurrent_projects)
 
-        async def guarded(project: str) -> str | None:
+        async def guarded(project: str) -> list[str]:
             async with limit:
                 return await self._work_one(project)
 
@@ -81,26 +81,51 @@ class Dispatcher:
                 # Already logged in _work_one; one project's failure must never
                 # take the others' results with it.
                 logger.exception("dispatching a project failed", exc_info=result)
-            elif result is not None:
-                driven.append(result)
+            else:
+                driven.extend(result)
         return driven
 
-    async def _work_one(self, project: str) -> str | None:
-        task_id = await asyncio.to_thread(self._claim_next, project)
-        if task_id is None:
-            return None
+    async def _work_one(self, project: str) -> list[str]:
+        """Drain this project's whole backlog for this tick (spec §3.6, item
+        11): claim and drive tasks until nothing runnable is left, rather
+        than stopping after one — so a project's queue depth no longer
+        depends on how many external ticks it happens to get.
 
-        beat = asyncio.create_task(self._heartbeat(task_id))
-        try:
-            await asyncio.to_thread(self._drive, task_id)
-        except Exception:
-            logger.exception("driving task %s failed", task_id)
-        finally:
-            beat.cancel()
-            with suppress(asyncio.CancelledError):
-                await beat
-            await asyncio.to_thread(self._release, task_id)
-        return task_id
+        `attempted` guards termination. `release_lease` (in `_release`) does
+        not touch `lease_attempts` — only reclaiming an EXPIRED lease does —
+        so a task whose drive raises (or otherwise leaves it in the same
+        runnable state) goes right back to `_claim_next` unchanged. Without
+        this guard that task would be reclaimed and retried in a tight loop
+        forever, starving every other task behind it in this project's queue
+        and never returning. One attempt per task per tick is enough; a task
+        that never recovers is handled by a later tick and, eventually, the
+        poison-attempt cap in `_claim_next`.
+        """
+        driven: list[str] = []
+        attempted: set[str] = set()
+        while True:
+            task_id = await asyncio.to_thread(self._claim_next, project)
+            if task_id is None:
+                return driven
+            if task_id in attempted:
+                # We just reclaimed the very task we already drove this tick
+                # (it never left the runnable set) — hand the lease straight
+                # back rather than leaking it, and stop this project's lane.
+                await asyncio.to_thread(self._release, task_id)
+                return driven
+            attempted.add(task_id)
+
+            beat = asyncio.create_task(self._heartbeat(task_id))
+            try:
+                await asyncio.to_thread(self._drive, task_id)
+            except Exception:
+                logger.exception("driving task %s failed", task_id)
+            finally:
+                beat.cancel()
+                with suppress(asyncio.CancelledError):
+                    await beat
+                await asyncio.to_thread(self._release, task_id)
+            driven.append(task_id)
 
     async def _heartbeat(self, task_id: str) -> None:
         """Keep the lease alive while the worker thread is busy.

@@ -50,15 +50,77 @@ def test_a_tick_drives_one_task_per_project(session_factory):
     assert sorted(driven) == sorted([a, g])
 
 
-def test_a_tick_takes_only_the_oldest_task_in_a_project(session_factory):
+def test_a_tick_takes_the_oldest_task_in_a_project_first(session_factory):
+    """FIFO ordering within a project's drain: the oldest queued task is
+    always driven before a newer one, even though (per the drain test below)
+    both get driven within the same tick now."""
     with session_factory() as session:
         first = _task(session, project="acme")
         _task(session, project="acme")
 
-    def drive(_session, task_id):
-        pass
+    order: list[str] = []
 
-    assert asyncio.run(Dispatcher(session_factory, drive=drive).tick()) == [first]
+    def drive(session, task_id):
+        order.append(task_id)
+        # Move the task out of the runnable set so next_runnable can advance
+        # to the next-oldest task instead of reclaiming this same one.
+        TaskRepository(session).claim(
+            task_id, expected=TaskState.CLASSIFIED, target=TaskState.FAILED
+        )
+
+    asyncio.run(Dispatcher(session_factory, drive=drive).tick())
+    assert order[0] == first
+
+
+def test_a_project_drains_its_whole_backlog_in_one_sweep(session_factory):
+    """Backlog item 11: a project with several queued tasks must not be
+    paced at one task per tick — it should drain everything runnable in a
+    single tick() call."""
+    with session_factory() as session:
+        ids = [_task(session, project="acme") for _ in range(3)]
+
+    def drive(session, task_id):
+        # Real business logic advances the task's state, which is what
+        # actually removes it from the runnable set between claims.
+        TaskRepository(session).claim(
+            task_id, expected=TaskState.CLASSIFIED, target=TaskState.FAILED
+        )
+
+    result = asyncio.run(Dispatcher(session_factory, drive=drive).tick())
+    assert sorted(result) == sorted(ids)
+
+    with session_factory() as session:
+        repo = TaskRepository(session)
+        assert repo.next_runnable("acme") is None
+
+
+def test_a_slow_project_does_not_pace_a_fast_project(session_factory):
+    """The direct regression test for item 11: a project with a slow task
+    must not hold back another project's own backlog from draining within
+    the same tick. Under the old one-claim-per-tick behaviour, `fast` would
+    only get one of its three tasks driven per tick regardless of how long
+    `slow` takes; under the fix it drains all three in this one tick call,
+    concurrently with `slow`'s single long task."""
+    with session_factory() as session:
+        slow_id = _task(session, project="slow")
+        fast_ids = [_task(session, project="fast") for _ in range(3)]
+
+    def drive(session, task_id):
+        if task_id == slow_id:
+            time.sleep(0.3)
+        TaskRepository(session).claim(
+            task_id, expected=TaskState.CLASSIFIED, target=TaskState.FAILED
+        )
+
+    start = time.monotonic()
+    result = asyncio.run(Dispatcher(session_factory, drive=drive).tick())
+    elapsed = time.monotonic() - start
+
+    assert sorted(result) == sorted([slow_id, *fast_ids])
+    # Both projects run concurrently (separate semaphore slots); the fast
+    # project's whole backlog should drain well within the slow task's own
+    # duration, not be serialized behind it across several ticks.
+    assert elapsed < 1.0
 
 
 def test_the_lease_is_released_after_the_work_finishes(session_factory):
@@ -100,6 +162,33 @@ def test_the_lease_is_released_even_when_the_work_raises(session_factory):
     assert sorted(result) == sorted([task_id, good])
 
     with session_factory() as session:
+        assert TaskRepository(session).get(task_id).lease_owner is None
+
+
+def test_a_repeatedly_failing_task_does_not_drain_forever(session_factory):
+    """The termination hazard a drain loop introduces: `release_lease` does
+    not touch `lease_attempts` (only reclaiming an EXPIRED lease does), so a
+    task whose drive raises every time goes right back to the runnable set
+    with its attempt count unchanged. A drain that just loops "until
+    `_claim_next` returns None" would claim this same task forever and never
+    return. It must give up on a task after one failed attempt per tick
+    instead of retrying it in a tight loop."""
+    with session_factory() as session:
+        task_id = _task(session, project="acme")
+
+    calls = []
+
+    def drive(_session, tid):
+        calls.append(tid)
+        raise RuntimeError("boom")
+
+    result = asyncio.run(Dispatcher(session_factory, drive=drive).tick())
+
+    assert result == [task_id]
+    assert calls == [task_id], "the same task must be attempted only once per tick"
+    with session_factory() as session:
+        # Still reclaimable — a later tick (or the attempt cap) handles it,
+        # but this drain must not have spun on it.
         assert TaskRepository(session).get(task_id).lease_owner is None
 
 
@@ -195,10 +284,22 @@ def test_a_task_past_the_attempt_cap_fails_instead_of_running_again(
         below_row.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
         session.commit()
 
+    def drive_and_park(session, tid):
+        # A drain re-claims within the same tick until a task leaves the
+        # runnable set (see dispatcher._work_one), unlike the single-claim
+        # model this test was written against. Real driving always moves a
+        # task on success (TaskDriver.advance() runs until it hits a WAITING
+        # state); a no-op double would instead get reclaimed a second time
+        # this same tick and spuriously trip the cap. Parking it in a
+        # WAITING-but-not-FAILED state keeps this test's actual subject —
+        # the poison threshold — isolated from that drain mechanic.
+        driven.append(tid)
+        TaskRepository(session).claim(
+            tid, expected=TaskState.CLASSIFIED, target=TaskState.NEEDS_CLARIFICATION
+        )
+
     driven = []
-    asyncio.run(
-        Dispatcher(session_factory, drive=lambda s, t: driven.append(t)).tick()
-    )
+    asyncio.run(Dispatcher(session_factory, drive=drive_and_park).tick())
 
     assert driven == [below_cap_id]
     with session_factory() as session:
@@ -237,6 +338,17 @@ def test_two_dispatchers_ticking_at_once_do_not_both_take_the_same_task(
     (a file-backed sqlite database), so the two threads' concurrent reads and
     writes are arbitrated by SQLite's own locking, the same way two backend
     processes would be arbitrated by Postgres in production.
+
+    `drive` also parks the task out of the runnable set (see the same note in
+    test_a_task_past_the_attempt_cap...): under the drain, the winner makes
+    one further next_runnable call after driving to confirm nothing is left.
+    That call must find the task already non-runnable, or claim_lease would
+    fire a second, unsynchronized time and the barrier below — sized for
+    exactly the two contended calls this test is about — would hang. The
+    read barrier is additionally only engaged for the first two calls total
+    (one from each thread's genuinely contested read) for the same reason:
+    the winner's own confirmation call is real drain behaviour, not part of
+    the race being tested here, and must pass through unsynchronized.
     """
     with session_factory() as session:
         task_id = _task(session, project="acme")
@@ -244,17 +356,26 @@ def test_two_dispatchers_ticking_at_once_do_not_both_take_the_same_task(
     lock = threading.Lock()
     read_barrier = threading.Barrier(2)
     claim_barrier = threading.Barrier(2)
+    read_calls = 0
 
-    def drive(_session, tid):
+    def drive(session, tid):
         with lock:
             driven.append(tid)
+        TaskRepository(session).claim(
+            tid, expected=TaskState.CLASSIFIED, target=TaskState.NEEDS_CLARIFICATION
+        )
 
     original_next_runnable = TaskRepository.next_runnable
     original_claim_lease = TaskRepository.claim_lease
 
     def synced_next_runnable(self, project, *args, **kwargs):
+        nonlocal read_calls
         result = original_next_runnable(self, project, *args, **kwargs)
-        read_barrier.wait(timeout=5)
+        with lock:
+            call_index = read_calls
+            read_calls += 1
+        if call_index < 2:
+            read_barrier.wait(timeout=5)
         return result
 
     def synced_claim_lease(self, task_id, **kwargs):
