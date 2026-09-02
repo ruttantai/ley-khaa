@@ -31,8 +31,10 @@ class _Daemon:
 @pytest.fixture(autouse=True)
 def _reset_warning():
     factory._warned_about_fallback = False
+    factory._ollama_client_cache = None
     yield
     factory._warned_about_fallback = False
+    factory._ollama_client_cache = None
 
 
 def test_a_reachable_daemon_with_the_model_pulled_gives_an_ollama_client(monkeypatch):
@@ -89,15 +91,38 @@ def test_an_unexpected_exception_type_also_degrades_rather_than_escaping(monkeyp
 
 
 def test_the_fallback_warning_is_said_once_not_every_sweep(monkeypatch, caplog):
-    """build_llm runs per request and per background sweep."""
-    monkeypatch.setattr(
-        factory, "_ollama_client", lambda host: _Daemon(raises=ConnectionError("refused"))
-    )
+    """build_llm runs per request and per background sweep, but the probe — a
+    live network round-trip — must run at most once per process, with later
+    calls reusing the cached decision rather than re-probing the daemon."""
+    calls = []
+
+    def _client(host):
+        calls.append(host)
+        return _Daemon(raises=ConnectionError("refused"))
+
+    monkeypatch.setattr(factory, "_ollama_client", _client)
     with caplog.at_level(logging.WARNING):
         factory.build_llm("ollama")
         factory.build_llm("ollama")
         factory.build_llm("ollama")
     assert caplog.text.count("not reachable") == 1
+    assert len(calls) == 1
+
+
+def test_a_successful_probe_is_cached_and_reused(monkeypatch):
+    """The resolved OllamaLLM is the same object across calls — build_llm does
+    not re-probe or re-construct a client for a decision already made."""
+    calls = []
+
+    def _client(host):
+        calls.append(host)
+        return _Daemon(_Listing("qwen2.5"))
+
+    monkeypatch.setattr(factory, "_ollama_client", _client)
+    first = factory.build_llm("ollama")
+    second = factory.build_llm("ollama")
+    assert first is second
+    assert len(calls) == 1
 
 
 def test_the_other_backends_are_untouched(monkeypatch):

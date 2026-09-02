@@ -12,6 +12,17 @@ logger = logging.getLogger(__name__)
 # about configuration, so say it once rather than every few seconds.
 _warned_about_fallback = False
 
+# The Ollama probe is a live network round-trip (`client.list()`) to decide
+# which backend to use. build_llm runs on the hot path of every request and
+# every background sweep, so without caching that round-trip happens on every
+# one of them — a latency cost nobody chose, and worse, it would let the app
+# silently step down to HeuristicLLM mid-session if the daemon later dies,
+# which contradicts the "no runtime step-down" guarantee this phase promises.
+# Caching the resolved client (success or fallback) makes the decision once,
+# at first use, and every later call reuses it — matching "probe once, at
+# startup" as documented, not "probe once per request".
+_ollama_client_cache: LLMClient | None = None
+
 
 def _ollama_client(host: str):
     """The one place the real client is constructed, so tests can replace it
@@ -47,9 +58,18 @@ def build_llm(backend: str = "anthropic") -> LLMClient:
 def _build_ollama() -> LLMClient:
     """Probe once, at startup, and degrade loudly (phase 8 design §3.4).
 
+    build_llm runs per request and per background sweep, so "once" only holds
+    if the resolved client is cached: the probe itself runs at most once per
+    process, and every later call reuses that decision rather than repeating
+    the network round-trip (or re-deciding to fall back) on the hot path.
+
     Two failures with different fixes are reported differently: a daemon that
     is not running, and a model that was never pulled.
     """
+    global _ollama_client_cache
+    if _ollama_client_cache is not None:
+        return _ollama_client_cache
+
     model, host = settings.ollama_model, settings.ollama_host
     try:
         listing = _ollama_client(host).list()
@@ -72,7 +92,8 @@ def _build_ollama() -> LLMClient:
             f"({type(exc).__name__}) — falling back to HeuristicLLM, the offline regex "
             "stand-in. Start Ollama, or set LEY_KHAA_OLLAMA_HOST."
         )
-        return HeuristicLLM()
+        _ollama_client_cache = HeuristicLLM()
+        return _ollama_client_cache
 
     if not any(name == model or name.startswith(f"{model}:") for name in pulled):
         _fall_back(
@@ -80,9 +101,11 @@ def _build_ollama() -> LLMClient:
             f"{model!r} is not pulled — falling back to HeuristicLLM, the offline regex "
             f"stand-in. Fix with: ollama pull {model}"
         )
-        return HeuristicLLM()
+        _ollama_client_cache = HeuristicLLM()
+        return _ollama_client_cache
 
-    return OllamaLLM(model=model, host=host)
+    _ollama_client_cache = OllamaLLM(model=model, host=host)
+    return _ollama_client_cache
 
 
 def _fall_back(message: str) -> None:

@@ -25,6 +25,11 @@ generator code, exact inputs, seeded manifest — so any result can be audited a
 
 ## Status
 
+**v0.9.0 — Ollama offline fallback.** With no `ANTHROPIC_API_KEY`, `LEY_KHAA_LLM=ollama` runs a real
+local model (default `qwen2.5`) for every stage instead of the regex stand-in. The backend is chosen
+once at startup, not retried mid-session, and vision stays text-only either way. See
+[Running without an API key](#running-without-an-api-key) below.
+
 **v0.8.0 — vision intake.** A screenshot pasted into a channel or the dashboard is read once
 through Claude vision and frozen as a reproducible checkpoint keyed by a hash of its bytes: a
 table becomes data a generated script computes on, anything else becomes context the interpreter
@@ -57,7 +62,8 @@ relevance filtering and crystallization run on every message regardless, caches 
 | 5 | `v0.6.0` | **Project routing**, per-project queues, **amendment detection** | ✅ shipped |
 | 6 | `v0.7.0` | Real Slack and Discord **channel adapters**, ingesting and notifying | ✅ shipped |
 | 7 | `v0.8.0` | **Vision intake** — an image read once and frozen as a reproducible checkpoint | ✅ shipped |
-| — | `v1.0.0` | Definition of done (spec §11) | 🎯 target |
+| 8 | `v0.9.0` | **Ollama offline fallback** — a real local model with no API key, text-only | ✅ shipped |
+| — | `v1.0.0` | Definition of done (spec §11), release tagged | 🎯 target |
 
 Design spec: [`docs/superpowers/specs/2026-08-18-ley-khaa-design.md`](docs/superpowers/specs/2026-08-18-ley-khaa-design.md).
 Phase plans: [`docs/superpowers/plans/`](docs/superpowers/plans/).
@@ -65,7 +71,7 @@ Phase plans: [`docs/superpowers/plans/`](docs/superpowers/plans/).
 ## Run
 
 **New here?** [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) walks from a fresh clone to a
-finished task with a downloadable bundle, and says plainly which parts are not built yet.
+finished task with a downloadable bundle, and states its known limits plainly.
 
 ```bash
 docker compose up
@@ -391,9 +397,10 @@ regardless of which attachment happened to be pasted first.
 
 **Limits, stated plainly.**
 
-- With no `ANTHROPIC_API_KEY` an image is **carried, not read**: it is recorded, credited to the
-  offline `heuristic` stand-in, and its name still reaches the prompt, but nothing reads the
-  picture — the task proceeds on text alone. `docker compose up` still demos end to end.
+- With no `ANTHROPIC_API_KEY` an image is **carried, not read**: it is recorded, credited to
+  whichever text-only backend actually ran (`heuristic`, or `ollama:<model>` when that fallback is
+  configured — see below), and its name still reaches the prompt, but nothing reads the picture —
+  the task proceeds on text alone. `docker compose up` still demos end to end.
 - There is no re-extraction of a successful read: freezing is what makes a re-run reproducible, so
   if a table is misread the checkpoint stays wrong until its row is cleared.
 - Images are never stored, only their extraction — an image whose URL has expired cannot be

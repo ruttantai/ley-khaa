@@ -323,10 +323,12 @@ docker build -t ley-khaa-sandbox backend/sandbox
 
 ## 9. Known limits
 
-Every item in the v1 definition of done (§11 of the design spec) has shipped, including the Ollama
-offline fallback in 0.9.0 (see [Running without an API key](../README.md#running-without-an-api-key)).
-That does not mean the pipeline has no edges — stated plainly so you do not go looking for something
-that isn't there:
+Every **feature** in the v1 definition of done (§11 of the design spec) has shipped, including the
+Ollama offline fallback in 0.9.0 (see
+[Running without an API key](../README.md#running-without-an-api-key)) — §11 also lists the
+`v1.0.0` release tag itself as part of that definition of done, and that tag has not been cut yet
+(see the phase table in the [README](../README.md#status)). Shipped is not the same as edge-free —
+stated plainly so you do not go looking for something that isn't there:
 
 - **The Ollama offline fallback is text-only.** Vision still requires `ANTHROPIC_API_KEY` regardless
   of which LLM backend is selected — see [Images](../README.md#images).
