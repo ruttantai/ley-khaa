@@ -194,6 +194,37 @@ def test_a_listing_entry_with_only_a_none_name_still_falls_back_cleanly(monkeypa
     assert isinstance(llm, HeuristicLLM)
 
 
+def test_a_tag_match_is_deterministic_when_multiple_tags_are_pulled(monkeypatch):
+    """Several pulled tags can match one configured prefix at once — e.g. both
+    qwen2.5:7b and qwen2.5:14b pulled under LEY_KHAA_OLLAMA_MODEL=qwen2.5.
+    `pulled` is a set, and CPython randomizes string hashing per process, so a
+    naive `next(...)` over it could adopt either tag arbitrarily from one
+    process to the next -- flipping the manifest's provenance record and
+    invalidating Phase 7's vision cache on every flip. The choice must be the
+    same every time: the lexicographically first matching tag."""
+    monkeypatch.setattr(
+        factory, "_ollama_client", lambda host: _Daemon(_Listing("qwen2.5:14b", "qwen2.5:7b"))
+    )
+    seen = set()
+    for _ in range(20):
+        factory._ollama_client_cache = None
+        llm = factory.build_llm("ollama")
+        assert isinstance(llm, OllamaLLM)
+        seen.add(llm.model)
+    assert seen == {"qwen2.5:14b"}  # lexicographically first, not numerically largest
+
+
+def test_an_exact_match_is_preferred_over_a_tagged_variant(monkeypatch):
+    """model in pulled directly (an exact hit) must win over any qwen2.5:* tag
+    match, regardless of iteration order."""
+    monkeypatch.setattr(
+        factory, "_ollama_client", lambda host: _Daemon(_Listing("qwen2.5:7b", "qwen2.5"))
+    )
+    llm = factory.build_llm("ollama")
+    assert isinstance(llm, OllamaLLM)
+    assert llm.model == "qwen2.5"
+
+
 def test_a_tag_match_adopts_the_actually_pulled_tag(monkeypatch):
     """LEY_KHAA_OLLAMA_MODEL=qwen2.5 with only qwen2.5:7b pulled must build
     OllamaLLM(model="qwen2.5:7b") — the bare "qwen2.5" resolves to

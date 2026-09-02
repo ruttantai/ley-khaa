@@ -118,9 +118,19 @@ def _build_ollama() -> LLMClient:
     # the bare config name — the bare name resolves to `:latest`, which may
     # not be on disk, and every request would then fail forever with "model
     # not found" even though the probe passed and nothing was ever logged.
-    matched = next(
-        (name for name in pulled if name == model or name.startswith(f"{model}:")),
-        None,
+    # `pulled` is a set, and CPython randomizes string hashing per process, so
+    # iterating it directly (`next(...)` over a generator expression) would
+    # pick an arbitrary tag when several match the same configured prefix —
+    # e.g. both qwen2.5:7b and qwen2.5:14b pulled under
+    # LEY_KHAA_OLLAMA_MODEL=qwen2.5. That would make the manifest, and
+    # therefore the provenance record this project sells as reproducible,
+    # differ between two runs of an identically-configured system (and
+    # invalidate Phase 7's vision cache on every flip, since it re-extracts
+    # whenever the stored `model` differs from the current client's name).
+    # Prefer an exact match, then the lexicographically first tag, so the
+    # choice is the same every time.
+    matched = model if model in pulled else next(
+        iter(sorted(name for name in pulled if name.startswith(f"{model}:"))), None
     )
     if matched is None:
         _fall_back(

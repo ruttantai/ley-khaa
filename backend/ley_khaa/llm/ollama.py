@@ -20,6 +20,13 @@ T = TypeVar("T", bound=BaseModel)
 # (16000, synthesis) plus a generous multiple of the largest realistic
 # prompt, without pinning this to synthesis's number exactly — a token
 # budget added for a future stage does not require re-deriving this.
+#
+# This has a real memory cost: Ollama allocates the KV cache for the full
+# num_ctx at load, so for a 7B model this is roughly 1-2 GB beyond the
+# weights, which on an 8-16 GB laptop can push a run into swap. Still the
+# right trade — the alternative is truncating the SYSTEM rules off the front
+# of the prompt — and one constant across stages at least avoids a model
+# reload per stage.
 _NUM_CTX = 32768
 
 
