@@ -165,12 +165,25 @@ class DeadLetterRepository:
         `list()` uses, then everything past the cap is deleted: those are, by
         construction, the OLDEST rows, which is what makes the newest ones
         the survivors.
+
+        The cap is clamped to at least 1. A misconfigured `0` (or a negative
+        value) must NOT mean "unbounded" — that would silently resurrect the
+        exact bug this task closes — and it must not mean "keep nothing"
+        either: `record()` is called from the notifier's own exception
+        handlers (delivery failed, no running event loop, ...), so a prune
+        that deletes every row, including the one this very call just wrote,
+        would crash on `session.refresh(row)` — turning a handled
+        notification failure into an unhandled one, inside the one table
+        whose entire purpose is that a failure is never silent. Clamping
+        keeps the newest failure visible under every possible configuration;
+        do not "helpfully" remove it.
         """
         self.session.flush()
+        cap = max(1, settings.dead_letter_max_rows)
         keep_ids = (
             select(DeadLetterRow.id)
             .order_by(DeadLetterRow.created_at.desc(), DeadLetterRow.id.desc())
-            .limit(settings.dead_letter_max_rows)
+            .limit(cap)
         )
         self.session.execute(
             delete(DeadLetterRow).where(DeadLetterRow.id.not_in(keep_ids))

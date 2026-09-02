@@ -50,3 +50,35 @@ def test_the_survivors_after_pruning_are_the_newest_not_the_oldest(session, dead
     survivors = {row.reason for row in repo.list(limit=100)}
     # Rows 4, 5, 6 are the three newest writes; 0-3 must be gone.
     assert survivors == {"drop 4", "drop 5", "drop 6"}
+
+
+def test_a_cap_of_zero_still_retains_the_newest_dead_letter(session, dead_letter_cap):
+    """A cap of 0 is a natural thing for an operator to try when they mean
+    "disable retention" — but 0 must NOT mean unbounded (that resurrects the
+    bug this task closes) and must NOT mean "keep nothing" either: record()
+    is called from the notifier's own exception handlers, so pruning away
+    the row a call just wrote would crash that call's own session.refresh(),
+    turning a handled notification failure into an unhandled one."""
+    dead_letter_cap(0)
+    repo = DeadLetterRepository(session)
+
+    repo.record(source="slack", kind="connection", reason="first")
+    newest = repo.record(source="slack", kind="connection", reason="second")
+
+    rows = repo.list(limit=100)
+    assert len(rows) >= 1
+    assert rows[0].id == newest.id
+    assert rows[0].reason == "second"
+
+
+def test_a_negative_cap_also_clamps_to_at_least_one(session, dead_letter_cap):
+    dead_letter_cap(-5)
+    repo = DeadLetterRepository(session)
+
+    repo.record(source="slack", kind="connection", reason="first")
+    newest = repo.record(source="slack", kind="connection", reason="second")
+
+    rows = repo.list(limit=100)
+    assert len(rows) >= 1
+    assert rows[0].id == newest.id
+    assert rows[0].reason == "second"
