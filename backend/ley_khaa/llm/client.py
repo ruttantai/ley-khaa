@@ -103,7 +103,7 @@ class AnthropicLLM:
         if choice.supports_thinking:
             kwargs["thinking"] = {"type": "adaptive"}
         response = self._client.messages.parse(**kwargs)
-        return response.parsed_output
+        return self._require_parsed(response, choice, output_format)
 
     def extract_image(
         self, *, choice: ModelChoice, system: str, user: str,
@@ -144,4 +144,18 @@ class AnthropicLLM:
         if choice.supports_thinking:
             kwargs["thinking"] = {"type": "adaptive"}
         response = self._client.messages.parse(**kwargs)
-        return response.parsed_output
+        return self._require_parsed(response, choice, output_format)
+
+    def _require_parsed(self, response: Any, choice: ModelChoice, output_format: type[T]) -> T:
+        parsed = response.parsed_output
+        if parsed is None:
+            # A response that stops on max_tokens parses to None. Returning it
+            # hands the caller a None it does not expect — the crystallizer and
+            # interpreter both dereference the result immediately — and the
+            # traceback then names THEIR line, not this one. Shared by parse()
+            # and extract_image(): both hit the same SDK call shape.
+            raise ValueError(
+                f"{choice.model} returned no parsed output "
+                f"(stop_reason may be max_tokens for {output_format.__name__})"
+            )
+        return parsed
