@@ -182,7 +182,11 @@ class Orchestrator:
         promote=False), but the contract stated on ingest() must hold if one ever
         does.
         """
-        task = self.repo.get(row.reply_to_task_id)
+        # `reply_to_task_id` is what put us on this route, so both callers have
+        # set it — but a reply naming NO task is exactly as orphaned as one
+        # naming a task that does not exist, and takes the same branch rather
+        # than reaching the repository with a None primary key.
+        task = self.repo.get(row.reply_to_task_id) if row.reply_to_task_id else None
         if task is None:
             # gateway.accept() already committed this message before we get here.
             # Leaving its `relevant` column NULL would make the crystallizer
