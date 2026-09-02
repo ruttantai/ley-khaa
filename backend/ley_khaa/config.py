@@ -75,5 +75,16 @@ class Settings:
     ollama_model: str = os.getenv("LEY_KHAA_OLLAMA_MODEL") or "qwen2.5"
     ollama_host: str = os.getenv("LEY_KHAA_OLLAMA_HOST") or "http://localhost:11434"
 
+    # Bounds `dead_letters` row COUNT (backlog item 18) — MAX_PAYLOAD_CHARS
+    # already bounds a row's SIZE. A permanently bad token writes one
+    # `connection` row per minute at the supervisor's 60s backoff cap,
+    # forever; this is what stops that from being unbounded growth. Count-
+    # based, not time-based: a quiet system with a handful of old dead
+    # letters keeps every one of them. 1000 is ~10x the dashboard's default
+    # page size (see DeadLetterRepository.list), generous enough to
+    # investigate an incident without holding history forever. An operator
+    # can raise it.
+    dead_letter_max_rows: int = int(os.getenv("LEY_KHAA_DEAD_LETTER_MAX_ROWS") or "1000")
+
 
 settings = Settings()
