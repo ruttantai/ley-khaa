@@ -27,9 +27,9 @@ generator code, exact inputs, seeded manifest — so any result can be audited a
 
 **v0.10.0 — release hardening.** No new features: ten defects fixed — nine of them carried in the
 project's own backlog — each pinned by a test that fails without the fix, plus two gates that did not
-exist. The backend is typechecked by **mypy** in CI: "typecheck clean" has been a definition-of-done
-line in every phase spec since v0.5.0, and until now only the frontend had a typechecker to satisfy
-it. The suite now also runs a second time against **Postgres 16**, the database `docker compose up`
+exist. The backend is typechecked by **mypy** in CI: "typecheck clean" is a definition-of-done
+line in three of the five phase specs since v0.5.0 — Phases 4, 6 and 7 name it, Phases 5 and 8 do
+not — and until now only the frontend had a typechecker to satisfy it. The suite now also runs a second time against **Postgres 16**, the database `docker compose up`
 actually deploys, so a dialect-dependent defect can no longer pass everywhere it is checked. See the
 [CHANGELOG](CHANGELOG.md) for what changed and what is deliberately still open.
 
@@ -273,10 +273,16 @@ a project with no description — still shares `default`, and so does its memory
 `backend/tests/test_concurrency.py`'s barrier test: two projects' workers are made to block until
 both have arrived, which only passes if both are genuinely running at once. Within one project,
 tasks are driven strictly FIFO, one at a time. **A project drains its whole backlog in one tick**
-(v0.10.0, backlog item 11): the worker loops claim → drive → release until nothing runnable is left,
-rather than taking one task and waiting a whole `LEY_KHAA_SWEEP_SECONDS` (default 15s) for the next.
-The per-project concurrency slot is held per *task*, not for the whole drain, so a project with a
-deep backlog does not occupy one while it works through it.
+(v0.10.0, backlog item 11): the worker loops claim → drive → release until every runnable task has
+had a turn, rather than taking one task and waiting a whole `LEY_KHAA_SWEEP_SECONDS` (default 15s)
+for the next. The per-project concurrency slot is held per *task*, not for the whole drain, so a
+project with a deep backlog does not occupy one while it works through it.
+
+Precisely: **one attempt per task per tick**, which is not the same as "until nothing runnable is
+left". A task the driver deliberately leaves where it is — a retryable interpretation failure, a
+claim race lost to another worker, the step ceiling — is still runnable when the tick ends, and gets
+its next attempt on the next tick. What it does *not* do is hold up the queue: the drain steps past
+it to the rest of the backlog, the same way it steps past a poison-failed or race-lost head task.
 
 **Concurrent is still not the same as unbounded throughput.** A tick returns only once every project
 it started has finished, so the slowest project sets that tick's duration — what it no longer sets is

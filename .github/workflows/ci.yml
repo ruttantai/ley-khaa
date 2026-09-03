@@ -36,8 +36,9 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
         working-directory: backend
-      # "Typecheck clean" has been a definition-of-done line in every phase spec
-      # since Phase 4 (v0.5.0) with nothing enforcing it on the backend — the
+      # "Typecheck clean" is a definition-of-done line in three of the five phase
+      # specs since Phase 4 (v0.5.0) — Phases 4, 6 and 7 name it, Phases 5 and 8
+      # do not — with nothing enforcing it on the backend either way: the
       # frontend's `npm run typecheck` below was the only typechecker in the
       # repo. mypy exits non-zero on any error, so this fails the build rather
       # than warning. Configuration (default settings, not --strict)

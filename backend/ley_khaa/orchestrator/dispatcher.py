@@ -98,9 +98,16 @@ class Dispatcher:
 
     async def _work_one(self, project: str, limit: asyncio.Semaphore) -> list[str]:
         """Drain this project's whole backlog for this tick (spec §3.6, item
-        11): claim and drive tasks until nothing runnable is left, rather
-        than stopping after one — so a project's queue depth no longer
+        11): claim and drive tasks until every runnable one has had its turn,
+        rather than stopping after one — so a project's queue depth no longer
         depends on how many external ticks it happens to get.
+
+        "Every runnable one has had its turn" and not "until nothing runnable
+        is left": those differ, and the difference is the whole subject of the
+        `attempted` paragraph below. Exactly one attempt per task per tick.
+        A task the driver deliberately leaves unadvanced is STILL runnable
+        when this returns; what changed in v0.10.0 is that the rest of the
+        queue is drained anyway rather than abandoned behind it.
 
         `limit` is held per TASK, not for the whole drain: `async with limit`
         wraps one claim-drive-release cycle per loop iteration, then is

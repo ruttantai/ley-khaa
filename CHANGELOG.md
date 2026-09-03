@@ -12,8 +12,9 @@ found while writing the spec — two quality gates added, and every statement th
 false corrected.
 
 ### Added
-- **A backend typechecker, enforced by CI (§4.1).** "Typecheck clean" has been a definition-of-done
-  line in every phase spec since Phase 4 (v0.5.0, 2026-08-27), and until now only the *frontend* had
+- **A backend typechecker, enforced by CI (§4.1).** "Typecheck clean" is a definition-of-done
+  line in three of the five phase specs since Phase 4 (v0.5.0, 2026-08-27) — Phases 4, 6 and 7 name
+  it, Phases 5 and 8 do not — and until now only the *frontend* had
   a typechecker to satisfy it — `npm run typecheck` landed the same day; `backend/` had none
   configured at all. `mypy==2.3.1` at **default**
   settings — not `--strict`, which is mostly annotation churn and is filed as a post-1.0.0 ratchet —
@@ -51,7 +52,14 @@ false corrected.
 - **A project drains its whole backlog per tick, and a slow project no longer paces the others**
   (item 11). Review of the first fix found two head-of-line-blocking cases it did not remove: a
   poison-failed or race-lost head task ended the drain as if the lane were empty, and the
-  per-project semaphore was held for a whole drain rather than per task.
+  per-project semaphore was held for a whole drain rather than per task. The whole-branch review
+  then found a third, in the drain's own termination guard: a head task the driver left unadvanced
+  ended the lane too, abandoning everything queued behind it — permanently, since a cleanly released
+  task's `lease_attempts` never grows and the poison cap that might have evicted it can never fire.
+  The guard now excludes already-attempted ids from the *query* instead, so the drain steps past
+  such a head. The guarantee is therefore **one attempt per task per tick**, not "until nothing
+  runnable is left": a task that does not advance is still runnable when the tick ends, but it no
+  longer takes its project's queue with it.
 - **An unfetchable image is recorded once, not dead-lettered on every drive** (item 19), via a second
   key space hashed from the source URL — there are no image bytes to key a refusal on when the fetch
   itself failed.

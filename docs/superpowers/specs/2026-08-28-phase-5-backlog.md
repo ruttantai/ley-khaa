@@ -361,6 +361,18 @@ is empty; the other two left everything behind the head undriven for the whole t
 per-project semaphore also wrapped a whole drain, turning task-level blocking into project-level
 blocking under contention; the slot is now taken and released once per claim-drive-release cycle.
 
+**Hardened again by `4e6eccf`**: the whole-branch review found a THIRD head-of-line case, in the
+termination guard `a45253d` introduced above. That guard was right that a task whose drive keeps
+failing must not be reclaimed in a tight loop — but ending the whole lane was the wrong way to stop,
+and the paragraph above describing it did not notice that it starved the queue in the process, which
+is this very item's own symptom. Nor could a later tick or the attempt cap recover: `release_lease`
+leaves `lease_attempts` untouched, so a cleanly released head is the oldest runnable row again on
+every subsequent tick, for ever. `attempted` is now passed down to `_claim_next` as `exclude_ids` —
+the third use of the mechanism `1b835ad` added — so the drain steps past an already-attempted head
+in SQL instead of stopping at it. Termination is unchanged: each iteration still adds exactly one
+NEW id to a set the query excludes. The guarantee this item closes is therefore stated as **one
+attempt per task per tick**, not "until nothing runnable is left".
+
 ## 12. Nothing tests `HeuristicLLM`'s `ProjectChoice` rule, because a blanket `except` launders it — CLOSED (`d3d7f4f`)
 
 Deleting the `if output_format is ProjectChoice:` branch from `HeuristicLLM.parse`
