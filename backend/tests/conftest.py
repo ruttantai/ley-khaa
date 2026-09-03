@@ -45,7 +45,7 @@ def pytest_addoption(parser):
     zero-configuration — bare `pytest` still gets SQLite, no new variable and no
     new flag — but inference alone has a silent failure mode. Delete or misindent
     the `env:` block on CI's `pytest (postgres)` step and DATABASE_URL is simply
-    gone: the step re-runs the SQLite lane, prints `1038 passed` a second time,
+    gone: the step re-runs the SQLite lane, prints `1066 passed` a second time,
     and the build goes green having never touched Postgres. That is this
     project's signature defect — something that looks healthy and silently does
     nothing — sitting inside the fix for it, and the whole value of this task is
@@ -209,8 +209,10 @@ def migration_url(tmp_path):
         # identical psycopg connect argument, but only the first survives
         # alembic: Config.set_main_option() hands the URL to ConfigParser.set(),
         # whose BasicInterpolation rejects any raw `%` outright
-        # (ValueError: invalid interpolation syntax). See the report's finding
-        # on run_migrations for the same hazard in production code.
+        # (ValueError: invalid interpolation syntax). `ley_khaa/db.py`'s
+        # run_migrations() hits the identical hazard on any DATABASE_URL that
+        # carries a `%` — a percent-encoded password, say — which is backlog
+        # item 34; a `%` in TMPDIR would do the same to the SQLite lane here.
         yield f"{DATABASE_URL}{separator}options=-csearch_path={schema}"
     finally:
         with bootstrap.connect() as conn:

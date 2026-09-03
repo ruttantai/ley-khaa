@@ -110,6 +110,10 @@ docker compose up
   - `GET /projects/{name}/tasks` — every task in one project, any state, DONE and FAILED included
   - `GET /triage` — candidates parked as a possible amendment to an active task, awaiting a human
     decision (see [Amendments](#amendments))
+  - `GET /dead-letters?limit=` — every inbound message, notification and connection that was
+    dropped, newest first, scrubbed of the token shapes the redactor knows. No filtering by
+    design: whatever went wrong is on the first page. Rows are capped by
+    `LEY_KHAA_DEAD_LETTER_MAX_ROWS`
   - `POST /candidates/{id}/fold` — fold a parked candidate into the task it amends
   - `POST /candidates/{id}/separate` — promote a parked candidate as its own task instead
   - `GET /conversations/{id}/messages`
@@ -498,7 +502,7 @@ cd frontend && npm install && npm run dev
 ## Develop
 
 ```bash
-cd backend  && python -m pytest -q   # 1038 tests, on SQLite; needs nothing installed
+cd backend  && python -m pytest -q   # 1066 tests, on SQLite; needs nothing installed
                                      # on Colima/Rancher/Lima the docker tests also want
                                      # TMPDIR under $HOME — GETTING_STARTED.md §7 says why
 cd backend  && python -m mypy        # typecheck; default settings, config in backend/pyproject.toml

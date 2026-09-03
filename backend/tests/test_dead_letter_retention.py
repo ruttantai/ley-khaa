@@ -99,9 +99,10 @@ def test_a_non_numeric_cap_falls_back_to_the_default_instead_of_killing_the_impo
     `_tolerant_int` is exercised directly rather than through
     `importlib.reload(config)`: reloading that module rebinds
     `ley_khaa.config.settings` to a new object while every
-    `from ..config import settings` importer keeps the old one, which is the
-    documented cause of this suite's one order-dependence (CHANGELOG, Known
-    limits). Not worth adding a second instance of it to test a pure
+    `from ..config import settings` importer keeps the old one. That leak was
+    this suite's one order-dependence (backlog item 25) until v1.0.0 removed
+    the last two reload sites; nothing in `tests/` reloads `config` any more,
+    and nothing should start. Not worth adding one back to test a pure
     function.
     """
     from ley_khaa.config import _tolerant_int

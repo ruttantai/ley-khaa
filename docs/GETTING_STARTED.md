@@ -316,7 +316,7 @@ Reinstall: `cd backend && pip install -e ".[dev]"`.
 ## 8. Running the tests
 
 ```bash
-cd backend  && python -m pytest -q   # 1038 passed, 0 skipped, 0 warnings
+cd backend  && python -m pytest -q   # 1066 passed, 0 skipped, 0 warnings
 cd backend  && python -m mypy        # CI fails the build on any error
 cd frontend && npm test              # 58 passed
 cd frontend && npm run typecheck     # npm run build is transpile-only
@@ -366,9 +366,11 @@ unavailable. What 0.9.0 actually built (see
 [Running without an API key](../README.md#running-without-an-api-key)) is Ollama as an
 explicitly-selected backend for a whole run (`LEY_KHAA_LLM=ollama`), chosen once at startup — not
 that automatic, per-call step-down, which remains backlog item 22 (see below). §11 also lists the
-`v1.0.0` release tag itself as part of that definition of done, and that tag has not been cut yet
-(see the phase table in the [README](../README.md#status)). Shipped is not the same as edge-free —
-stated plainly so you do not go looking for something that isn't there:
+`v1.0.0` release tag itself as part of that definition of done; that tag is cut on this release's
+merge commit, and the README's
+[What 1.0.0 commits to](../README.md#what-100-commits-to) section names the evidence for every
+other line. Shipped is not the same as edge-free — stated plainly so you do not go looking for
+something that isn't there:
 
 - **The Ollama offline fallback is text-only.** Vision still requires `ANTHROPIC_API_KEY` regardless
   of which LLM backend is selected — see [Images](../README.md#images).
@@ -399,8 +401,13 @@ reason written down in that file: memory does not learn paraphrases the way the 
 aliases (1), the recall candidate cap wants measurement before it is changed (2), task memory has no
 management surface (3), a same-backend vision failure stays frozen under that image's digest (20),
 vision is text-only on the Ollama path (21), and there is no runtime step-down between backends (22).
-Eleven new entries (23–33) were filed the same way — mostly about the new gates' own blind spots,
-such as migrations still being exercised on SQLite only.
+Eleven new entries (23–33) were filed the same way — mostly about the new gates' own blind spots.
+
+**v1.0.0 closed three more** (25, 26 and 28): the suite no longer depends on pytest's collection
+order, Alembic migrations now run on whichever database the lane names rather than on SQLite only,
+and the `--database` lane guard has a test of its own. Seven further entries (34–40) were filed —
+again mostly about the new gates' own blind spots, such as the compose stack's hardcoded
+`DATABASE_URL` and the one migration downgrade still discriminated by nothing.
 
 ---
 

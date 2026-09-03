@@ -194,8 +194,15 @@ carried-forward gaps`). Four of the five gaps were still real and now have mutat
 
 The fifth — **case-insensitive suffix matching in `bind()` — had closed itself** before this phase.
 `test_suffix_matching_is_case_insensitive_declared_uppercase` and `_declared_mixed` cover both
-`.lower()` calls; confirmed by mutation rather than by reading. All of `test_migrations.py` runs on
-SQLite only — see item 26 below, which is where `0006`'s type change would finally get a lane.
+`.lower()` calls; confirmed by mutation rather than by reading.
+
+**Updated at 1.0.0 (`8975f84`):** the sentence that stood here said "all of `test_migrations.py` runs
+on SQLite only", which item 26's closure made false. It now runs on whichever database the lane
+names. **`0006` is still the tenth downgrade nothing discriminates**, and the reason is not the one
+this entry gave: the round trip compares only the schema after the *re-upgrade*, and `0006.upgrade()`
+sets `jsonb` either way, so a no-op downgrade leaves no residue for it to catch **on any database**.
+SQLite's identical rendering of the two types is true and was never the whole mechanism. Closing it
+needs an assertion at the *downgraded* point, on Postgres — filed as item 40.
 
 ## 8. Frontend polish — CLOSED (`bf9b27f`)
 
@@ -272,15 +279,22 @@ and gone green having never touched Postgres — this file's signature defect, i
 `--database=sqlite|postgres` states the expectation on the command line, where it survives anything
 that happens to the step's environment, and refuses the run otherwise.
 
-**Two things this entry named are NOT closed and are re-filed rather than quietly dropped:**
+**Two things this entry named were NOT closed by the commits above and were re-filed rather than
+quietly dropped** — both as item 26, and **both are now closed at 1.0.0**:
 
-- The **migration drift guard still runs on SQLite only** — `test_migrations.py` builds its own
-  `sqlite:///` URLs and is untouched by `DATABASE_URL`. Filed as item 26.
+- The **migration drift guard ran on SQLite only** — `test_migrations.py` built its own
+  `sqlite:///` URLs and was untouched by `DATABASE_URL`. Filed as item 26; closed by `8975f84`.
 - The **pre-existing `('remove_constraint', UniqueConstraint(workflows.name))` autogenerate diff on
-  Postgres is still there**, re-confirmed for this closure by upgrading a throwaway `postgres:16`
+  Postgres**, re-confirmed for this closure by upgrading a throwaway `postgres:16`
   database to head and running `compare_metadata` against it. (Also confirmed in the same run:
-  `upgrade head` and `downgrade base` both succeed on Postgres.) It is carried by item 26, which is
-  where it would get fixed deliberately.
+  `upgrade head` and `downgrade base` both succeed on Postgres.) Carried by item 26; closed by
+  `ff54900`.
+
+**Update at 1.0.0.** Everything above written in the present tense about SQLite-only migration
+coverage — including this entry's original body, preserved unchanged — describes the state at the
+close of Phase 9. Item 26 closed it: `test_migrations.py` now runs on whichever database the lane
+names, and `ff54900` removed the redundant `unique=True` that produced the autogenerate diff. Read
+the present tense above as of Phase 9, not as of today.
 
 ## 10. A false comment and a redundant read in `workflow_repository.py` — CLOSED (`3aaa59f`)
 

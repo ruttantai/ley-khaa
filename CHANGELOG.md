@@ -101,8 +101,11 @@ and a mistyped retention cap that stopped the service at import.
 ### Changed
 - Test coverage for the two gaps §4.3 names (items 7 and 12): migration downgrades — `downgrade base`
   leaves no table behind, and a head → *each* revision → head round trip is diffed against the models
-  (nine of the ten downgrades redden it when deleted; `0006`'s JSON↔JSONB `alter_column` cannot be
-  discriminated on SQLite and stays uncovered, see backlog item 26) — `fingerprint_candidates`'
+  (nine of the ten downgrades redden it when deleted; `0006`'s JSON↔JSONB `alter_column` stays
+  uncovered — *corrected in 1.0.0: the reason given here, that SQLite renders the two types
+  identically, is true but is not the mechanism. The round trip compares only the schema after the
+  re-upgrade, and `0006.upgrade()` sets `jsonb` either way, so a no-op downgrade leaves no residue
+  on **any** database. Re-filed as backlog item 40*) — `fingerprint_candidates`'
   empty-operation guard,
   `confidence == CONFIDENCE_FLOOR` exactly as a match, `_remember`'s own empty-fingerprint guard, and
   `HeuristicLLM`'s offline `ProjectChoice` rule — which nothing tested, because `ProjectRouter`'s
@@ -116,10 +119,15 @@ and a mistyped retention cap that stopped the service at import.
   rebinds `settings` out from under modules that already imported it. The shipped code is not
   involved. Filed as backlog item 25 with a three-file reproducer; it must be fixed before anything
   introduces test-order randomisation or `pytest-xdist`.
+  ***Closed in 1.0.0** (`68b348c`, `f84d313`). Also corrected there: this named one reloading file,
+  and there were two — `test_vision_config.py` reloaded at eight further sites, and the fix needed
+  both of them as well as the production change.*
 - **Alembic migrations are still exercised on SQLite only** (backlog item 26). The Postgres lane
   builds its schema with `create_all`, deliberately, so that a failure there is unambiguously a
   dialect difference rather than a migration bug — which leaves the drift guard, the downgrade tests
   and the `JSONB` variant with no automatic Postgres coverage.
+  ***Closed in 1.0.0** (`8975f84`): `test_migrations.py` now runs on whichever database the lane
+  names, in a throwaway schema of its own.*
 - **mypy runs at default settings, and `ignore_missing_imports` is global** for the sake of one
   untyped dependency (openpyxl), so a future untyped dependency would be exempted silently (item 24).
   CI's mypy dependencies are also unpinned floors, so a stub release can redden the gate on a commit
