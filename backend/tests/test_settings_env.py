@@ -67,14 +67,14 @@ def test_constructing_settings_does_not_mutate_the_module_singleton(monkeypatch)
     assert config_module.settings is before
 
 
-def test_every_string_and_int_setting_is_falsy_safe(monkeypatch):
+def test_every_setting_is_read_lazily_and_is_falsy_safe(monkeypatch):
     """BOTH settings rules, asserted over EVERY field rather than a hand-kept list.
 
-    The name says falsy-safe because that is the rule this started as; the loop
-    now pins laziness too, which is the property item 25 is actually about. A
-    per-field list is a list someone forgets to extend. This walks the dataclass
-    itself, so a new field added with an eager default, or with the two-argument
-    os.getenv form, fails here the day it lands.
+    Laziness is the property backlog item 25 is about; falsy-safety is the rule
+    the project stated and did not keep. The loop pins both, and the name says
+    so. A per-field list is a list someone forgets to extend. This walks the
+    dataclass itself, so a new field added with an eager default, or with the
+    two-argument os.getenv form, fails here the day it lands.
 
     Laziness cannot be checked by comparing one Settings() to another: an
     import-time default is IDENTICAL across two constructions, so such a
