@@ -177,6 +177,19 @@ class DeadLetterRepository:
         whose entire purpose is that a failure is never silent. Clamping
         keeps the newest failure visible under every possible configuration;
         do not "helpfully" remove it.
+
+        On cost, since this runs on EVERY write and the table's own docstring
+        describes a supervisor crash-loop writing one row a minute for ever:
+        the ORDER BY is bounded by the cap, not by history. Every `record()`
+        prunes in the same transaction as its insert, so the table holds at
+        most `cap` rows afterwards and `cap + 1` during — the sort is
+        O(cap log cap) on the day this ships and on any day after it,
+        however long the crash loop runs. The whole-branch review flagged
+        "sorts the whole table on every write"; that is literally true and
+        harmless, because the whole table is 1000 rows by construction.
+        Deliberately left alone: the only lever that changes this is raising
+        `LEY_KHAA_DEAD_LETTER_MAX_ROWS` by orders of magnitude, and an index
+        on `created_at` would need a migration to buy nothing at today's cap.
         """
         self.session.flush()
         cap = max(1, settings.dead_letter_max_rows)

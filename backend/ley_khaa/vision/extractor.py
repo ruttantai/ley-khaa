@@ -98,6 +98,11 @@ class VisionExtractor:
             reason = f"could not read {name}: {exc}"
             return self._record_unfetchable(attachment, name, reason)
 
+        # The source produced bytes, so any negative row still standing for it
+        # is stale — see _clear_unfetchable. A lookup, not a write, on the
+        # overwhelmingly common path where there never was one.
+        self._clear_unfetchable(attachment)
+
         digest = sha256_of(image)
         cached = self.extractions.get(digest)
         if cached is not None:
@@ -214,6 +219,13 @@ class VisionExtractor:
         deleted Slack file is restored) is picked up for free on the very
         next drive — this only ever suppresses the DUPLICATE dead letter for
         an identical, still-unfetchable source.
+
+        "Still-unfetchable" is enforced, not merely asserted:
+        `_clear_unfetchable` retires this row the moment the same source does
+        produce bytes, so a later failure of a URL that worked in between is
+        a new incident and dead-letters again. Without that, the suppression
+        would be "one dead letter per source, ever", which is not what this
+        docstring promises and is a silent hole in the dead-letter table.
         """
         content = str(attachment.get("content") or "")
         if not content:
@@ -233,6 +245,31 @@ class VisionExtractor:
         return self.extractions.record_unfetchable(
             url_sha256=url_key, extraction=self._unread_extraction(name, reason)
         )
+
+    def _clear_unfetchable(self, attachment: dict) -> None:
+        """Retire the negative row once this source actually fetches.
+
+        `_record_unfetchable`'s suppression is scoped to a source that is
+        STILL unfetchable, and this is what makes that scope real rather than
+        aspirational. Without it the row is permanent: URL `U` fails once
+        (dead letter recorded, negative row written), later becomes fetchable
+        and is extracted normally under `sha256(bytes)` — a DIFFERENT key, so
+        the negative row survives untouched — and a genuinely new failure of
+        `U` months later finds that stale row and is never dead-lettered.
+        Silent, and in the one table whose entire purpose is that a failure
+        is never silent.
+
+        Cheap by construction: `get_by_url` is a single indexed lookup on a
+        unique column, and it returns None on every path that never had a
+        negative row, so no write happens on the ordinary success path. This
+        sits after `_bytes_for` has already done an HTTP fetch, which it is
+        free against.
+        """
+        content = str(attachment.get("content") or "")
+        if not content:
+            # Same guard _record_unfetchable uses: no source string, no key.
+            return
+        self.extractions.clear_unfetchable(sha256_of(content.encode()))
 
     def _store(
         self, digest: str, image: bytes, media_type: str, extraction: VisionExtraction, *, model: str

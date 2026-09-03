@@ -26,6 +26,28 @@ class ImageExtractionRepository:
         stmt = select(ImageExtractionRow).where(ImageExtractionRow.url_sha256 == url_sha256)
         return self.session.execute(stmt).scalar_one_or_none()
 
+    def clear_unfetchable(self, url_sha256: str) -> bool:
+        """Forget the negative row for a source that has since produced bytes.
+        True if there was one.
+
+        Only a `record_unfetchable` row can match: `url_sha256` is NULL on
+        every ordinary image-bytes row (nullable, unique, no server_default —
+        see ImageExtractionRow), so this can never delete a real extraction.
+
+        Why it must be forgotten: the negative row suppresses the DUPLICATE
+        dead letter for an identical, still-unfetchable source (item 19). A
+        source that has just been fetched successfully is not still
+        unfetchable, so a LATER failure of it is a new incident, not a repeat
+        of the old one — and without this it would be silently swallowed for
+        ever, in the one table whose job is that a failure is never silent.
+        """
+        row = self.get_by_url(url_sha256)
+        if row is None:
+            return False
+        self.session.delete(row)
+        self.session.commit()
+        return True
+
     def record_unfetchable(
         self, *, url_sha256: str, extraction: VisionExtraction
     ) -> ImageExtractionRow:

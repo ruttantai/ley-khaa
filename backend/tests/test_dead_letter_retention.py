@@ -82,3 +82,37 @@ def test_a_negative_cap_also_clamps_to_at_least_one(session, dead_letter_cap):
     assert len(rows) >= 1
     assert rows[0].id == newest.id
     assert rows[0].reason == "second"
+
+
+def test_a_non_numeric_cap_falls_back_to_the_default_instead_of_killing_the_import(
+    monkeypatch, caplog
+):
+    """The typo version of the same operator mistake the clamp above handles.
+
+    `LEY_KHAA_DEAD_LETTER_MAX_ROWS=lots` used to raise `ValueError` inside
+    `import ley_khaa.config` — before any logging is configured, so the
+    service simply did not start. That is the opposite posture to the clamp
+    two lines away, which went to real trouble to make a MISCONFIGURED
+    retention cap non-fatal. A retention cap must not be able to stop the
+    service, whichever way it is wrong.
+
+    `_tolerant_int` is exercised directly rather than through
+    `importlib.reload(config)`: reloading that module rebinds
+    `ley_khaa.config.settings` to a new object while every
+    `from ..config import settings` importer keeps the old one, which is the
+    documented cause of this suite's one order-dependence (CHANGELOG, Known
+    limits). Not worth adding a second instance of it to test a pure
+    function.
+    """
+    from ley_khaa.config import _tolerant_int
+
+    monkeypatch.setenv("LEY_KHAA_DEAD_LETTER_MAX_ROWS", "lots")
+    with caplog.at_level("WARNING", logger="ley_khaa.config"):
+        assert _tolerant_int("LEY_KHAA_DEAD_LETTER_MAX_ROWS", 1000) == 1000
+    assert "not an integer" in caplog.text, "a silently ignored typo is worse than a loud one"
+
+    monkeypatch.setenv("LEY_KHAA_DEAD_LETTER_MAX_ROWS", "25")
+    assert _tolerant_int("LEY_KHAA_DEAD_LETTER_MAX_ROWS", 1000) == 25
+
+    monkeypatch.delenv("LEY_KHAA_DEAD_LETTER_MAX_ROWS")
+    assert _tolerant_int("LEY_KHAA_DEAD_LETTER_MAX_ROWS", 1000) == 1000

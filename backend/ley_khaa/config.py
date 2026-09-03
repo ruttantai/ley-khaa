@@ -1,5 +1,38 @@
+import logging
 import os
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
+
+
+def _tolerant_int(name: str, default: int) -> int:
+    """An int setting whose typo must not stop the service.
+
+    The file's other int settings use a bare `int(os.getenv(...))`, which
+    raises `ValueError` during `import ley_khaa.config` — before logging is
+    configured, so the operator gets a traceback and no service. That is the
+    right posture for most of them and it is deliberately left alone.
+
+    `dead_letter_max_rows` is the exception, for the same reason its zero is
+    clamped rather than rejected (`DeadLetterRepository._prune`): it is a
+    RETENTION cap read from inside the notifier's own exception handlers, and
+    the ruling that put the clamp there was explicit that a misconfigured
+    retention cap must never stop the service. Rejecting `lots` at import
+    while clamping `0` at use would be two opposite answers to the same
+    operator mistake, two lines apart. So a value that is not an integer
+    falls back to the default, loudly.
+    """
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        # No logging configuration exists yet at import time, so this goes to
+        # the lastResort handler on stderr. Visible is the requirement; a
+        # configured sink is a bonus.
+        logger.warning("%s=%r is not an integer; falling back to %d", name, raw, default)
+        return default
 
 
 @dataclass(frozen=True)
@@ -84,7 +117,7 @@ class Settings:
     # page size (see DeadLetterRepository.list), generous enough to
     # investigate an incident without holding history forever. An operator
     # can raise it.
-    dead_letter_max_rows: int = int(os.getenv("LEY_KHAA_DEAD_LETTER_MAX_ROWS") or "1000")
+    dead_letter_max_rows: int = _tolerant_int("LEY_KHAA_DEAD_LETTER_MAX_ROWS", 1000)
 
 
 settings = Settings()
