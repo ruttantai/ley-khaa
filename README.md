@@ -25,6 +25,16 @@ generator code, exact inputs, seeded manifest — so any result can be audited a
 
 ## Status
 
+**v0.10.0 — release hardening.** No new features: ten defects fixed — nine of them carried in the
+project's own backlog — each pinned by a test that fails without the fix, plus two gates that did
+not exist, plus four more defects the branch's own whole-branch review found and this release fixes.
+The backend is typechecked by **mypy** in CI: "typecheck clean" is a definition-of-done line in
+three of the five phase specs since v0.5.0 — Phases 4, 6 and 7 name it, Phases 5 and 8 do not — and
+until now only the frontend had a typechecker to satisfy it. The suite now also runs a second time
+against **Postgres 16**, the database `docker compose up` actually deploys, so a dialect-dependent
+defect can no longer pass everywhere it is checked. See the [CHANGELOG](CHANGELOG.md) for what
+changed and what is deliberately still open.
+
 **v0.9.0 — Ollama offline fallback.** With no `ANTHROPIC_API_KEY`, `LEY_KHAA_LLM=ollama` runs a real
 local model (default `qwen2.5`) for every stage instead of the regex stand-in. The backend is chosen
 once at startup, not retried mid-session, and vision stays text-only either way. See
@@ -63,6 +73,7 @@ relevance filtering and crystallization run on every message regardless, caches 
 | 6 | `v0.7.0` | Real Slack and Discord **channel adapters**, ingesting and notifying | ✅ shipped |
 | 7 | `v0.8.0` | **Vision intake** — an image read once and frozen as a reproducible checkpoint | ✅ shipped |
 | 8 | `v0.9.0` | **Ollama offline fallback** — a real local model with no API key, text-only | ✅ shipped |
+| 9 | `v0.10.0` | **Release hardening** — ten defects (nine from the backlog) plus four its own review found, mypy in CI, a Postgres test lane | ✅ shipped |
 | — | `v1.0.0` | Definition of done (spec §11), release tagged | 🎯 target |
 
 Design spec: [`docs/superpowers/specs/2026-08-18-ley-khaa-design.md`](docs/superpowers/specs/2026-08-18-ley-khaa-design.md).
@@ -91,10 +102,12 @@ docker compose up
     `project` the resulting task(s) landed in and whether it's `queued` (in the default
     `workers` mode the call returns as soon as a task exists, not once it's finished)
   - `GET /candidates` — task candidates and their state
-  - `GET /projects` — every active project, its queue depth, and the task (if any) currently leased
+  - `GET /projects` — every active project, its queue depth, and the task (if any) currently leased.
+    `queue_depth` counts only tasks still waiting for a worker (excludes DONE/FAILED and whatever is
+    `in_flight`) — it disagrees on purpose with the route below, which lists everything
   - `POST /projects` — create a project; needs a non-empty description, since that's what stage-2
     routing reasons over — an empty one would be unroutable by construction
-  - `GET /projects/{name}/queue` — every task in one project
+  - `GET /projects/{name}/tasks` — every task in one project, any state, DONE and FAILED included
   - `GET /triage` — candidates parked as a possible amendment to an active task, awaiting a human
     decision (see [Amendments](#amendments))
   - `POST /candidates/{id}/fold` — fold a parked candidate into the task it amends
@@ -261,15 +274,22 @@ a project with no description — still shares `default`, and so does its memory
 **Each project drains through its own worker, concurrently with every other project's**, proven by
 `backend/tests/test_concurrency.py`'s barrier test: two projects' workers are made to block until
 both have arrived, which only passes if both are genuinely running at once. Within one project,
-tasks are driven strictly FIFO, one at a time. **Concurrent is not the same as unbounded
-throughput**, and the drain rate is worth knowing before reading this as a queue that empties fast:
-a worker takes exactly **one** task per tick and does not loop, so a project drains one task per
-tick — and the next tick is a whole `LEY_KHAA_SWEEP_SECONDS` (default 15s) later. A tick also waits
-for every project it started before the next one begins, so the slowest project sets the pace for
-all of them: four instant tasks queued behind a project whose own tasks take 1.5s each drain in
-~6s even with the interval removed entirely. This is a known divergence from spec §3.3's "on return
-it releases the lease and loops", deferred deliberately — see
-[the Phase 5 backlog](docs/superpowers/specs/2026-08-28-phase-5-backlog.md).
+tasks are driven strictly FIFO, one at a time. **A project drains its whole backlog in one tick**
+(v0.10.0, backlog item 11): the worker loops claim → drive → release until every runnable task has
+had a turn, rather than taking one task and waiting a whole `LEY_KHAA_SWEEP_SECONDS` (default 15s)
+for the next. The per-project concurrency slot is held per *task*, not for the whole drain, so a
+project with a deep backlog does not occupy one while it works through it.
+
+Precisely: **one attempt per task per tick**, which is not the same as "until nothing runnable is
+left". A task the driver deliberately leaves where it is — a retryable interpretation failure, a
+claim race lost to another worker, the step ceiling — is still runnable when the tick ends, and gets
+its next attempt on the next tick. What it does *not* do is hold up the queue: the drain steps past
+it to the rest of the backlog, the same way it steps past a poison-failed or race-lost head task.
+
+**Concurrent is still not the same as unbounded throughput.** A tick returns only once every project
+it started has finished, so the slowest project sets that tick's duration — what it no longer sets is
+how fast the other projects' own queues advance. And work that arrives for a project the tick did not
+start with still waits for the next one, up to a full sweep interval.
 
 Queue reordering by urgency is not built: urgency lives in the `TaskSpec`, which is only known
 after a task has already been interpreted and dequeued.
@@ -341,9 +361,10 @@ What the channel is for, and what it is not:
   open still creates its own task, rather than being swallowed into the parked one. The trade is
   deliberate: an answer phrased like a request forms a task instead, which you resolve from the
   dashboard's Answer box.
-- **One question per state.** Notification fires when a task's state *changes*, so if a task is
-  re-asked a second question without leaving `needs_clarification` in between, that second question
-  is not sent to the channel. It is visible in the dashboard (backlog item 17).
+- **Every question is delivered, including a second one.** Notification is guarded by a
+  compare-and-swap on the state *and* the question text (v0.10.0, backlog item 17), so a task asked a
+  new question without leaving `needs_clarification` in between still gets it sent to the thread,
+  while a re-drive that would repeat the same question does not.
 - **It is not a control panel.** Approve, reject and mode override stay in the dashboard, because
   approval releases work to run unattended and a channel has no notion of who may do that.
 - **The bot never ingests its own messages**, so a notification cannot become a new request.
@@ -405,8 +426,8 @@ regardless of which attachment happened to be pasted first.
   if a table is misread the checkpoint stays wrong until its row is cleared.
 - Images are never stored, only their extraction — an image whose URL has expired cannot be
   re-read, and re-driving a task past that point asks a human instead of guessing (see "The
-  extraction is frozen" above). Backlog item 19 tracks a secondary cache key that would let a
-  re-drive skip needing the URL to still resolve at all.
+  extraction is frozen" above). Backlog item 32 tracks the url→digest index that would let a
+  re-drive reach an already-frozen extraction without the URL still resolving.
 - **Not live-tested against a real Slack or Discord image.** Everything here is proven offline and
   against recorded transports, the same call made for the channel adapters in 0.7.0.
 - The Ollama offline fallback (below) is text-only: vision does not work on that path either.
@@ -477,10 +498,26 @@ cd frontend && npm install && npm run dev
 ## Develop
 
 ```bash
-cd backend  && python -m pytest -q   # 639 tests
-cd frontend && npm test              # 49 tests (vitest)
+cd backend  && python -m pytest -q   # 1038 tests, on SQLite; needs nothing installed
+                                     # on Colima/Rancher/Lima the docker tests also want
+                                     # TMPDIR under $HOME — GETTING_STARTED.md §7 says why
+cd backend  && python -m mypy        # typecheck; default settings, config in backend/pyproject.toml
+cd frontend && npm test              # 58 tests (vitest)
 cd frontend && npm run typecheck     # `npm run build` is transpile-only; this is the real check
 ```
+
+Both typechecks fail the build in CI, not just warn. The backend suite also runs against **Postgres**
+— the database `docker compose up` actually deploys — and CI runs both lanes:
+
+```bash
+cd backend && DATABASE_URL=postgresql+psycopg://ley:ley@localhost:5432/leykhaa \
+              python -m pytest -q --database=postgres
+```
+
+`--database` asserts only: it fails the run if the lane you asked for is not the lane you got, so a
+lost `DATABASE_URL` cannot quietly re-run SQLite and report it as Postgres. The tests build their
+own `ley_khaa_test` schema; see [CONTRIBUTING](CONTRIBUTING.md) for what that does and does not
+guarantee about your own compose data.
 
 The sandbox contract tests run against a real container, so build the image once
 (`docker build -t ley-khaa-sandbox backend/sandbox`) or every `[docker]` parameter skips.

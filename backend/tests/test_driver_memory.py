@@ -276,3 +276,38 @@ def test_a_task_whose_text_is_all_stopwords_finishes_without_being_remembered(se
 
     memories = MemoryRepository(session)
     assert memories.for_project("default") == []
+
+
+def test_remember_does_not_even_ask_the_repository_about_an_empty_fingerprint(session):
+    """Backlog item 7: `_remember`'s own guard, as distinct from the invariant
+    it shares with the repository.
+
+    `MemoryRepository.record` refuses an empty fingerprint too, so the test
+    above — no row is written — passes with `_remember`'s `if not fingerprint:
+    return` deleted. What only the driver's guard provides is that the question
+    is never asked: with it gone, `record()` is called (and `TaskSpec` is
+    validated) for every task whose text fingerprints to nothing, and the
+    invariant lives in one layer instead of two.
+    """
+    calls: list[str] = []
+
+    class SpyMemories(MemoryRepository):
+        def record(self, **kwargs):
+            calls.append(kwargs["fingerprint"])
+            return super().record(**kwargs)
+
+    blank_text = "the and"
+    assert request_fingerprint([blank_text]) == ""
+
+    repo, messages, task = _make_task(session, blank_text)
+    driver = TaskDriver(
+        repo, llm=FakeLLM([_spec(intent=blank_text)]), messages=messages,
+        candidates=CandidateRepository(session), memories=SpyMemories(session),
+    )
+    driver.executor.run = lambda row, spec: ExecutionOutcome(
+        verdict=Verdict(ok=True, reason="stubbed pass", checks={}),
+        workspace_path="/bundles/blank", attempts=1,
+    )
+
+    assert driver.advance(task.id).state == TaskState.DONE.value
+    assert calls == []

@@ -5,6 +5,7 @@ constructed anywhere else.
 """
 from __future__ import annotations
 
+import builtins
 import hashlib
 import uuid
 from datetime import datetime, timezone
@@ -12,7 +13,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from .orm import WorkflowRow
+from .orm import WorkflowRow, rows_affected
 
 
 class DuplicateWorkflow(Exception):
@@ -65,10 +66,12 @@ class WorkflowRepository:
             select(WorkflowRow).where(WorkflowRow.name == name)
         ).one_or_none()
 
-    def list(self) -> list[WorkflowRow]:
+    def list(self) -> builtins.list[WorkflowRow]:
+        # builtins.list, here and below: this method shadows the builtin inside
+        # the class body, so a bare `list[...]` annotation names the method.
         return list(self.session.scalars(select(WorkflowRow).order_by(WorkflowRow.name)))
 
-    def active(self) -> list[WorkflowRow]:
+    def active(self) -> builtins.list[WorkflowRow]:
         """What the matcher is allowed to consider."""
         return [row for row in self.list() if not row.quarantined]
 
@@ -111,22 +114,10 @@ class WorkflowRepository:
                     .values(operation_aliases=current + [learned_alias])
                 )
                 self.session.commit()
-                if result.rowcount == 1:
+                if rows_affected(result) == 1:
                     break
                 self.session.expire(row)
 
-        # Bulk UPDATE bypasses the unit of work: it does not touch the
-        # identity map, so the caller's own in-session copy of this row (if
-        # one was already loaded) still shows the pre-update values until
-        # something expires it. expire() this one row, not expire_all() —
-        # the caller's session is shared with the rest of a request's
-        # read/write cycle (runner.py re-reads a TaskRow right after this
-        # call returns), and blanket-expiring every unrelated object in it
-        # for a write this method makes to one WorkflowRow is collateral
-        # damage, not a requirement.
-        cached = self.get(name)
-        if cached is not None:
-            self.session.expire(cached)
         return self._row(name)
 
     def record_failure(self, name: str) -> WorkflowRow:
@@ -136,9 +127,6 @@ class WorkflowRepository:
             .values(runs_failed=WorkflowRow.runs_failed + 1, quarantined=True)
         )
         self.session.commit()
-        cached = self.get(name)
-        if cached is not None:
-            self.session.expire(cached)
         return self._row(name)
 
     def unquarantine(self, name: str) -> WorkflowRow:

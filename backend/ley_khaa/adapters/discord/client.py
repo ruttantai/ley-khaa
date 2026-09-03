@@ -14,9 +14,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from ..base import AdapterError, Destination, TranslationError
 from .translate import SOURCE, conversation_parts, translate
+
+if TYPE_CHECKING:  # pragma: no cover - annotations only
+    # Imported for annotations only. The runtime import stays inside start(),
+    # so a token-free process still never loads discord (see build_adapters).
+    import discord
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +79,7 @@ class DiscordAdapter:
         self.allowed_channels = allowed_channels
         self.ingest = ingest
         self.dead_letter = dead_letter
-        self.client = None
+        self.client: discord.Client | None = None
         self.bot_user_id: str | None = None
 
     def __repr__(self) -> str:  # pragma: no cover - trivial, but load-bearing
@@ -90,23 +96,28 @@ class DiscordAdapter:
         # to make visible. GETTING_STARTED says so too.
         intents = discord.Intents.default()
         intents.message_content = True
-        self.client = discord.Client(intents=intents)
+        # Bound to a local as well as to self: stop() may clear the attribute
+        # while these callbacks are still registered, and a local is what makes
+        # each of them provably operate on the client it was created with.
+        client = discord.Client(intents=intents)
+        self.client = client
 
-        @self.client.event
+        @client.event
         async def on_ready() -> None:
-            self.bot_user_id = str(self.client.user.id)
+            user = client.user
+            self.bot_user_id = str(user.id) if user is not None else None
             logger.info(
                 "discord adapter listening on %d channel(s): %s",
                 len(self.allowed_channels),
                 ", ".join(sorted(self.allowed_channels)) or "(none — ingesting nothing)",
             )
 
-        @self.client.event
+        @client.event
         async def on_message(message) -> None:
             await self._handle(flatten(message))
 
         try:
-            await self.client.start(self._bot_token)
+            await client.start(self._bot_token)
         except Exception as exc:
             raise AdapterError(f"Discord gateway failed: {type(exc).__name__}") from exc
 
@@ -173,16 +184,38 @@ class DiscordAdapter:
             parent = self.client.get_channel(int(channel_id))
             if parent is None:
                 raise AdapterError(f"discord channel {channel_id} is not visible to this bot")
+            # A snowflake resolves to whatever kind of channel it names, and a
+            # category, a forum or a voice channel holds no messages to anchor a
+            # thread to. The reachable one is a FORUM: a forum post IS a thread,
+            # so its conversation id carries the forum as the parent, and the
+            # moment that thread falls out of the client's cache (a restart, an
+            # archive) this branch runs against the forum itself. Unguarded it
+            # raised a bare AttributeError, which the notifier dead-lettered
+            # under a name that says nothing about the cause.
+            get_partial_message = getattr(parent, "get_partial_message", None)
+            if get_partial_message is None:
+                raise AdapterError(
+                    f"discord channel {channel_id} is a {type(parent).__name__}, "
+                    "which cannot hold the message a thread is started from"
+                )
             # Start the thread FROM the anchoring message. Discord gives a
             # thread created this way that message's own id — exactly the
             # anchor `conversation_parts` derives — so the human's reply lands
             # back under the same conversation_id and routes to this task.
             # Posting into the channel instead would mint a new conversation
             # and orphan the answer.
-            target = await parent.get_partial_message(int(anchor)).create_thread(
+            target = await get_partial_message(int(anchor)).create_thread(
                 name=_thread_name(text)
             )
-        await target.send(text)
+        # Same reasoning as the guard above, one level out: whatever `anchor`
+        # resolved to has to be something that can be posted into.
+        send = getattr(target, "send", None)
+        if send is None:
+            raise AdapterError(
+                f"discord conversation {dest.conversation_id} resolved to a "
+                f"{type(target).__name__}, which cannot be posted into"
+            )
+        await send(text)
 
 
 def _thread_name(text: str) -> str:

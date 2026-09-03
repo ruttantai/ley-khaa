@@ -123,6 +123,39 @@ def test_an_unread_record_is_storable(session):
     assert "was not read" in row.summary
 
 
+def test_an_unfetchable_source_is_findable_by_its_url_hash(session):
+    """The second key space (backlog #19): a source with no image bytes is
+    looked up by url_sha256, not image_sha256."""
+    repo = ImageExtractionRepository(session)
+    url_key = sha256_of(b"https://evil.example.com/a.png")
+
+    assert repo.get_by_url(url_key) is None
+
+    row = repo.record_unfetchable(
+        url_sha256=url_key,
+        extraction=_extraction(kind="text", content="", summary="a.png was not read"),
+    )
+
+    assert row.content == ""
+    assert row.url_sha256 == url_key
+    assert row.image_sha256 == url_key, "no image bytes exist, so the source hash is the identity"
+    assert repo.get_by_url(url_key) is row or repo.get_by_url(url_key).image_sha256 == row.image_sha256
+
+
+def test_an_ordinary_image_row_has_no_url_sha256(session):
+    """A normal image-bytes row must not accidentally acquire a url key."""
+    repo = ImageExtractionRepository(session)
+    row = repo.record(
+        image_sha256=sha256_of(IMAGE),
+        extraction=_extraction(),
+        media_type="image/png",
+        byte_size=len(IMAGE),
+        model="heuristic",
+    )
+
+    assert row.url_sha256 is None
+
+
 @pytest.mark.parametrize("kind", ["png", "csv", "", "TABLE"])
 def test_a_kind_outside_the_closed_set_is_rejected(kind):
     """kind decides the checkpoint's file extension. A model returning

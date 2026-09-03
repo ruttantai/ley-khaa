@@ -2,8 +2,10 @@
 
 A first run of ley-khaa, from a fresh clone to a finished task with a downloadable deliverable.
 
-Every step below was run on macOS (Apple Silicon, Docker via Colima) against `v0.6.0`. Where a step
-produces output worth checking, the real output is shown.
+Every step below was run on macOS (Apple Silicon, Docker via Colima). The walkthrough was first
+recorded against `v0.6.0` and its commands, output and test counts are kept current with the
+released tag — `v0.10.0` at the time of writing. Where a step produces output worth checking, the
+real output is shown.
 
 ---
 
@@ -314,11 +316,38 @@ Reinstall: `cd backend && pip install -e ".[dev]"`.
 ## 8. Running the tests
 
 ```bash
-mkdir -p "$HOME/tmp"
-cd backend  && TMPDIR="$HOME/tmp" python -m pytest -q   # 639 passed, 0 skipped, 0 warnings
-cd frontend && npm test                                  # 49 passed
-cd frontend && npm run typecheck                         # npm run build is transpile-only
+cd backend  && python -m pytest -q   # 1038 passed, 0 skipped, 0 warnings
+cd backend  && python -m mypy        # CI fails the build on any error
+cd frontend && npm test              # 58 passed
+cd frontend && npm run typecheck     # npm run build is transpile-only
 ```
+
+No `TMPDIR` is needed, and CI sets none. If you are on **Colima, Rancher or Lima**, the
+docker-parametrized tests are the exception — those runtimes mount only `$HOME` — and
+[§7 Troubleshooting](#7-troubleshooting) has the `mkdir -p "$HOME/tmp" && TMPDIR="$HOME/tmp"` form
+and the reason for it. It is a workaround for one container runtime, not something the suite
+requires.
+
+The backend suite runs on SQLite by default, which needs nothing installed. It also runs against
+**Postgres** — the database `docker compose up` deploys — and CI runs both lanes:
+
+```bash
+docker run -d --name leykhaa-test-pg -e POSTGRES_USER=ley -e POSTGRES_PASSWORD=ley \
+  -e POSTGRES_DB=leykhaa -p 5432:5432 postgres:16
+cd backend && DATABASE_URL=postgresql+psycopg://ley:ley@localhost:5432/leykhaa \
+              python -m pytest -q --database=postgres
+```
+
+`--database` asserts only — it fails the run if the lane you asked for is not the lane you got, so a
+lost `DATABASE_URL` cannot quietly re-run SQLite and report it as Postgres. The tests build their own
+`ley_khaa_test` schema; [CONTRIBUTING](../CONTRIBUTING.md) says what that does and does not guarantee
+about a database of your own.
+
+**Run them in pytest's own order.** The suite is green in the default (alphabetical) file order and
+has exactly one failure in reverse file order, identically on both lanes — a test that reloads the
+config module and leaves a rebound `settings` object behind it. That is a test-cleanup defect, not a
+defect in the shipped code; it is [backlog item
+25](superpowers/specs/2026-08-28-phase-5-backlog.md), with a three-file reproducer.
 
 Build the sandbox image once, or all 9 `[docker]` contract parameters silently skip:
 
@@ -354,12 +383,21 @@ The channel adapters shipped in 0.7.0 (see §5.5), with these limits:
 - Approve, reject and mode override are dashboard actions. There are no interactive buttons, so a
   phone-only workflow is not possible.
 - Notification is best-effort with dead-lettering, not a durable outbox.
-- A task the dispatcher fails after it outlives `max_lease_attempts` does not notify — that one
-  path has no notifier (backlog item 16).
-- A second question asked without the task leaving `needs_clarification` in between is not sent to
-  the channel; notification is keyed on a state change (backlog item 17).
-- `dead_letters` has no retention (backlog item 18).
+- Dead-letter payloads are scrubbed, not sanitised: the redactor recognises Slack `xox*`/`xapp*`
+  prefixes and `Bearer` headers, and nothing else — a raw base64 secret has no distinctive shape.
+  Nothing writes one into a payload today; treat the panel as diagnostics.
 - Non-image attachments are carried, not understood — a PDF or a spreadsheet reaches the interpreter
   as a URL, never fetched. Images are read (see §5.6 above), except with no `ANTHROPIC_API_KEY`,
   where an image is carried the same way.
 - One workspace per platform, and threads only — no DMs.
+
+**v0.10.0 closed twelve of the entries in
+[the Phase 5 backlog](superpowers/specs/2026-08-28-phase-5-backlog.md)** — among them the three that
+used to be listed here: a poisoned task now notifies when it fails, a second clarifying question is
+delivered, and `dead_letters` has a row cap. Six entries stay open **by decision**, each with its
+reason written down in that file: memory does not learn paraphrases the way the registry learns
+aliases (1), the recall candidate cap wants measurement before it is changed (2), task memory has no
+management surface (3), a same-backend vision failure stays frozen under that image's digest (20),
+vision is text-only on the Ollama path (21), and there is no runtime step-down between backends (22).
+Eleven new entries (23–33) were filed the same way — mostly about the new gates' own blind spots,
+such as migrations still being exercised on SQLite only.

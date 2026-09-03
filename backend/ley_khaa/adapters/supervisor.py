@@ -14,6 +14,8 @@ import logging
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 
+from sqlalchemy.orm import Session
+
 from ..config import settings
 from ..persistence.dead_letter_repository import DeadLetterRepository
 from .base import ChannelAdapter, channel_set
@@ -28,7 +30,7 @@ class AdapterSupervisor:
         self,
         adapters: Sequence[ChannelAdapter],
         *,
-        session_factory: Callable[[], object],
+        session_factory: Callable[[], Session],
         base_backoff: float = 1.0,
         max_backoff: float = 60.0,
     ) -> None:

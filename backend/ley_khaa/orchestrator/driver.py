@@ -14,7 +14,7 @@ from ..executor.runner import ExecutionRunner
 from ..executor.sandbox import SandboxUnavailable
 from ..interpreter.interpreter import Interpreter, MalformedSpec
 from ..interpreter.spec import TaskSpec
-from ..llm.client import LLMClient
+from ..llm.client import EmptyModelResponse, LLMClient
 from ..memory.fingerprint import request_fingerprint
 from ..memory.matcher import MemoryMatcher
 from ..persistence.candidate_repository import CandidateRepository
@@ -92,20 +92,33 @@ class TaskDriver:
         self._announce(row)
         return row
 
+    def _require(self, task_id: str) -> TaskRow:
+        """The task, or KeyError — the same answer every entry point in this
+        class already gives for a task id it cannot resolve.
+
+        Every re-read below happens after the row has already been read once,
+        so this only fires if the row went away underneath us. Returning the
+        None instead would hand a caller (or _announce) a task-shaped hole
+        typed as a TaskRow, which is how a missing row turns into an
+        AttributeError several frames from the cause.
+        """
+        row = self.repo.get(task_id)
+        if row is None:
+            raise KeyError(task_id)
+        return row
+
     def _drive(self, task_id: str) -> TaskRow:
         for _ in range(_MAX_STEPS):
-            row = self.repo.get(task_id)
-            if row is None:
-                raise KeyError(task_id)
+            row = self._require(task_id)
             state = TaskState(row.state)
             if state in _WAITING:
                 return row
             if not _STEPS[state](self, row):
                 # No progress: a lost claim (another caller won the race) or a
                 # retryable failure. Either way, stop here.
-                return self.repo.get(task_id)
+                return self._require(task_id)
         logger.warning("task %s hit the step ceiling; leaving it where it is", task_id)
-        return self.repo.get(task_id)
+        return self._require(task_id)
 
     def hand_off(self, task_id: str) -> TaskRow:
         """Carry on after something made this task runnable.
@@ -120,7 +133,7 @@ class TaskDriver:
         """
         if settings.dispatch_mode == "inline":
             return self.advance(task_id)
-        return self.repo.get(task_id)
+        return self._require(task_id)
 
     # --- human actions ----------------------------------------------------
 
@@ -143,7 +156,7 @@ class TaskDriver:
         if not self.repo.claim(task_id, expected=state, target=TaskState.FAILED):
             raise InvalidTransition(f"task {task_id} cannot be rejected from {row.state}")
         self.repo.record_failure(task_id, reason)
-        row = self.repo.get(task_id)
+        row = self._require(task_id)
         # reject() moves a task to FAILED on its own, so advance()'s single exit
         # point does not cover it. Without this the human who was waiting on the
         # question is never told the task is over.
@@ -173,7 +186,7 @@ class TaskDriver:
             raise InvalidTransition(
                 f"task {task_id} moved on from {state.value} before the mode change applied"
             )
-        row = self.repo.get(task_id)
+        row = self._require(task_id)
         if TaskState(row.state) is TaskState.AWAITING_APPROVAL:
             # Send it back through the gate so the new mode is actually applied.
             # This is what makes flipping the dial to Auto release a parked task.
@@ -250,27 +263,50 @@ class TaskDriver:
             return self.repo.claim(
                 row.id, expected=TaskState.CLASSIFIED, target=TaskState.NEEDS_CLARIFICATION
             )
+        except EmptyModelResponse as exc:
+            # A content problem, not a broken connection: the model returned
+            # no parsed output (most likely max_tokens truncating an
+            # oversized prompt). This must not be recorded as "unavailable"
+            # — that label sends an operator hunting for a network or
+            # API-key problem that does not exist, and the real cause (the
+            # prompt was too long) appears nowhere. Same retry bookkeeping as
+            # any other interpretation failure (see _fail_interpret); whether
+            # to retry with a shortened prompt or escalate to a human sooner
+            # is a design decision, filed to the phase's closure task — out
+            # of scope here.
+            return self._fail_interpret(row, cause=str(exc))
         except Exception:
             # A broken connection is not a broken request. Leave the task in
             # CLASSIFIED and let the sweeper try again — that retry loop already
             # exists, so no backoff machinery is needed here.
-            attempts = self.repo.increment_interpret_attempts(row.id)
-            logger.exception("interpreting task %s failed (attempt %d)", row.id, attempts)
-            if attempts >= _MAX_INTERPRET_ATTEMPTS:
-                # Claim before recording: the same inversion c043c46 fixed in
-                # reject(). Recording first would stamp a failure_reason onto a
-                # task whose transition to FAILED then lost the race (another
-                # caller already moved it), corrupting the record of whatever
-                # that caller's outcome was.
-                if self.repo.claim(
-                    row.id, expected=TaskState.CLASSIFIED, target=TaskState.FAILED
-                ):
-                    self.repo.record_failure(
-                        row.id, f"interpreter unavailable after {attempts} attempts"
-                    )
-            return False
+            return self._fail_interpret(row, cause=None)
 
         return self._after_spec(row, spec)
+
+    def _fail_interpret(self, row: TaskRow, *, cause: str | None) -> bool:
+        """Shared bookkeeping for every interpretation failure: same attempt
+        counter, same retry threshold, same claim-before-record ordering
+        (c043c46) regardless of what went wrong. Only `cause` differs by
+        branch — when known, it replaces the generic "unavailable" label so
+        the recorded reason names what actually happened rather than lumping
+        every failure into one bucket.
+        """
+        attempts = self.repo.increment_interpret_attempts(row.id)
+        logger.exception("interpreting task %s failed (attempt %d)", row.id, attempts)
+        if attempts >= _MAX_INTERPRET_ATTEMPTS:
+            # Claim before recording: the same inversion c043c46 fixed in
+            # reject(). Recording first would stamp a failure_reason onto a
+            # task whose transition to FAILED then lost the race (another
+            # caller already moved it), corrupting the record of whatever
+            # that caller's outcome was.
+            if self.repo.claim(row.id, expected=TaskState.CLASSIFIED, target=TaskState.FAILED):
+                reason = (
+                    f"interpreter failed after {attempts} attempts: {cause}"
+                    if cause is not None
+                    else f"interpreter unavailable after {attempts} attempts"
+                )
+                self.repo.record_failure(row.id, reason)
+        return False
 
     def _recall(self, row: TaskRow) -> MemoryRow | None:
         if self.memory is None:
@@ -453,7 +489,19 @@ class TaskDriver:
                 # No originating message means no channel to answer into. A
                 # task created directly (a test, a future CLI) is not a failure.
                 return
-            if not self.repo.mark_notified(row.id, row.state):
+            # The question is only part of the compare-and-swap key for
+            # NEEDS_CLARIFICATION (backlog item 17: a second, different
+            # question asked without leaving the state must still be
+            # delivered). Every other NOTIFY_STATE keeps the original
+            # state-only behaviour — open_question is not guaranteed cleared
+            # by the time e.g. AWAITING_APPROVAL is reached, and folding it
+            # into the key there is not what this fix is for.
+            question = (
+                row.open_question
+                if row.state == TaskState.NEEDS_CLARIFICATION.value
+                else None
+            )
+            if not self.repo.mark_notified(row.id, row.state, question):
                 return
             self.notifier.notify(dest, text)
         except Exception:

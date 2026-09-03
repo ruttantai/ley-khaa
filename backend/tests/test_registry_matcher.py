@@ -70,6 +70,26 @@ def test_a_low_confidence_answer_is_not_a_match(session):
     assert RegistryMatcher(repo, llm).match(_spec(operation="compare_lists"), _resolved()) is None
 
 
+def test_confidence_exactly_at_the_floor_is_a_match(session):
+    """Backlog item 7: only floor - 0.01 was pinned, as a miss, so `<` and `<=`
+    were indistinguishable and the boundary itself was undefined by test.
+
+    The floor is a `<` for a reason worth stating: it is the *minimum* evidence
+    the model has to supply, so an answer that meets it exactly is admitted.
+    Reading it as an exclusive bound would silently narrow the cache by one
+    representable step at the one confidence a model is most likely to report.
+    """
+    repo = _seed(session)
+    llm = FakeLLM(responses=[
+        RegistryDecision(workflow="set_difference", confidence=CONFIDENCE_FLOOR, reason="exactly")
+    ])
+
+    match = RegistryMatcher(repo, llm).match(_spec(operation="compare_lists"), _resolved())
+
+    assert match is not None
+    assert match.matched_by == "model"
+
+
 def test_a_model_naming_a_workflow_that_does_not_exist_is_not_a_match(session):
     """Model output is untrusted here exactly as it is in the crystallizer."""
     repo = _seed(session)

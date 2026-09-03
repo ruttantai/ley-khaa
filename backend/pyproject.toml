@@ -1,6 +1,6 @@
 [project]
 name = "ley-khaa"
-version = "0.6.0"
+version = "0.10.0"
 description = "AI secretary — turns conversations into validated work"
 requires-python = ">=3.12"
 dependencies = [
@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "httpx>=0.27"]
+dev = ["pytest>=8", "httpx>=0.27", "mypy==2.3.1"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -38,6 +38,24 @@ ley_khaa = [
     "alembic/script.py.mako",
     "alembic/versions/*.py",
 ]
+
+[tool.mypy]
+# Default settings, deliberately not --strict (spec §4.1 decision 2): default
+# already catches this codebase's real bug class, while strict is mostly
+# annotation churn. Strict adoption is a post-1.0.0 item.
+files = ["ley_khaa", "docker-entrypoint.py"]
+python_version = "3.12"
+# openpyxl is the one dependency this project imports that ships no type
+# information: with this set to `false` the whole codebase yields exactly one
+# error, `executor/validator.py`'s `import openpyxl`. Every other third-party
+# import here — slack_sdk, python-docx, ollama, alembic, anthropic — ships
+# `py.typed` and is checked normally either way.
+#
+# This is deliberately the blunt global switch rather than a per-module
+# override, which means it also exempts any FUTURE untyped dependency for the
+# sake of that one import. Narrowing it (a `[[tool.mypy.overrides]]` scoped to
+# openpyxl, or `types-openpyxl`) is a backlog item, not a silent default.
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 filterwarnings = [

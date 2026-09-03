@@ -41,6 +41,18 @@ def test_creating_a_project_without_a_description_is_refused(client, session):
     assert "description" in response.json()["detail"].lower()
 
 
+def test_creating_a_project_with_a_malformed_name_is_a_422_not_a_500(client, session):
+    """ProjectIn.name carries the same NAME_PATTERN guard PromoteIn does
+    (backlog item 13): a malformed name is FastAPI's native 422, not a row
+    that gets created and is then unreachable through the API that lists it.
+    """
+    ensure_default_project(session)
+    response = client.post("/projects", json={"name": "Not Valid!", "description": "d"})
+
+    assert response.status_code == 422
+    assert ProjectRepository(session).get("Not Valid!") is None
+
+
 def test_creating_a_duplicate_project_is_a_conflict(client, session):
     ensure_default_project(session)
     body = {"name": "acme", "description": "Acme's books"}
@@ -48,8 +60,8 @@ def test_creating_a_duplicate_project_is_a_conflict(client, session):
     assert client.post("/projects", json=body).status_code == 409
 
 
-def test_the_project_queue_is_in_fifo_order(client, session):
-    """FIFO is by created_at, not by insertion order, and the queue is
+def test_the_project_tasks_route_is_in_fifo_order(client, session):
+    """FIFO is by created_at, not by insertion order, and the list is
     filtered to its own project — both deliberately exercised here rather
     than left true by coincidence.
 
@@ -72,9 +84,9 @@ def test_the_project_queue_is_in_fifo_order(client, session):
     session.get(TaskRow, second.id).created_at = now - timedelta(minutes=5)
     session.commit()
 
-    ids = [t["id"] for t in client.get("/projects/acme/queue").json()]
+    ids = [t["id"] for t in client.get("/projects/acme/tasks").json()]
     assert ids == [second.id, first.id], "FIFO is by created_at, not insertion order"
-    assert other_project.id not in ids, "the queue must be filtered to its own project"
+    assert other_project.id not in ids, "the list must be filtered to its own project"
 
 
 def _parked(session):

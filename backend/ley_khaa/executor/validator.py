@@ -98,7 +98,10 @@ def validate(
             + ", ".join(path.name for path in linked)
             + ") in place of an output file instead of writing one."
         )
-    if not checks["deliverable_exists"]:
+    if primary is None:
+        # `checks["deliverable_exists"]` is exactly this test; asking the
+        # question directly is what tells the rest of the function (and the
+        # typechecker) that `primary` below is a real path.
         return fail("The script finished but produced no output file.")
     if not checks["deliverable_not_empty"]:
         return fail("The script produced an output file, but it is empty.")

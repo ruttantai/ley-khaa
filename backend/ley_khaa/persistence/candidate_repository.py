@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..crystallizer.candidate import CandidateState, ensure_transition
-from .orm import CandidateRow
+from .orm import CandidateRow, rows_affected
 
 
 class CandidateRepository:
@@ -113,7 +113,7 @@ class CandidateRepository:
             .values(state=CandidateState.PROMOTED.value, updated_at=datetime.now(timezone.utc))
         )
         self.session.commit()
-        return result.rowcount == 1
+        return rows_affected(result) == 1
 
     def claim_for_triage(
         self, candidate_id: str, *, task_id: str, reason: str, confidence: float
@@ -139,7 +139,7 @@ class CandidateRepository:
             )
         )
         self.session.commit()
-        return result.rowcount == 1
+        return rows_affected(result) == 1
 
     def claim_for_fold(self, candidate_id: str) -> bool:
         """Take a triaged candidate out of AWAITING_TRIAGE.
@@ -159,7 +159,7 @@ class CandidateRepository:
             )
         )
         self.session.commit()
-        return result.rowcount == 1
+        return rows_affected(result) == 1
 
     def attach_task(self, candidate_id: str, task_id: str) -> CandidateRow:
         """Record the task a claimed candidate produced."""
@@ -215,4 +215,4 @@ class CandidateRepository:
             .values(**values)
         )
         self.session.commit()
-        return result.rowcount == 1
+        return rows_affected(result) == 1

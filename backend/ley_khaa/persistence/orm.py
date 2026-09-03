@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
+from typing import Any, cast
 
 from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.engine import CursorResult, Result
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
@@ -31,6 +33,19 @@ def as_utc(value: datetime) -> datetime:
     mechanism — it cannot be expressed as a datetime helper.
     """
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def rows_affected(result: Result[Any]) -> int:
+    """How many rows an UPDATE or DELETE actually touched.
+
+    `Session.execute` is declared to return the read-shaped `Result`, which has
+    no `rowcount`; a DML statement always yields a `CursorResult`, which does.
+    The cast says that out loud in one place instead of every `.rowcount` call
+    site claiming an attribute its declared type does not have.
+
+    Only ever call this on the result of an UPDATE or a DELETE.
+    """
+    return cast(CursorResult[Any], result).rowcount
 
 
 class TaskRow(Base):
@@ -85,6 +100,20 @@ class TaskRow(Base):
     # repeat its question every pass. NULL means nothing has been announced
     # yet, which is why it must not default to a state.
     last_notified_state: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The open_question text last announced alongside last_notified_state.
+    # State alone under-distinguishes: a task can be asked a SECOND, different
+    # question without ever leaving NEEDS_CLARIFICATION (a reply is answered,
+    # the task is re-interpreted, and a different field is still missing), and
+    # a state-only guard would wrongly treat that as a repeat (backlog item
+    # 17). Nullable like last_notified_state; server_default is only there so
+    # a column added by migration to existing rows lands on a real string
+    # rather than NULL-vs-empty-string ambiguity confusing the drift guard —
+    # see the CLAUDE.md rule on server_default=text("''") for non-null string
+    # columns. This column stays nullable, so the rule is applied defensively
+    # rather than because it is required here.
+    last_notified_question: Mapped[str | None] = mapped_column(
+        String, nullable=True, server_default=text("''")
+    )
 
     @property
     def effective_mode(self) -> str | None:
@@ -317,6 +346,20 @@ class ImageExtractionRow(Base):
     An empty `content` is the "was not read" record (spec §3.6) — no vision
     backend, or an extraction that failed. It is stored rather than skipped so
     a second drive does not retry a fetch that will fail again.
+
+    `url_sha256` is the SECOND key space (backlog #19, spec §3.5): when
+    `_bytes_for` never produces bytes at all — a fetch refused, a body over
+    the size cap, an undecodable payload — there is nothing to hash for
+    `image_sha256`, so the row's identity for that path is the hash of the
+    SOURCE string instead (`image_sha256` is set to the same value as
+    `url_sha256` for these rows; there is no image, so there is no other
+    identity to give the primary key). Nullable and unique: every ordinary
+    image-bytes row leaves it NULL, and a second unfetchable-source row for
+    the identical URL collides on this index rather than inserting a
+    duplicate. No server_default — NULL, not "", is what "not a
+    source-keyed row" must mean, since a shared "" would defeat the
+    uniqueness this column exists for (see MessageRow.external_id for the
+    same nullable+unique+no-default shape).
     """
 
     __tablename__ = "image_extractions"
@@ -329,4 +372,5 @@ class ImageExtractionRow(Base):
     byte_size: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     # Who ACTUALLY produced this — LLMClient.name, never the router's pick.
     model: Mapped[str] = mapped_column(String, default="", server_default=text("''"))
+    url_sha256: Mapped[str | None] = mapped_column(String, nullable=True, index=True, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

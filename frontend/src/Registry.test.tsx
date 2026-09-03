@@ -146,6 +146,33 @@ test("surfaces a failed unquarantine without losing the quarantine badge", async
   expect(screen.getByText(/quarantined/i)).toBeTruthy();
 });
 
+test("re-fetches only when the refresh signal changes, not on every render", async () => {
+  // App lifts a refresh signal so a promotion elsewhere on the page can
+  // trigger a re-fetch here (see App.test.tsx). Registry's effect must
+  // depend on that signal — but `load` sits in the same dependency array
+  // (it is used inside the effect), so if `load` is not memoised with
+  // useCallback, its identity changes every render and the effect re-fires
+  // on every render regardless of the signal: an infinite refetch loop, not
+  // just wasted renders. This test pins BOTH halves as one change, per the
+  // controller's ruling that the useCallback is only observable in
+  // composition with the refresh signal.
+  stubRegistry([workflow({ name: "set_difference" })]);
+  const gets = () => fetchCalls().filter(([, init]) => !init?.method || init.method === "GET").length;
+
+  const { rerender } = render(<Registry refreshSignal={0} />);
+  await screen.findByText("set_difference");
+  const afterMount = gets();
+
+  // Re-rendering with the SAME signal value must not re-fetch.
+  rerender(<Registry refreshSignal={0} />);
+  await new Promise((r) => setTimeout(r, 0));
+  expect(gets()).toBe(afterMount);
+
+  // Changing the signal must re-fetch exactly once more.
+  rerender(<Registry refreshSignal={1} />);
+  await waitFor(() => expect(gets()).toBe(afterMount + 1));
+});
+
 test("shows why a delete failed and leaves the row in place", async () => {
   vi.stubGlobal(
     "fetch",

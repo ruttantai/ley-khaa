@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import builtins
 import uuid
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import case, or_, select, update
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..domain.states import TERMINAL, WAITING, TaskState, can_transition, ensure_transition
 from ..interpreter.spec import TaskSpec
-from .orm import TaskRow
+from .orm import TaskRow, rows_affected
 
 
 class TaskRepository:
@@ -39,7 +41,9 @@ class TaskRepository:
     def get(self, task_id: str) -> TaskRow | None:
         return self.session.get(TaskRow, task_id)
 
-    def list(self) -> list[TaskRow]:
+    def list(self) -> builtins.list[TaskRow]:
+        # builtins.list, here and below: this method shadows the builtin inside
+        # the class body, so a bare `list[...]` annotation names the method.
         return list(self.session.scalars(select(TaskRow).order_by(TaskRow.created_at)))
 
     def claim(self, task_id: str, *, expected: TaskState, target: TaskState) -> bool:
@@ -58,7 +62,7 @@ class TaskRepository:
             .values(state=target.value, updated_at=datetime.now(timezone.utc))
         )
         self.session.commit()
-        return result.rowcount == 1
+        return rows_affected(result) == 1
 
     def _row(self, task_id: str) -> TaskRow:
         row = self.session.get(TaskRow, task_id)
@@ -112,7 +116,7 @@ class TaskRepository:
             .values(mode_override=mode, updated_at=datetime.now(timezone.utc))
         )
         self.session.commit()
-        return result.rowcount == 1
+        return rows_affected(result) == 1
 
     def set_open_question(self, task_id: str, question: str | None) -> TaskRow:
         row = self._row(task_id)
@@ -121,7 +125,7 @@ class TaskRepository:
         self.session.refresh(row)
         return row
 
-    def append_source_messages(self, task_id: str, message_ids: list[str]) -> TaskRow:
+    def append_source_messages(self, task_id: str, message_ids: builtins.list[str]) -> TaskRow:
         row = self._row(task_id)
         existing = list(row.source_message_ids or [])
         # Re-assigning rather than mutating: SQLAlchemy does not track in-place
@@ -136,7 +140,7 @@ class TaskRepository:
         self,
         task_id: str,
         *,
-        message_ids: list[str],
+        message_ids: builtins.list[str],
         expected: TaskState,
         now: datetime | None = None,
     ) -> bool:
@@ -239,7 +243,7 @@ class TaskRepository:
             .execution_options(synchronize_session="fetch")
         )
         self.session.commit()
-        return result.rowcount == 1
+        return rows_affected(result) == 1
 
     def record_failure(self, task_id: str, reason: str) -> TaskRow:
         row = self._row(task_id)
@@ -276,7 +280,7 @@ class TaskRepository:
         self.session.refresh(row)
         return row.clarification_rounds
 
-    def active_in_project(self, project: str) -> list[TaskRow]:
+    def active_in_project(self, project: str) -> builtins.list[TaskRow]:
         """Tasks in this project that are not finished.
 
         Deliberately includes AWAITING_APPROVAL and NEEDS_CLARIFICATION: a task
@@ -292,7 +296,7 @@ class TaskRepository:
             )
         )
 
-    def list_by_state(self, state: TaskState) -> list[TaskRow]:
+    def list_by_state(self, state: TaskState) -> builtins.list[TaskRow]:
         return list(
             self.session.scalars(
                 select(TaskRow).where(TaskRow.state == state.value).order_by(TaskRow.created_at)
@@ -311,14 +315,29 @@ class TaskRepository:
         self.session.commit()
         return row
 
-    def mark_notified(self, task_id: str, state: str) -> bool:
-        """Claim the right to announce `state` for this task. True if we won it.
+    def mark_notified(self, task_id: str, state: str, question: str | None = None) -> bool:
+        """Claim the right to announce `state` (and, within it, `question`)
+        for this task. True if we won it.
 
         Same compare-and-swap discipline as claim() and set_override(), applied
         to a side effect that leaves the process. advance() is re-entrant and
         the sweeper re-drives tasks, so an unguarded announcement would repeat a
         task's clarifying question on every pass; two workers reaching the same
         state at once would post it twice.
+
+        `question` is the second half of the key (backlog item 17). A task can
+        be asked a SECOND, DIFFERENT question without ever leaving
+        NEEDS_CLARIFICATION in between — a reply is answered, the task is
+        re-interpreted, and a different field is still missing — and a
+        state-only guard would wrongly read that as a repeat of the first
+        question, so the human never sees it. Comparing via
+        func.coalesce(..., "") rather than `!=` directly is deliberate: SQL's
+        `NULL != NULL` is NULL (falsy), not TRUE, so a bare `!=` would treat
+        "question went from NULL to NULL" as "changed" every single time and
+        turn this into a no-guard-at-all for the no-question case; coalescing
+        both sides to "" first makes NULL and "" compare equal to each other,
+        matching message_for()'s own (x or "").strip() fallback treatment of
+        the two as the same "nothing asked" case.
 
         The caller sends only after this returns True, which means a send that
         then fails is NOT retried — stated rather than hidden. §9 already says
@@ -333,12 +352,14 @@ class TaskRepository:
                 or_(
                     TaskRow.last_notified_state.is_(None),
                     TaskRow.last_notified_state != state,
+                    func.coalesce(TaskRow.last_notified_question, "")
+                    != func.coalesce(question, ""),
                 ),
             )
-            .values(last_notified_state=state)
+            .values(last_notified_state=state, last_notified_question=question)
         )
         self.session.commit()
-        return result.rowcount == 1
+        return rows_affected(result) == 1
 
     # --- the lease that makes this table the queue (spec §3.2) --------------
 
@@ -391,7 +412,7 @@ class TaskRepository:
             .execution_options(synchronize_session="fetch")
         )
         self.session.commit()
-        return result.rowcount == 1
+        return rows_affected(result) == 1
 
     def heartbeat_lease(
         self, task_id: str, *, owner: str, ttl_seconds: int, now: datetime | None = None
@@ -411,7 +432,7 @@ class TaskRepository:
             .execution_options(synchronize_session="fetch")
         )
         self.session.commit()
-        return result.rowcount == 1
+        return rows_affected(result) == 1
 
     def release_lease(self, task_id: str, *, owner: str) -> bool:
         """Hand the task back. Guarded on ownership for the same reason as the
@@ -423,7 +444,7 @@ class TaskRepository:
             .values(lease_owner=None, lease_expires_at=None)
         )
         self.session.commit()
-        return result.rowcount == 1
+        return rows_affected(result) == 1
 
     # --- what is waiting to run --------------------------------------------
 
@@ -447,7 +468,7 @@ class TaskRepository:
             self._lease_free(moment),
         )
 
-    def runnable_projects(self, now: datetime | None = None) -> list[str]:
+    def runnable_projects(self, now: datetime | None = None) -> builtins.list[str]:
         moment = now or datetime.now(timezone.utc)
         rows = self.session.scalars(
             select(TaskRow.project)
@@ -475,16 +496,30 @@ class TaskRepository:
             )
         )
 
-    def next_runnable(self, project: str, now: datetime | None = None) -> TaskRow | None:
-        """The oldest runnable task in a project. FIFO: urgency-based reordering
-        is deliberately out of scope (spec §7) because urgency lives in the spec,
-        which is only known after the task has already been dequeued."""
+    def next_runnable(
+        self,
+        project: str,
+        now: datetime | None = None,
+        *,
+        exclude_ids: Iterable[str] = (),
+    ) -> TaskRow | None:
+        """The oldest runnable task in a project, skipping `exclude_ids`.
+        FIFO: urgency-based reordering is deliberately out of scope (spec §7)
+        because urgency lives in the spec, which is only known after the task
+        has already been dequeued.
+
+        `exclude_ids` lets a caller step past a head task it already knows it
+        can't use right now (dispatcher._claim_next, when the head was just
+        poison-failed or lost a claim race to another worker) without
+        re-querying and landing on that same still-technically-runnable row
+        again — which would otherwise block every task behind it.
+        """
         moment = now or datetime.now(timezone.utc)
-        return self.session.scalars(
-            select(TaskRow)
-            .where(TaskRow.project == project, *self._runnable_where(moment))
-            .order_by(TaskRow.created_at)
-        ).first()
+        exclude = list(exclude_ids)
+        query = select(TaskRow).where(TaskRow.project == project, *self._runnable_where(moment))
+        if exclude:
+            query = query.where(TaskRow.id.not_in(exclude))
+        return self.session.scalars(query.order_by(TaskRow.created_at)).first()
 
     def leased_task_id(self, project: str, now: datetime | None = None) -> str | None:
         """The task in this project currently held by a live lease, if any.

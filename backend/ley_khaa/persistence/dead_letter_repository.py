@@ -12,20 +12,22 @@ import json
 import re
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from .orm import DeadLetterRow
 
 # A payload is a diagnostic, not an archive. Big enough to hold a whole Slack
 # event, small enough that no single row is large.
 #
-# This bounds row SIZE, not row COUNT, and there is deliberately no pruning: a
-# permanently bad token makes the supervisor crash-loop at its 60s backoff cap,
-# writing one `connection` row per minute for as long as it runs. That is
-# visible in the dashboard by design — a silent drop is the failure this table
-# exists to prevent — but it is unbounded growth, and retention is backlog
-# item 18.
+# This bounds row SIZE, not row COUNT. Row COUNT is bounded separately by
+# `settings.dead_letter_max_rows` (backlog item 18) — see `record()`'s prune
+# below. A permanently bad token still makes the supervisor crash-loop at its
+# 60s backoff cap, writing one `connection` row per minute for as long as it
+# runs, and that stays visible in the dashboard by design — a silent drop is
+# the failure this table exists to prevent — but it no longer grows without
+# bound.
 MAX_PAYLOAD_CHARS = 4_000
 
 _TRUNCATED = "…[truncated]"
@@ -146,9 +148,59 @@ class DeadLetterRepository:
             payload=redact(payload),
         )
         self.session.add(row)
+        self._prune()
         self.session.commit()
         self.session.refresh(row)
         return row
+
+    def _prune(self) -> None:
+        """Enforce `settings.dead_letter_max_rows`, oldest rows first.
+
+        Runs in the same flush/commit as the write in `record()` — see the
+        single `commit()` after this call — so a crash between insert and
+        prune cannot leave the table permanently over the cap; the next
+        successful write prunes it back down.
+
+        Ordered newest-first with the same (`created_at`, `id`) tiebreak
+        `list()` uses, then everything past the cap is deleted: those are, by
+        construction, the OLDEST rows, which is what makes the newest ones
+        the survivors.
+
+        The cap is clamped to at least 1. A misconfigured `0` (or a negative
+        value) must NOT mean "unbounded" — that would silently resurrect the
+        exact bug this task closes — and it must not mean "keep nothing"
+        either: `record()` is called from the notifier's own exception
+        handlers (delivery failed, no running event loop, ...), so a prune
+        that deletes every row, including the one this very call just wrote,
+        would crash on `session.refresh(row)` — turning a handled
+        notification failure into an unhandled one, inside the one table
+        whose entire purpose is that a failure is never silent. Clamping
+        keeps the newest failure visible under every possible configuration;
+        do not "helpfully" remove it.
+
+        On cost, since this runs on EVERY write and the table's own docstring
+        describes a supervisor crash-loop writing one row a minute for ever:
+        the ORDER BY is bounded by the cap, not by history. Every `record()`
+        prunes in the same transaction as its insert, so the table holds at
+        most `cap` rows afterwards and `cap + 1` during — the sort is
+        O(cap log cap) on the day this ships and on any day after it,
+        however long the crash loop runs. The whole-branch review flagged
+        "sorts the whole table on every write"; that is literally true and
+        harmless, because the whole table is 1000 rows by construction.
+        Deliberately left alone: the only lever that changes this is raising
+        `LEY_KHAA_DEAD_LETTER_MAX_ROWS` by orders of magnitude, and an index
+        on `created_at` would need a migration to buy nothing at today's cap.
+        """
+        self.session.flush()
+        cap = max(1, settings.dead_letter_max_rows)
+        keep_ids = (
+            select(DeadLetterRow.id)
+            .order_by(DeadLetterRow.created_at.desc(), DeadLetterRow.id.desc())
+            .limit(cap)
+        )
+        self.session.execute(
+            delete(DeadLetterRow).where(DeadLetterRow.id.not_in(keep_ids))
+        )
 
     def list(self, limit: int = 100) -> list[DeadLetterRow]:
         """Newest first — the dashboard shows the most recent drop at the top.

@@ -117,3 +117,28 @@ def test_single_word_sources_still_come_through():
         "## Messages\n[m1] alice: compare the holdings against the portfolio as csv"
     )
     assert spec.inputs == ["holdings", "portfolio"]
+
+
+def test_the_offline_stand_in_answers_a_project_choice_itself():
+    """Backlog item 12. `ProjectRouter.route`'s blanket `except Exception` turns
+    a missing rule into the same default the rule produces, so a router-level
+    assertion cannot tell the two apart. Ask the stand-in directly: with the
+    `ProjectChoice` branch deleted, `parse` raises NotImplementedError here and
+    there is no `except` in the way to launder it.
+
+    The values are the rule itself — offline routing is bindings-only, so a
+    null project at zero confidence is the answer, not a failure to produce one.
+    """
+    from ley_khaa.projects.models import ProjectChoice
+
+    choice = HeuristicLLM().parse(
+        choice=model_for(Stage.PROJECT_ROUTE),
+        system="s",
+        user="## Request\ntitle: universe check\nsummary: s\n\n## Projects\n- acme: equity books",
+        output_format=ProjectChoice,
+    )
+
+    assert isinstance(choice, ProjectChoice)
+    assert choice.project is None
+    assert choice.confidence == 0.0
+    assert choice.reason == "offline: no model routing"

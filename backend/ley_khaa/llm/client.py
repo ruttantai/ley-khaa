@@ -8,6 +8,17 @@ from .router import ModelChoice
 T = TypeVar("T", bound=BaseModel)
 
 
+class EmptyModelResponse(ValueError):
+    """response.parsed_output was None -- most likely max_tokens truncated the
+    response before it could be parsed. A ValueError subclass so any existing
+    `except ValueError` still behaves exactly as before, but a distinguishable
+    type so a caller (the interpreter driver, for one) can name the real cause
+    instead of lumping this in with a generic/transport failure. Content
+    problem, not a connection problem: pydantic.ValidationError -- caught
+    specifically by Interpreter.interpret -- is itself a ValueError subclass,
+    but this is not a ValidationError and must not be confused for one."""
+
+
 class LLMClient(Protocol):
     """The single seam every LLM call goes through.
 
@@ -103,7 +114,7 @@ class AnthropicLLM:
         if choice.supports_thinking:
             kwargs["thinking"] = {"type": "adaptive"}
         response = self._client.messages.parse(**kwargs)
-        return response.parsed_output
+        return self._require_parsed(response, choice, output_format)
 
     def extract_image(
         self, *, choice: ModelChoice, system: str, user: str,
@@ -144,4 +155,18 @@ class AnthropicLLM:
         if choice.supports_thinking:
             kwargs["thinking"] = {"type": "adaptive"}
         response = self._client.messages.parse(**kwargs)
-        return response.parsed_output
+        return self._require_parsed(response, choice, output_format)
+
+    def _require_parsed(self, response: Any, choice: ModelChoice, output_format: type[T]) -> T:
+        parsed = response.parsed_output
+        if parsed is None:
+            # A response that stops on max_tokens parses to None. Returning it
+            # hands the caller a None it does not expect — the crystallizer and
+            # interpreter both dereference the result immediately — and the
+            # traceback then names THEIR line, not this one. Shared by parse()
+            # and extract_image(): both hit the same SDK call shape.
+            raise EmptyModelResponse(
+                f"{choice.model} returned no parsed output "
+                f"(stop_reason may be max_tokens for {output_format.__name__})"
+            )
+        return parsed

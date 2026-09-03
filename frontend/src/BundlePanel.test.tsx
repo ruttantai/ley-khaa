@@ -1,6 +1,6 @@
 // frontend/src/BundlePanel.test.tsx
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
-import { afterEach, beforeEach, expect, it, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import BundlePanel from "./BundlePanel";
 
 const bundle = {
@@ -105,7 +105,7 @@ test("says nothing loudly when there is no bundle", async () => {
   expect(await screen.findByText(/no bundle/i)).toBeTruthy();
 });
 
-it("offers promotion only for a bundle that passed", async () => {
+test("offers promotion only for a bundle that passed", async () => {
   // A failed run has nothing worth freezing; offering the button would invite a
   // 409 the human cannot act on.
   mockBundle({ manifest: { verdict: { ok: false } } });
@@ -117,7 +117,7 @@ it("offers promotion only for a bundle that passed", async () => {
   expect(screen.queryByRole("button", { name: /promote/i })).toBeNull();
 });
 
-it("promotes a passing bundle under a name the human chooses", async () => {
+test("promotes a passing bundle under a name the human chooses", async () => {
   mockBundle({ manifest: { verdict: { ok: true } } });
   render(<BundlePanel taskId="t1" />);
 
@@ -135,7 +135,7 @@ it("promotes a passing bundle under a name the human chooses", async () => {
   });
 });
 
-it("shows why a promotion was refused", async () => {
+test("shows why a promotion was refused", async () => {
   // A duplicate name is the common case, and it is fixable — the human needs to
   // read it, not watch the dialog close on nothing.
   mockBundle(
@@ -151,7 +151,23 @@ it("shows why a promotion was refused", async () => {
   await waitFor(() => expect(screen.getByText(/already exists/)).toBeTruthy());
 });
 
-it("says a cached run took the fast path and names the workflow", async () => {
+test("Cancel clears the entered name and description, not just the error", async () => {
+  mockBundle({ manifest: { verdict: { ok: true } } });
+  render(<BundlePanel taskId="t1" />);
+
+  fireEvent.click(await screen.findByRole("button", { name: /promote/i }));
+  fireEvent.change(screen.getByLabelText(/name/i), { target: { value: "universe_check" } });
+  fireEvent.change(screen.getByLabelText(/description/i), { target: { value: "diffs two sets" } });
+  fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+
+  // Reopen: a human who cancelled must see a blank form, not what they typed
+  // before they backed out.
+  fireEvent.click(screen.getByRole("button", { name: /promote/i }));
+  expect((screen.getByLabelText(/name/i) as HTMLInputElement).value).toBe("");
+  expect((screen.getByLabelText(/description/i) as HTMLInputElement).value).toBe("");
+});
+
+test("says a cached run took the fast path and names the workflow", async () => {
   mockBundle({
     manifest: { lane: "registry", workflow: { name: "set_difference", matched_by: "fingerprint" } },
   });

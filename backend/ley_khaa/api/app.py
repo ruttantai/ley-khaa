@@ -157,7 +157,10 @@ def _record_dead_letter(**kwargs) -> None:
 
 
 def build_dispatcher() -> Dispatcher:
-    return Dispatcher(SessionLocal, drive=_drive_task)
+    # Same fallback build_orchestrator uses: whatever the lifespan installed,
+    # NullNotifier when no tokens are set — so a poisoned task's failure is
+    # announced through the live notifier, not silently dropped.
+    return Dispatcher(SessionLocal, drive=_drive_task, notifier=current_notifier())
 
 
 async def _periodic_sweeper(interval: float, sweep: Callable[[], int] = _sweep_once) -> None:
@@ -210,11 +213,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         session.close()
 
     app.state.sweeper = asyncio.create_task(_periodic_sweeper(settings.sweep_interval_seconds))
-    app.state.dispatcher = None
-    if settings.dispatch_mode == "workers":
-        app.state.dispatcher = asyncio.create_task(
-            build_dispatcher().run_forever(settings.sweep_interval_seconds)
-        )
     app.state.supervisor = None
     adapters = build_adapters(ingest=_ingest_from_channel, dead_letter=_record_dead_letter)
     if adapters:
@@ -228,6 +226,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
         )
         app.state.supervisor = supervisor
+    # AFTER set_notifier: build_dispatcher() reads current_notifier() once, at
+    # construction, and holds onto it for the dispatcher's whole lifetime — unlike
+    # build_orchestrator, which re-reads it fresh on every call. Building the
+    # dispatcher before the block above would freeze it on the NullNotifier
+    # installed at import time, and a poisoned task would silently go back to
+    # telling nobody even with Slack/Discord configured.
+    app.state.dispatcher = None
+    if settings.dispatch_mode == "workers":
+        app.state.dispatcher = asyncio.create_task(
+            build_dispatcher().run_forever(settings.sweep_interval_seconds)
+        )
     try:
         yield
     finally:
@@ -328,6 +337,12 @@ def list_projects(session: Session = Depends(get_session)) -> list[ProjectOut]:
         # the database rather than pulled from a session's identity map — see
         # TaskRepository.leased_task_id's docstring.
         leased = repo.leased_task_id(project.name, now=now)
+        # queue_depth is NOT "how many tasks does this project have" — it is
+        # runnable_count: tasks waiting for a worker, excluding both terminal
+        # states (DONE/FAILED) and the one under a live lease (reported
+        # separately as in_flight above). GET /projects/{name}/tasks below
+        # returns every task regardless of state, by design — the two numbers
+        # disagree on purpose and are each right for their own caller.
         queued = repo.runnable_count(project.name, now=now)
         out.append(
             ProjectOut(
@@ -368,8 +383,15 @@ def create_project(body: ProjectIn, session: Session = Depends(get_session)) -> 
     )
 
 
-@app.get("/projects/{name}/queue", response_model=list[TaskOut])
-def project_queue(name: str, session: Session = Depends(get_session)) -> list[TaskOut]:
+@app.get("/projects/{name}/tasks", response_model=list[TaskOut])
+def project_tasks(name: str, session: Session = Depends(get_session)) -> list[TaskOut]:
+    """Every task in this project, in any state — DONE and FAILED included.
+
+    This is a task list, not a queue: it disagrees on purpose with
+    `ProjectOut.queue_depth` (list_projects above), which counts only tasks
+    still waiting for a worker. Renamed from `/projects/{name}/queue` (which
+    the old name implied) for that reason — see backlog item 15.
+    """
     return [
         TaskOut.model_validate(t) for t in TaskRepository(session).list() if t.project == name
     ]

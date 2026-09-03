@@ -74,6 +74,40 @@ def test_success_records_use_and_learns_an_alias(session):
     assert set(persisted.operation_aliases) == {"set_difference", "compare_lists"}
 
 
+def test_record_success_updates_an_already_loaded_reference(session):
+    """record_success's bulk UPDATE must not leave a WorkflowRow a caller
+    already holds (loaded before the call) showing pre-update values —
+    without needing repo.get()/session.expire() afterward to force it fresh.
+
+    SQLAlchemy's default synchronize_session="evaluate" strategy keeps a
+    bulk UPDATE's WHERE-matched, already-loaded identity-map objects in sync
+    as part of the UPDATE itself, so no follow-up read-then-expire is needed.
+    """
+    repo = WorkflowRepository(session)
+    _create(repo)
+    stale = repo.get("set_difference")
+    assert stale.runs_ok == 0
+
+    repo.record_success("set_difference")
+
+    assert stale.runs_ok == 1, "an already-loaded reference must reflect the increment"
+    assert stale.last_used_at is not None
+
+
+def test_record_failure_updates_an_already_loaded_reference(session):
+    """Same invariant as above, for record_failure's bulk UPDATE."""
+    repo = WorkflowRepository(session)
+    _create(repo)
+    stale = repo.get("set_difference")
+    assert stale.runs_failed == 0
+    assert stale.quarantined is False
+
+    repo.record_failure("set_difference")
+
+    assert stale.runs_failed == 1, "an already-loaded reference must reflect the increment"
+    assert stale.quarantined is True, "an already-loaded reference must reflect the quarantine"
+
+
 def test_a_known_alias_is_not_added_twice(session):
     repo = WorkflowRepository(session)
     _create(repo)

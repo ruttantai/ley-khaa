@@ -4,7 +4,15 @@ import {
   type Bundle, type Workflow,
 } from "./api";
 
-export default function BundlePanel({ taskId }: { taskId: string }) {
+export default function BundlePanel({
+  taskId,
+  onPromoted,
+}: {
+  taskId: string;
+  // Optional: only wired when the caller (TaskDetail, via App) needs to
+  // know a promotion happened elsewhere, e.g. to refresh a sibling Registry.
+  onPromoted?: () => void;
+}) {
   const [bundle, setBundle] = useState<Bundle | null>(null);
   const [missing, setMissing] = useState(false);
   const [openFile, setOpenFile] = useState<string | null>(null);
@@ -61,7 +69,7 @@ export default function BundlePanel({ taskId }: { taskId: string }) {
         </p>
       )}
 
-      {verdictOk && <PromoteControl taskId={taskId} />}
+      {verdictOk && <PromoteControl taskId={taskId} onPromoted={onPromoted} />}
 
       {generators.length > 0 && (
         <div className="space-y-1">
@@ -106,7 +114,13 @@ export default function BundlePanel({ taskId }: { taskId: string }) {
 // picks. Kept inline in the panel — this app has no modal abstraction — and
 // collapsed to a single button until opened, so the common case (browsing a
 // bundle) stays uncluttered.
-function PromoteControl({ taskId }: { taskId: string }) {
+function PromoteControl({
+  taskId,
+  onPromoted,
+}: {
+  taskId: string;
+  onPromoted?: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -157,7 +171,10 @@ function PromoteControl({ taskId }: { taskId: string }) {
         <button
           onClick={() =>
             promoteTask(taskId, name, description)
-              .then((workflow) => setSaved(workflow))
+              .then((workflow) => {
+                setSaved(workflow);
+                onPromoted?.();
+              })
               .catch((e) => setError(String(e)))
           }
           className="rounded bg-emerald-600 px-3 py-1 text-sm text-white"
@@ -168,6 +185,11 @@ function PromoteControl({ taskId }: { taskId: string }) {
           onClick={() => {
             setOpen(false);
             setError(null);
+            // name/description must not survive a cancel — otherwise
+            // reopening Promote shows what was typed before the human
+            // backed out, not a blank form.
+            setName("");
+            setDescription("");
           }}
           className="text-sm text-gray-500 underline"
         >

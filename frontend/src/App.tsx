@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Candidates from "./Candidates";
 import Projects from "./Projects";
 import Registry from "./Registry";
@@ -20,6 +20,12 @@ export default function App() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [openTask, setOpenTask] = useState<string | null>(null);
+  // Bumped whenever a promotion happens anywhere on the page, so Registry
+  // (a sibling of the task list, not an ancestor/descendant of it) knows to
+  // re-fetch. This is the refresh signal, not the workflow data itself —
+  // there is no state-management library here, just a lifted counter.
+  const [registryRefresh, setRegistryRefresh] = useState(0);
+  const onWorkflowPromoted = useCallback(() => setRegistryRefresh((n) => n + 1), []);
 
   useEffect(() => {
     const load = () => {
@@ -67,6 +73,7 @@ export default function App() {
                   onChanged={(updated) =>
                     setTasks((prev) => prev.map((x) => (x.id === updated.id ? updated : x)))
                   }
+                  onWorkflowPromoted={onWorkflowPromoted}
                 />
               </div>
             )}
@@ -75,7 +82,7 @@ export default function App() {
       </ul>
 
       <h2 className="text-lg font-semibold mb-2 mt-8">Registry</h2>
-      <Registry />
+      <Registry refreshSignal={registryRefresh} />
     </main>
   );
 }

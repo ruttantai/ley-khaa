@@ -65,3 +65,13 @@ def test_naive_last_message_timestamp_is_treated_as_utc():
     gate = ReadinessGate(debounce_seconds=45)
     naive = (NOW - timedelta(minutes=5)).replace(tzinfo=None)
     assert gate.should_emit(_cand(), last_message_at=naive, now=NOW) is True
+
+
+def test_a_conversation_with_no_messages_never_emits():
+    """`MessageRepository.last_timestamp` answers None when a conversation has
+    no messages, and both callers hand that straight to the gate. Before this
+    guard as_utc() raised AttributeError inside a sweep, taking down the whole
+    sweep rather than skipping one candidate — and a `datetime` in the signature
+    said the case could not arise."""
+    gate = ReadinessGate(debounce_seconds=45)
+    assert gate.should_emit(_cand(), last_message_at=None, now=NOW) is False

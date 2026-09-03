@@ -11,9 +11,17 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from ..base import AdapterError, Destination, TranslationError
 from .translate import SOURCE, conversation_parts, translate
+
+if TYPE_CHECKING:  # pragma: no cover - annotations only
+    # Imported for annotations only. The runtime imports stay inside start(),
+    # so a token-free process still never loads slack_sdk (see build_adapters).
+    from slack_sdk.socket_mode.aiohttp import SocketModeClient
+    from slack_sdk.socket_mode.async_client import AsyncBaseSocketModeClient
+    from slack_sdk.web.async_client import AsyncWebClient
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +48,8 @@ class SlackAdapter:
         # repository — §5.1: adapters hold no business logic.
         self.ingest = ingest
         self.dead_letter = dead_letter
-        self.web = None
-        self.socket = None
+        self.web: AsyncWebClient | None = None
+        self.socket: SocketModeClient | None = None
         # Learned from auth.test at connect time. Until then the filter falls
         # back to the bot_id check in translate(), which catches our own posts
         # anyway.
@@ -56,16 +64,26 @@ class SlackAdapter:
         from slack_sdk.socket_mode.response import SocketModeResponse
         from slack_sdk.web.async_client import AsyncWebClient
 
-        self.web = AsyncWebClient(token=self._bot_token)
+        # Bound to locals as well as to self: stop() may clear the attributes
+        # from another task, and a local is what makes the rest of this method
+        # provably operate on the client it just built.
+        web = AsyncWebClient(token=self._bot_token)
+        self.web = web
         try:
-            identity = await self.web.auth_test()
+            identity = await web.auth_test()
             self.bot_user_id = identity.get("user_id")
         except Exception as exc:
             raise AdapterError(f"Slack auth.test failed: {type(exc).__name__}") from exc
 
-        self.socket = SocketModeClient(app_token=self._app_token, web_client=self.web)
+        socket = SocketModeClient(app_token=self._app_token, web_client=web)
+        self.socket = socket
 
-        async def on_request(client: SocketModeClient, request: SocketModeRequest) -> None:
+        # AsyncBaseSocketModeClient, not the concrete SocketModeClient: that
+        # is what the listener list is declared to take, and everything used
+        # here (send_socket_mode_response) is on the base.
+        async def on_request(
+            client: AsyncBaseSocketModeClient, request: SocketModeRequest
+        ) -> None:
             # Acknowledge FIRST, always. Slack redelivers anything unacked
             # within 3s, and the pipeline behind _handle can take much longer
             # than that. Redelivery is survivable — MessageRepository.add
@@ -75,8 +93,8 @@ class SlackAdapter:
             if request.type == "events_api":
                 await self._handle(request.payload)
 
-        self.socket.socket_mode_request_listeners.append(on_request)
-        await self.socket.connect()
+        socket.socket_mode_request_listeners.append(on_request)
+        await socket.connect()
         logger.info(
             "slack adapter listening on %d channel(s): %s",
             len(self.allowed_channels),

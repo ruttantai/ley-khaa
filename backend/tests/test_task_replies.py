@@ -1,6 +1,9 @@
+import warnings
+
 import pytest
 
 from ley_khaa.crystallizer.gate import ReadinessGate
+from ley_khaa.domain.models import Message
 from ley_khaa.domain.states import TaskState
 from ley_khaa.llm.heuristic import HeuristicLLM
 from ley_khaa.orchestrator.orchestrator import ForeignReplyTarget, Orchestrator
@@ -168,3 +171,35 @@ def test_a_reply_to_a_task_that_is_not_asking_is_attached_but_changes_nothing(se
         {"conversation_id": "conv-1", "text": "one more thought", "reply_to_task_id": task.id}
     )
     assert TaskRepository(session).get(task.id).state == TaskState.AWAITING_APPROVAL.value
+
+
+def test_a_reply_naming_no_task_at_all_is_orphaned_not_looked_up(session):
+    """Both callers of _route_reply set reply_to_task_id before routing, so this
+    is the branch that exists for when one stops doing so.
+
+    A None id must take the same orphan path as an unknown one rather than
+    reaching the repository: `Session.get(TaskRow, None)` answers None but warns
+    "fully NULL primary key identity cannot load any object", which SQLAlchemy
+    documents as a candidate for becoming an error. A warning is not a lookup,
+    and this project's bar is zero warnings.
+    """
+    orchestrator = _orchestrator(session)
+    messages = MessageRepository(session)
+    row = messages.add(
+        Message(
+            id="m-orphan",
+            source="dashboard",
+            client="test",
+            conversation_id="conv-1",
+            author="human",
+            text="hello",
+        )
+    )
+    assert row.reply_to_task_id is None
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pytest.raises(KeyError):
+            orchestrator._route_reply(row)
+    assert not [w for w in caught if "NULL primary key" in str(w.message)]
+    assert messages.list_for_conversation("conv-1")[0].relevant is False

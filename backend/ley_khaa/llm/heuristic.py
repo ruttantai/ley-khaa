@@ -1,5 +1,5 @@
 import re
-from typing import TypeVar
+from typing import TypeVar, cast
 
 from pydantic import BaseModel
 
@@ -173,6 +173,14 @@ class HeuristicLLM:
     name = "heuristic"
 
     def parse(self, *, choice: ModelChoice, system: str, user: str, output_format: type[T]) -> T:
+        # One cast, at the boundary. The dispatch below is on the RUNTIME value
+        # of output_format, which no typechecker can use to narrow T, so every
+        # branch would otherwise need its own cast to say the same thing.
+        # _parse() is what keeps it to one; each branch there returns exactly
+        # the class it was asked for, which is the invariant being asserted.
+        return cast(T, self._parse(user=user, output_format=output_format))
+
+    def _parse(self, *, user: str, output_format: type[BaseModel]) -> BaseModel:
         if output_format is RelevanceVerdict:
             return self._relevance(user)
         if output_format is CrystallizerOutput:
