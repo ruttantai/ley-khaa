@@ -27,7 +27,15 @@ def upgrade() -> None:
     op.create_table(
         "workflows",
         sa.Column("id", sa.String(), primary_key=True),
-        sa.Column("name", sa.String(), nullable=False, unique=True),
+        # Uniqueness on `name` is the unique INDEX created below, and only
+        # that — the same shape `messages.external_id` and
+        # `image_extractions.url_sha256` use, and the same shape the model
+        # declares (`unique=True, index=True` renders one unique Index, not a
+        # constraint). A column-level unique=True here would ALSO emit a
+        # table UNIQUE constraint, so Postgres ended up with `workflows_name_key`
+        # on top of `ix_workflows_name` — drift the models never declared, and
+        # invisible until migrations first ran against Postgres (item 26).
+        sa.Column("name", sa.String(), nullable=False),
         sa.Column("description", sa.String(), nullable=False, server_default=""),
         sa.Column("operation_aliases", sa.JSON(), nullable=False),
         sa.Column("output_format", sa.String(), nullable=False),
