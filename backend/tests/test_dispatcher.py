@@ -4,9 +4,15 @@ import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
+from ley_khaa.domain.models import Message
 from ley_khaa.domain.states import TaskState
+from ley_khaa.interpreter.spec import TaskSpec
+from ley_khaa.llm.client import FakeLLM
 from ley_khaa.orchestrator import dispatcher as dispatcher_module
 from ley_khaa.orchestrator.dispatcher import Dispatcher
+from ley_khaa.orchestrator.driver import TaskDriver
+from ley_khaa.persistence.candidate_repository import CandidateRepository
+from ley_khaa.persistence.message_repository import MessageRepository
 from ley_khaa.persistence.repository import TaskRepository
 
 
@@ -32,6 +38,31 @@ def _task(session, *, project, state=TaskState.CLASSIFIED):
         repo.claim(row.id, expected=current, target=step)
         current = step
     return row.id
+
+
+def _task_with_message(session, *, project):
+    """A CLASSIFIED task that a REAL TaskDriver can actually interpret: it has
+    a source message, which `_task` above (a dispatcher-only fixture) does not
+    need and does not create."""
+    repo = TaskRepository(session)
+    message = MessageRepository(session).add(
+        Message(source="s", client="c", conversation_id="conv-1", author="boss",
+                text="compare bloomberg against factset")
+    )
+    row = repo.create(project=project, title="t", source_message_ids=[message.id])
+    repo.claim(row.id, expected=TaskState.RECEIVED, target=TaskState.CLASSIFIED)
+    return row.id
+
+
+def _spec(**overrides) -> TaskSpec:
+    base = dict(
+        intent="compare two universes",
+        inputs=["bloomberg", "factset"],
+        operation="set_difference",
+        output_format="xlsx",
+        certainty=0.95,
+    )
+    return TaskSpec(**{**base, **overrides})
 
 
 def test_a_tick_drives_one_task_per_project(session_factory):
@@ -311,9 +342,28 @@ def test_a_repeatedly_failing_task_does_not_drain_forever(session_factory):
     assert result == [task_id]
     assert calls == [task_id], "the same task must be attempted only once per tick"
     with session_factory() as session:
-        # Still reclaimable — a later tick (or the attempt cap) handles it,
-        # but this drain must not have spun on it.
-        assert TaskRepository(session).get(task_id).lease_owner is None
+        row = TaskRepository(session).get(task_id)
+        # Still reclaimable, and left EXACTLY as it was found: released, and
+        # with `lease_attempts` untouched.
+        #
+        # This comment used to say "a later tick (or the attempt cap) handles
+        # it". Both halves were false and the whole-branch review caught it.
+        # A later tick re-drives this same task and fails the same way — that
+        # is by design, since the drain cannot tell a transient failure from a
+        # permanent one, and the driver's own ceilings (_MAX_INTERPRET_ATTEMPTS,
+        # _MAX_STEPS) are what escalate a genuinely stuck task. And the
+        # lease-attempt cap CANNOT fire here: `release_lease` never touches
+        # `lease_attempts` (this test's own docstring says so), so the count
+        # asserted below stays 0 for ever.
+        #
+        # What this test pins is only the TERMINATION half of the guard. The
+        # queue-preservation half — that a task like this one does not take
+        # the rest of its project's backlog down with it — is pinned by
+        # test_a_head_task_that_makes_no_progress_does_not_starve_the_queue_behind_it
+        # and its siblings below, which is the property this single-task
+        # test is structurally blind to.
+        assert row.lease_owner is None
+        assert (row.lease_attempts or 0) == 0
 
 
 def test_one_bad_task_does_not_stop_the_other_projects(session_factory, monkeypatch):
@@ -573,3 +623,183 @@ def test_the_heartbeat_keeps_a_long_running_task_leased(session_factory, monkeyp
 def _as_utc(value: datetime) -> datetime:
     """SQLite hands back naive datetimes even for timezone=True columns."""
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def test_a_head_task_that_makes_no_progress_does_not_starve_the_queue_behind_it(
+    session_factory,
+):
+    """The whole-branch review's Critical 1, and the property
+    test_a_repeatedly_failing_task_does_not_drain_forever is structurally
+    blind to because it queues exactly ONE task.
+
+    `TaskDriver` has an explicit no-progress path (`driver.py`: "No progress:
+    a lost claim (another caller won the race) or a retryable failure. Either
+    way, stop here") which returns the row UNADVANCED — so the head task is
+    still the oldest runnable row the moment the drain asks for the next one.
+    The drain used to answer that by stopping the lane, abandoning every task
+    queued behind it. It must skip past instead: one attempt for the head,
+    then on to the rest.
+
+    `stuck` is driven and left exactly where it was, which is what makes it
+    the head again; `rest` advances the way real business logic does.
+    """
+    with session_factory() as session:
+        stuck = _task(session, project="acme")
+        rest = [_task(session, project="acme") for _ in range(2)]
+
+    driven: list[str] = []
+
+    def drive(session, task_id):
+        driven.append(task_id)
+        if task_id == stuck:
+            return  # no state change at all: still runnable, still the head
+        TaskRepository(session).claim(
+            task_id, expected=TaskState.CLASSIFIED, target=TaskState.FAILED
+        )
+
+    result = asyncio.run(Dispatcher(session_factory, drive=drive).tick())
+
+    assert sorted(result) == sorted([stuck, *rest])
+    assert driven.count(stuck) == 1, "the stuck head must be attempted once, not spun on"
+    for task_id in rest:
+        assert task_id in driven, "a stuck head task must not starve the queue behind it"
+
+    with session_factory() as session:
+        row = TaskRepository(session).get(stuck)
+        # Skipped, not punished: still runnable for the next tick, and its
+        # lease-attempt count is deliberately untouched (that counter means
+        # "a worker died holding this", and the poison cap it feeds FAILs a
+        # task outright — a task that merely did not advance has not earned
+        # that).
+        assert TaskState(row.state) is TaskState.CLASSIFIED
+        assert row.lease_owner is None
+        assert (row.lease_attempts or 0) == 0
+
+
+def test_a_head_task_whose_drive_raises_does_not_starve_the_queue_behind_it(
+    session_factory,
+):
+    """The second shape of Critical 1. `_work_one` swallows any exception out
+    of `drive` (`except Exception: logger.exception(...)`) and leaves the row
+    untouched, which lands on the identical still-the-head state as the
+    no-progress path above.
+
+    Distinct from test_the_lease_is_released_even_when_the_work_raises, whose
+    raising task and surviving task are in DIFFERENT projects: there,
+    `gather` keeps the lanes apart. Here both tasks are in the SAME project,
+    so the only thing that can let the second one run is the drain stepping
+    past the first.
+    """
+    with session_factory() as session:
+        exploding = _task(session, project="acme")
+        behind = _task(session, project="acme")
+
+    driven: list[str] = []
+
+    def drive(session, task_id):
+        driven.append(task_id)
+        if task_id == exploding:
+            raise RuntimeError("boom")
+        TaskRepository(session).claim(
+            task_id, expected=TaskState.CLASSIFIED, target=TaskState.FAILED
+        )
+
+    result = asyncio.run(Dispatcher(session_factory, drive=drive).tick())
+
+    assert sorted(result) == sorted([exploding, behind])
+    assert driven.count(exploding) == 1
+    assert behind in driven, "a raising head task must not starve the queue behind it"
+
+
+def test_a_stuck_head_task_keeps_letting_the_queue_behind_it_drain_tick_after_tick(
+    session_factory,
+):
+    """Critical 1 was PERMANENT, not per-tick, and this is the half that made
+    it so.
+
+    `_release` calls `release_lease`, which sets only `lease_owner` and
+    `lease_expires_at` — never `lease_attempts`. So the poison-attempt cap,
+    the one mechanism that could eventually have evicted a stuck head, can
+    never fire for a task that is released cleanly. The stuck task is the
+    oldest runnable row again on the very next tick, for ever. The reviewer
+    observed ten ticks, ten drives of the head, ZERO drives of the task
+    behind it.
+
+    A second tick with a freshly queued task is therefore the assertion that
+    matters: work arriving AFTER the head got stuck must still run.
+    """
+    with session_factory() as session:
+        stuck = _task(session, project="acme")
+        first = _task(session, project="acme")
+
+    driven: list[str] = []
+
+    def drive(session, task_id):
+        driven.append(task_id)
+        if task_id == stuck:
+            return
+        TaskRepository(session).claim(
+            task_id, expected=TaskState.CLASSIFIED, target=TaskState.FAILED
+        )
+
+    dispatcher = Dispatcher(session_factory, drive=drive)
+    asyncio.run(dispatcher.tick())
+    assert first in driven
+
+    with session_factory() as session:
+        second = _task(session, project="acme")
+
+    driven.clear()
+    asyncio.run(dispatcher.tick())
+
+    assert second in driven, "the stuck head must not starve work queued after it either"
+    assert driven.count(stuck) == 1, "one attempt per tick, still — not a spin"
+
+    with session_factory() as session:
+        row = TaskRepository(session).get(stuck)
+        # Named explicitly because the old comment on
+        # test_a_repeatedly_failing_task_does_not_drain_forever claimed the
+        # opposite: the cap does NOT fire here, and nothing is relying on it.
+        assert (row.lease_attempts or 0) == 0
+
+
+def test_a_real_driver_stuck_on_the_head_task_does_not_starve_the_queue(session_factory):
+    """The same property, pinned through a REAL `TaskDriver` rather than a
+    `drive` double — the one thing the whole-branch review said it could not
+    verify.
+
+    `FakeLLM` raises the queued `ConnectionError` on the head task's
+    interpretation. `TaskDriver._interpret`'s bare `except Exception` routes
+    that to `_fail_interpret(cause=None)`, which — below
+    `_MAX_INTERPRET_ATTEMPTS` — deliberately returns False and leaves the
+    task in CLASSIFIED for a later retry. That is the production no-progress
+    path, reached without a single test double inside the driver.
+
+    The second task's queued response is a spec with a missing field, so it
+    lands in NEEDS_CLARIFICATION: one model call, no sandbox, and a state
+    only a real drive can produce.
+    """
+    with session_factory() as session:
+        stuck = _task_with_message(session, project="acme")
+        behind = _task_with_message(session, project="acme")
+
+    llm = FakeLLM([ConnectionError("upstream is down"), _spec(missing_fields=["output_format"])])
+
+    def drive(session, task_id):
+        TaskDriver(
+            TaskRepository(session),
+            llm=llm,
+            messages=MessageRepository(session),
+            candidates=CandidateRepository(session),
+        ).advance(task_id)
+
+    result = asyncio.run(Dispatcher(session_factory, drive=drive).tick())
+
+    assert sorted(result) == sorted([stuck, behind])
+    with session_factory() as session:
+        repo = TaskRepository(session)
+        # Unadvanced and still runnable — the real driver's own retry posture.
+        assert TaskState(repo.get(stuck).state) is TaskState.CLASSIFIED
+        # Only a real interpretation can have put it here, so this is proof
+        # the second task was actually driven, not merely listed.
+        assert TaskState(repo.get(behind).state) is TaskState.NEEDS_CLARIFICATION

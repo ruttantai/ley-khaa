@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import suppress
 
 from sqlalchemy.orm import Session
@@ -100,31 +100,63 @@ class Dispatcher:
         as soon as this one's CURRENT task finishes, not after this whole
         backlog does.
 
-        `attempted` guards termination. `release_lease` (in `_release`) does
-        not touch `lease_attempts` — only reclaiming an EXPIRED lease does —
-        so a task whose drive raises (or otherwise leaves it in the same
-        runnable state) goes right back to `_claim_next` unchanged. Without
-        this guard that task would be reclaimed and retried in a tight loop
-        forever, starving every other task behind it in this project's queue
-        and never returning. One attempt per task per tick is enough; a task
-        that never recovers is handled by a later tick and, eventually, the
-        poison-attempt cap in `_claim_next` (which itself now steps past a
-        poisoned or lost-race head task rather than abandoning the rest of
-        the queue behind it — see `_claim_next`'s own docstring).
+        `attempted` guards termination, and is PASSED DOWN to `_claim_next`
+        as `exclude_ids` rather than only being checked on the way back.
+        That distinction is the whole point.
+
+        `release_lease` (in `_release`) does not touch `lease_attempts` —
+        only reclaiming an EXPIRED lease does — so a task whose drive raises,
+        or which the driver deliberately leaves unadvanced (`driver.py`'s
+        no-progress path: a lost claim, a retryable interpretation failure,
+        the step ceiling), goes right back into the runnable set unchanged.
+        Without `attempted` that task would be reclaimed and retried in a
+        tight loop forever and this call would never return.
+
+        But merely CHECKING `attempted` after the claim and stopping the lane
+        (the first version of this guard) traded that infinite loop for the
+        other half of the same defect: the tasks queued BEHIND the offender
+        were abandoned, every tick, permanently — `release_lease` leaves
+        `lease_attempts` at 0, so the poison cap that might eventually have
+        evicted the head can never fire, and the identical head is re-picked
+        on every subsequent tick. That is item 11's own symptom (one task
+        blocking a project's queue) surviving inside item 11's fix, and it is
+        the same shape Ruling 5 removed from `_claim_next`'s two "skip this
+        one" sites. This is the third such site, and it now behaves the same
+        way: skip past, do not stop.
+
+        Excluding `attempted` in the query is what makes that safe. Every
+        iteration either returns (nothing left this lane can claim) or adds
+        exactly one NEW id to `attempted`, and a project's backlog is finite,
+        so the loop still runs at most len(backlog) + 1 times. Termination is
+        not weakened; only the "and abandon the rest" part is gone.
+
+        A task skipped this way is left RUNNABLE and its `lease_attempts` is
+        deliberately NOT incremented. `lease_attempts` means one specific
+        thing — "a worker died holding this task and its lease had to be
+        reclaimed" — and it is the input to the poison cap that FAILs a task
+        outright. Counting "did not advance this tick" into it would fail
+        healthy tasks for transient reasons the drain cannot tell apart from
+        permanent ones: a lost claim race, or an interpretation retry that
+        the driver's own `_MAX_INTERPRET_ATTEMPTS` is already counting and
+        will itself escalate. Permanently-stuck tasks are the business of the
+        ceilings that know WHY they are stuck (`_MAX_INTERPRET_ATTEMPTS`,
+        `_MAX_STEPS`, the lease-attempt cap for dead workers); the drain's
+        only job is to make sure such a task costs its own lane one attempt
+        per tick and nothing else's.
         """
         driven: list[str] = []
         attempted: set[str] = set()
         while True:
             async with limit:
-                task_id = await asyncio.to_thread(self._claim_next, project)
+                # frozenset(): _claim_next runs on a worker thread, so it gets
+                # an immutable snapshot rather than the live set this loop
+                # keeps mutating.
+                task_id = await asyncio.to_thread(
+                    self._claim_next, project, frozenset(attempted)
+                )
                 if task_id is None:
-                    return driven
-                if task_id in attempted:
-                    # We just reclaimed the very task we already drove this
-                    # tick (it never left the runnable set) — hand the lease
-                    # straight back rather than leaking it, and stop this
-                    # project's lane.
-                    await asyncio.to_thread(self._release, task_id)
+                    # Nothing left in this project that this lane has not
+                    # already had its one attempt at. The only exit.
                     return driven
                 attempted.add(task_id)
 
@@ -163,9 +195,17 @@ class Dispatcher:
         finally:
             self._close(session)
 
-    def _claim_next(self, project: str) -> str | None:
+    def _claim_next(self, project: str, exclude_ids: Iterable[str] = ()) -> str | None:
         """The next task this worker can actually claim in `project`, or
         `None` if there genuinely is none right now.
+
+        `exclude_ids` is the caller's own "already handled, do not hand it
+        back to me" set — `_work_one` passes its `attempted` — and it seeds
+        `skipped` below, so those rows are excluded by the QUERY rather than
+        rejected after a claim. Excluding them in SQL is what lets the drain
+        step past a task it has already attempted this tick instead of
+        stopping the lane there; rejecting after the fact would also have to
+        undo a lease it should never have taken.
 
         `next_runnable` can hand back a head task this worker cannot use for
         two different reasons that are NOT "the backlog is empty": it just
@@ -185,7 +225,7 @@ class Dispatcher:
         session = self.session_factory()
         try:
             repo = TaskRepository(session)
-            skipped: set[str] = set()
+            skipped: set[str] = set(exclude_ids)
             while True:
                 row = repo.next_runnable(project, exclude_ids=skipped)
                 if row is None:
