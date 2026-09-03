@@ -26,12 +26,14 @@ generator code, exact inputs, seeded manifest — so any result can be audited a
 ## Status
 
 **v0.10.0 — release hardening.** No new features: ten defects fixed — nine of them carried in the
-project's own backlog — each pinned by a test that fails without the fix, plus two gates that did not
-exist. The backend is typechecked by **mypy** in CI: "typecheck clean" is a definition-of-done
-line in three of the five phase specs since v0.5.0 — Phases 4, 6 and 7 name it, Phases 5 and 8 do
-not — and until now only the frontend had a typechecker to satisfy it. The suite now also runs a second time against **Postgres 16**, the database `docker compose up`
-actually deploys, so a dialect-dependent defect can no longer pass everywhere it is checked. See the
-[CHANGELOG](CHANGELOG.md) for what changed and what is deliberately still open.
+project's own backlog — each pinned by a test that fails without the fix, plus two gates that did
+not exist, plus four more defects the branch's own whole-branch review found and this release fixes.
+The backend is typechecked by **mypy** in CI: "typecheck clean" is a definition-of-done line in
+three of the five phase specs since v0.5.0 — Phases 4, 6 and 7 name it, Phases 5 and 8 do not — and
+until now only the frontend had a typechecker to satisfy it. The suite now also runs a second time
+against **Postgres 16**, the database `docker compose up` actually deploys, so a dialect-dependent
+defect can no longer pass everywhere it is checked. See the [CHANGELOG](CHANGELOG.md) for what
+changed and what is deliberately still open.
 
 **v0.9.0 — Ollama offline fallback.** With no `ANTHROPIC_API_KEY`, `LEY_KHAA_LLM=ollama` runs a real
 local model (default `qwen2.5`) for every stage instead of the regex stand-in. The backend is chosen
@@ -71,7 +73,7 @@ relevance filtering and crystallization run on every message regardless, caches 
 | 6 | `v0.7.0` | Real Slack and Discord **channel adapters**, ingesting and notifying | ✅ shipped |
 | 7 | `v0.8.0` | **Vision intake** — an image read once and frozen as a reproducible checkpoint | ✅ shipped |
 | 8 | `v0.9.0` | **Ollama offline fallback** — a real local model with no API key, text-only | ✅ shipped |
-| 9 | `v0.10.0` | **Release hardening** — ten defects (nine from the backlog), mypy in CI, a Postgres test lane | ✅ shipped |
+| 9 | `v0.10.0` | **Release hardening** — ten defects (nine from the backlog) plus four its own review found, mypy in CI, a Postgres test lane | ✅ shipped |
 | — | `v1.0.0` | Definition of done (spec §11), release tagged | 🎯 target |
 
 Design spec: [`docs/superpowers/specs/2026-08-18-ley-khaa-design.md`](docs/superpowers/specs/2026-08-18-ley-khaa-design.md).
@@ -496,7 +498,7 @@ cd frontend && npm install && npm run dev
 ## Develop
 
 ```bash
-cd backend  && python -m pytest -q   # 1030 tests, on SQLite; needs nothing installed
+cd backend  && python -m pytest -q   # 1038 tests, on SQLite; needs nothing installed
                                      # on Colima/Rancher/Lima the docker tests also want
                                      # TMPDIR under $HOME — GETTING_STARTED.md §7 says why
 cd backend  && python -m mypy        # typecheck; default settings, config in backend/pyproject.toml

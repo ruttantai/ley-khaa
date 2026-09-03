@@ -316,7 +316,7 @@ Reinstall: `cd backend && pip install -e ".[dev]"`.
 ## 8. Running the tests
 
 ```bash
-cd backend  && python -m pytest -q   # 1030 passed, 0 skipped, 0 warnings
+cd backend  && python -m pytest -q   # 1038 passed, 0 skipped, 0 warnings
 cd backend  && python -m mypy        # CI fails the build on any error
 cd frontend && npm test              # 58 passed
 cd frontend && npm run typecheck     # npm run build is transpile-only
@@ -399,5 +399,5 @@ reason written down in that file: memory does not learn paraphrases the way the 
 aliases (1), the recall candidate cap wants measurement before it is changed (2), task memory has no
 management surface (3), a same-backend vision failure stays frozen under that image's digest (20),
 vision is text-only on the Ollama path (21), and there is no runtime step-down between backends (22).
-Ten new entries (23–32) were filed the same way — mostly about the new gates' own blind spots, such
-as migrations still being exercised on SQLite only.
+Eleven new entries (23–33) were filed the same way — mostly about the new gates' own blind spots,
+such as migrations still being exercised on SQLite only.

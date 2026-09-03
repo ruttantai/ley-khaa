@@ -61,7 +61,7 @@ jobs:
       # on, and fails the step otherwise. It is on the command line rather than
       # in `env:` deliberately: the failure worth guarding against is this
       # `env:` block being deleted or misindented, which would leave the step
-      # silently re-running the SQLite lane and reporting `1030 passed` a second
+      # silently re-running the SQLite lane and reporting `1038 passed` a second
       # time. A check keyed on DATABASE_URL cannot catch that — the malformation
       # removes the variable the check reads — but the `run:` line survives it.
       #

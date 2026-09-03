@@ -725,7 +725,7 @@ that makes a bundle auditable at risk to save a startup flag.
 
 ## Filed at the close of Phase 9 (v0.10.0)
 
-Items 23–32 came out of Phase 9's task and whole-branch reviews. Every one is deliberately deferred:
+Items 23–33 came out of Phase 9's task and whole-branch reviews. Every one is deliberately deferred:
 none blocks 1.0.0, and each is recorded rather than discarded. Numbering continues from 22 — nothing
 above is renumbered, for the reason PR #9 exists.
 
@@ -928,8 +928,41 @@ digest, so it becomes a url→digest index: a re-drive hashes the URL, finds the
 frozen extraction without needing the URL to still resolve. The column and its index already exist,
 and `_store` currently calls `record()` with no `url_sha256` at all (so it defaults to `None`) — what
 is missing is threading the source URL down to that success-path write, plus the lookup ahead of the
-fetch.
+fetch. `ImageExtractionRepository.clear_unfetchable` already anticipates it: it refuses to delete a
+source-keyed row that carries real content, so the negative-cache cleanup added in Phase 9's fix
+wave cannot gut the index this item would build.
 
 **Why deferred.** It is a second lookup ahead of the fetch with its own invalidation question — what
 should happen when the same URL later serves different bytes — and that is a cache-semantics decision,
 not a one-line addition to the path `aa62c66` already touched.
+
+## 33. Two of the four confidence floors still cannot tell `<` from `<=`
+
+**The remainder of item 7, re-filed so a closed entry does not have to carry a live gap** — the same
+handling items 19 → 32 and 9 → 26 got.
+
+Four call sites make the identical decision with the identical shape, `confidence < FLOOR`:
+
+- `memory/matcher.py:72` (`CONFIDENCE_FLOOR`)
+- `registry/matcher.py:67` (`CONFIDENCE_FLOOR`)
+- `projects/router.py:80` (`ROUTING_CONFIDENCE_FLOOR`)
+- `orchestrator/amendment.py:86` (`AMENDMENT_CONFIDENCE_FLOOR`)
+
+Item 7 asked for the boundary case — a decision landing *exactly* on the floor, which must be
+accepted — and `21025b6` added it for the two matchers
+(`test_memory_matcher.py:71`, `test_registry_matcher.py:84`, both asserting on
+`confidence=CONFIDENCE_FLOOR`). The router and the amendment detector still have only
+below-the-floor and comfortably-above-the-floor tests, so at those two sites `<` and `<=` are
+indistinguishable: flipping either one turns nothing red.
+
+**Not a live defect.** All four are `<`, which is correct — a decision that exactly meets the bar
+should be taken. This is a coverage gap, not a behaviour gap, and it was verified by reading during
+the whole-branch review.
+
+**Shape of the fix.** Two tests, mirroring the two that already exist: a `ProjectChoice` and an
+amendment `TaskChoice` at exactly `0.8`, each asserted to be ACCEPTED. No production change.
+
+**Why it was not done in Phase 9.** Task 11's brief was item 7 as written, and item 7's stated scope
+was the two matchers. Widening a closure task's own scope mid-flight is how a fix wave stops being
+reviewable, so the remainder is filed here instead — which is what the ledger intended and, until
+now, forgot to do.

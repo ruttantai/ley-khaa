@@ -44,6 +44,15 @@ class ImageExtractionRepository:
         row = self.get_by_url(url_sha256)
         if row is None:
             return False
+        if row.content:
+            # A source-keyed row carrying a real extraction is not a negative
+            # row and must survive. Nothing writes one today (`_store` passes
+            # no url_sha256), but backlog item 32's shape of the fix is
+            # exactly that — a url -> digest index written on the SUCCESS
+            # path — and a blind delete here would quietly gut it, on the
+            # cache-hit path especially, where `_store` never runs to write
+            # it back.
+            return False
         self.session.delete(row)
         self.session.commit()
         return True

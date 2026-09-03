@@ -9,7 +9,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
 
 Release hardening. No new features: ten defects fixed — nine carried in the Phase 5 backlog, one
 found while writing the spec — two quality gates added, and every statement this phase found to be
-false corrected.
+false corrected. The branch's own whole-branch review then found four more defects, all fixed here
+before the release: a head task that could starve its project's queue, `LEY_KHAA_MAX_PROJECTS=0`
+silently wedging the dispatcher for ever, a dead letter suppressed past the failure it described,
+and a mistyped retention cap that stopped the service at import.
 
 ### Added
 - **A backend typechecker, enforced by CI (§4.1).** "Typecheck clean" is a definition-of-done
@@ -62,7 +65,18 @@ false corrected.
   longer takes its project's queue with it.
 - **An unfetchable image is recorded once, not dead-lettered on every drive** (item 19), via a second
   key space hashed from the source URL — there are no image bytes to key a refusal on when the fetch
-  itself failed.
+  itself failed. That suppression is now scoped to a source that is *still* unfetchable, as its
+  contract always claimed: the negative row is retired the moment the same source does fetch, so a
+  genuinely new failure of a URL that worked in between is dead-lettered rather than silently
+  swallowed.
+- **`LEY_KHAA_MAX_PROJECTS=0` no longer wedges the dispatcher.** `asyncio.Semaphore(0)` can never be
+  acquired, so every project's lane blocked for ever, `tick()` never returned, and `run_forever`'s
+  own error handling cannot see a hang — the dispatcher stopped draining everything, silently, with
+  no log line. Clamped to at least 1, the same posture `dead_letter_max_rows` already had.
+- **A mistyped `LEY_KHAA_DEAD_LETTER_MAX_ROWS` no longer stops the service.** It raised `ValueError`
+  during module import, before logging exists — the opposite posture to the clamp two lines away,
+  which exists precisely so a misconfigured retention cap cannot take the service down. It now falls
+  back to the default and warns.
 - `AnthropicLLM.parse` and `extract_image` raise instead of returning an unguarded `None` when the
   model stops on `max_tokens`, and a truncated interpreter response is now labelled by its real cause
   rather than as "interpreter unavailable", which sent operators hunting for a network problem that
