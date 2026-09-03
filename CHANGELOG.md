@@ -39,7 +39,7 @@ the evidence for each, and what is stable across `1.x`.
 - **A recorded fresh-clone verification** (`docs/GETTING_STARTED.md` §10). A genuine `git clone`,
   brought up with no API key, walked to a parked task — **and the rendered dashboard confirmed
   visually by a person**, which no automated check in this repo, the new smoke job included, can
-  honestly stand in for. §11's first line had last been checked by hand at v0.1.0, nine phases ago.
+  honestly stand in for. §11's first line had last been checked by hand at v0.2.0, nine phases ago.
   The section also documents three first-run wrinkles found doing it, with causes, including a
   `FATAL: database "ley" does not exist` the `db` healthcheck logs every five seconds and which is
   not an error.
@@ -87,6 +87,10 @@ the evidence for each, and what is stable across `1.x`.
   remedy clause included. It also pins lane *inference* on both lanes, not only on the one where the
   default happens to match — without that, changing the option's default from `None` to `"sqlite"`
   passed every test while breaking bare `pytest` for anyone with a Postgres `DATABASE_URL` set.
+- `backend/pyproject.toml` declares version `1.0.0`, bumped inside this release branch — the same
+  place and the same way `8246dec` bumped it to `0.10.0` for the last release. It is the only live
+  version declaration in the repository, so tagging with it left at `0.10.0` would ship a package
+  whose own metadata contradicts every document in the tree.
 - **Corrections to statements this project had already shipped.** `docs/GETTING_STARTED.md`, the
   backlog's items 7 and 9, and 0.10.0's own entry above all said migrations were still exercised on
   SQLite only; three documents gave SQLite's identical rendering of `json` and `jsonb` as the reason
@@ -95,7 +99,10 @@ the evidence for each, and what is stable across `1.x`.
   database; the backlog prescribed the wrong direction for the `workflows_name_key` fix; the README's
   route table declared itself complete while omitting `GET /dead-letters`; and four files quoted a
   suite of 1038 tests. All corrected. A false statement in a shipped document is a real defect, which
-  is this phase's whole premise.
+  is this phase's whole premise — including when this release wrote one itself: three places in this
+  branch said §11's first line was last hand-checked at `v0.1.0`. It was `v0.2.0`, whose own
+  `### Verified` block records it as "the last unverified part of 0.1.0". Caught in review, fixed
+  before the tag.
 
 ### Known limits
 - **`DATABASE_URL=""` now falls back to the credentialed localhost default instead of failing.**

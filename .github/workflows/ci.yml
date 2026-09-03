@@ -100,7 +100,8 @@ jobs:
   compose-smoke:
     runs-on: ubuntu-latest
     # Spec §11's first line — "fresh clone -> docker compose up -> dashboard
-    # live" — was last verified by hand at v0.1.0. A claim with a timestamp
+    # live" — was last verified by hand at v0.2.0, whose CHANGELOG entry records
+    # it as "the last unverified part of 0.1.0". A claim with a timestamp
     # rots; this is the same line as a mechanism. It runs against the checkout,
     # which is what a visitor's clone gives them.
     steps:

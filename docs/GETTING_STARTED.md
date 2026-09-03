@@ -414,7 +414,8 @@ again mostly about the new gates' own blind spots, such as the compose stack's h
 ## 10. Verified: a fresh clone, by hand (2026-09-03)
 
 Spec §11's first line — "fresh clone → `docker compose up` → dashboard live" — was last checked
-by hand at v0.1.0, nine phases ago. Task 4 of the 1.0.0 release phase automated the check in CI;
+by hand at **v0.2.0**, nine phases ago — recorded in that release's own `### Verified` block, which
+calls it "the last unverified part of 0.1.0". Task 4 of the 1.0.0 release phase automated it in CI;
 this section records the human-eye complement CI cannot give: a genuine `git clone`, brought up
 with no `ANTHROPIC_API_KEY`, walked through the golden path, and the rendered dashboard confirmed
 visually by a person, not inferred from a 200 response.

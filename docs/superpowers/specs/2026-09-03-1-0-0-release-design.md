@@ -237,7 +237,9 @@ management surface for task memory; and `--strict` typing is a post-1.0 ratchet.
 **Corrected while writing Task 6, and recorded rather than silently fixed** (this is the third
 correction to this spec in this phase, all of the same class): the first item above originally read
 "Slack vision is not live-tested — Discord's full loop is, Slack's is offline-and-recorded only."
-**Nothing in the repository supports that split.** `README.md:435` and `CHANGELOG.md`'s 0.8.0 entry
+**Nothing in the repository supports that split.** The README's [Images](../../../README.md#images)
+section (`README.md:553` at the time of writing — cited by section as well, because a bare line
+number is exactly what M-1 caught going stale) and `CHANGELOG.md`'s 0.8.0 entry
 both say, of *both* platforms, "not live-tested against a real Slack or Discord image — proven
 offline and against recorded transports, the same call made for the channel adapters in 0.7.0", and
 the Phase 6 design spec (§7) says the thin connection wrappers are "the only part verified by hand,
