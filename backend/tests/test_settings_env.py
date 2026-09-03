@@ -68,17 +68,26 @@ def test_constructing_settings_does_not_mutate_the_module_singleton(monkeypatch)
 
 
 def test_every_string_and_int_setting_is_falsy_safe(monkeypatch):
-    """The rule stated project-wide, asserted over EVERY field rather than a list.
+    """BOTH settings rules, asserted over EVERY field rather than a hand-kept list.
 
-    A per-field list is a list someone forgets to extend. This walks the dataclass
-    itself, so a new field added with the two-argument os.getenv form fails here
-    the day it lands.
+    The name says falsy-safe because that is the rule this started as; the loop
+    now pins laziness too, which is the property item 25 is actually about. A
+    per-field list is a list someone forgets to extend. This walks the dataclass
+    itself, so a new field added with an eager default, or with the two-argument
+    os.getenv form, fails here the day it lands.
+
+    Laziness cannot be checked by comparing one Settings() to another: an
+    import-time default is IDENTICAL across two constructions, so such a
+    comparison passes trivially on exactly the defect it is meant to catch. It
+    takes a probe value the default is not, set after the class was defined —
+    only a field read at construction time can report it back.
 
     Each field's default is read with the variable UNSET, never from an ambient
-    Settings(): `tests/conftest.py` exports LEY_KHAA_LLM, LEY_KHAA_DEBOUNCE_SECONDS,
-    LEY_KHAA_SANDBOX and LEY_KHAA_DISPATCH, and the Postgres lane exports
-    DATABASE_URL, so an ambient instance carries the test harness's values rather
-    than the defaults this test is about.
+    Settings(): `tests/conftest.py` exports six variables — LEY_KHAA_DISABLE_STARTUP,
+    LEY_KHAA_LLM, LEY_KHAA_DEBOUNCE_SECONDS, LEY_KHAA_SANDBOX, LEY_KHAA_DISPATCH and
+    LEY_KHAA_WORKSPACE_ROOT (five of them mapped below) — and the Postgres lane
+    exports DATABASE_URL, so an ambient instance carries the test harness's values
+    rather than the defaults this test is about.
     """
     import dataclasses
 
@@ -88,6 +97,23 @@ def test_every_string_and_int_setting_is_falsy_safe(monkeypatch):
             continue
         monkeypatch.delenv(var, raising=False)
         default = getattr(Settings(), f.name)
+
+        # Read at construction time. The probe has to differ from the default,
+        # or an eager field would satisfy the assertion by accident — which is
+        # why the slack/discord fields, whose default is "", need a non-empty
+        # one. int fields need something int() accepts.
+        probe = "31337" if isinstance(default, int) else "a-probe-value"
+        expected = int(probe) if isinstance(default, int) else probe
+        assert expected != default, (
+            f"{f.name}: probe {expected!r} equals the default, so the next "
+            f"assertion would be vacuous — pick a different probe"
+        )
+        monkeypatch.setenv(var, probe)
+        assert getattr(Settings(), f.name) == expected, (
+            f"{f.name} is not read when Settings() is constructed: {var}={probe!r} "
+            f"was ignored, so its default is baked in at import (backlog item 25)"
+        )
+
         monkeypatch.setenv(var, "")
         assert getattr(Settings(), f.name) == default, (
             f"{f.name} is not falsy-safe: {var}='' must fall back to its default"
