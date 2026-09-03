@@ -31,7 +31,11 @@ _APP_USER = "app"
 _DOCKER_SOCKET = "/var/run/docker.sock"
 # Same default as ley_khaa.config.Settings, which this cannot import: the
 # entrypoint runs before the app and must not depend on it being importable.
-_WORKSPACE_ROOT = os.getenv("LEY_KHAA_WORKSPACE_ROOT", "./task-workspaces")
+# `or` rather than a second argument, so an empty LEY_KHAA_WORKSPACE_ROOT falls
+# back exactly as Settings does — the two agree at every input, which is what
+# the sentence above promises. There is no test holding this: it is duplicated
+# by necessity, so it is duplicated in the same shape.
+_WORKSPACE_ROOT = os.getenv("LEY_KHAA_WORKSPACE_ROOT") or "./task-workspaces"
 # Paths a recursive chown must never be pointed at. The workspace root is
 # operator-supplied, and this chown runs as root before the drop, so a typo
 # here would rewrite ownership across the container instead of over a bundle.

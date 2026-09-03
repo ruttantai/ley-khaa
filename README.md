@@ -25,11 +25,11 @@ generator code, exact inputs, seeded manifest — so any result can be audited a
 
 ## Status
 
-**v1.0.0 — the release.** Not a feature release: nothing new is added. It closes the last three
-open gate items from the project's own backlog (the suite no longer depends on pytest's collection
-order; Alembic migrations run on whichever database the lane names, not on SQLite only; the
-`--database` lane guard has a test of its own), adds a CI job that brings the real
-`docker compose` stack up on every push and drives it through the seeded demo, records a fresh
+**v1.0.0 — the release.** Not a feature release: nothing new is added. It closes the three
+backlog items that were gaps in the quality gates themselves (the suite no longer depends on
+pytest's collection order; Alembic migrations run on whichever database the lane names, not on
+SQLite only; the `--database` lane guard has a test of its own), adds a CI job that brings the
+real `docker compose` stack up on every push and drives it through the seeded demo, records a fresh
 clone verified by hand with the dashboard confirmed by a person, and states two things the project
 had never stated: **what is met, with the evidence for each line, and what is stable across
 `1.x`**. See [What 1.0.0 commits to](#what-100-commits-to) below.
@@ -83,7 +83,7 @@ relevance filtering and crystallization run on every message regardless, caches 
 | 7 | `v0.8.0` | **Vision intake** — an image read once and frozen as a reproducible checkpoint | ✅ shipped |
 | 8 | `v0.9.0` | **Ollama offline fallback** — a real local model with no API key, text-only | ✅ shipped |
 | 9 | `v0.10.0` | **Release hardening** — ten defects (nine from the backlog) plus four its own review found, mypy in CI, a Postgres test lane | ✅ shipped |
-| 10 | `v1.0.0` | **The release** — the last three gate items, a compose smoke job, a fresh clone verified by hand, and the stable/unstable contract | ✅ shipped |
+| 10 | `v1.0.0` | **The release** — the three backlog items that were gaps in the gates themselves, a compose smoke job, a fresh clone verified by hand, and the stable/unstable contract | ✅ shipped |
 
 Design spec: [`docs/superpowers/specs/2026-08-18-ley-khaa-design.md`](docs/superpowers/specs/2026-08-18-ley-khaa-design.md).
 Phase plans: [`docs/superpowers/plans/`](docs/superpowers/plans/).
@@ -112,7 +112,7 @@ any test named here with `cd backend && python -m pytest -q -k <name>`.
 | Every task produces a reproducible Output Bundle; re-running the generator with its seed reproduces the identical deliverable | `test_the_bundle_re_runs_to_the_same_spreadsheet`, `test_a_csv_bundle_re_runs_byte_for_byte` |
 | The Model Router selects tiers (Haiku vs Opus, incl. vision routing) by complexity/risk, with Ollama fallback | `test_model_for_policy` (parametrized, vision routing included), `test_complex_conversation_routes_to_opus`, `test_short_conversation_stays_on_haiku`, `test_a_reachable_daemon_with_the_model_pulled_gives_an_ollama_client`. **Narrower than it reads:** "with Ollama fallback" describes the router stepping down per call. What shipped is Ollama as an explicitly-selected backend for a whole run (`LEY_KHAA_LLM=ollama`), chosen once at startup. The per-call step-down is backlog item 22 |
 | Task memory recognizes a repeated request and pre-fills its spec | `test_a_remembered_request_skips_the_interpreter`, `test_the_second_identical_request_makes_no_model_calls`, `test_a_second_identical_request_increments_familiarity` |
-| Real Slack + Discord adapters function when tokens are supplied; the simulator works with none | `test_a_channel_message_is_ingested` (both platforms), `test_notify_posts_into_the_thread_named_by_the_conversation_id`, `test_flattened_output_is_what_translate_accepts`; the no-token half by `test_replay_ingests_every_message` and by the `compose-smoke` job, which runs the seeded replay with no tokens and no API key. **See the known limit below on what "function" was and was not checked against a live workspace** |
+| Real Slack + Discord adapters function when tokens are supplied; the simulator works with none | `test_a_channel_message_is_ingested` (both platforms), `test_notify_posts_into_the_conversations_thread` (Slack) and `test_notify_posts_into_the_thread_named_by_the_conversation_id` (Discord), `test_flattened_output_is_what_translate_accepts`; the no-token half by `test_replay_ingests_every_message` and by the `compose-smoke` job, which runs the seeded replay with no tokens and no API key. **See the known limit below on what "function" was and was not checked against a live workspace** |
 | Tests (unit + one end-to-end integration) pass | **1066 backend tests on SQLite and 1066 on Postgres 16**, 0 skipped, 0 warnings, plus 58 frontend tests; CI's `backend-tests` job runs both database lanes and `mypy`, `frontend-tests` runs vitest and `tsc`. The end-to-end integration is `test_executor_end_to_end.py` |
 | The README tells the positioning + "AI secretary" story and documents synthetic-only data | This file: the opening two paragraphs and the synthetic-data callout above them |
 | Public-repo hygiene: `README`, `LICENSE`, `CONTRIBUTING`, `CHANGELOG`, CI workflow | All five present in the repo root and `.github/workflows/ci.yml`, which runs three jobs and blocks the build |

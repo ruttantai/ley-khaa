@@ -173,7 +173,12 @@ def test_vision_is_on_unless_explicitly_off(monkeypatch):
 
 
 def test_workspace_volume_is_none_rather_than_empty(monkeypatch):
-    """DockerSandbox branches on `is None`; "" would take the wrong branch."""
+    """The declared type is `str | None`, so "unset" is None, not "".
+
+    Not a behaviour guard: both call sites (sandbox.py:304, :440) branch on
+    falsiness, so "" and None take the same branch today. This pins the value's
+    identity so a future caller is free to use `is None`.
+    """
     monkeypatch.setenv("LEY_KHAA_WORKSPACE_VOLUME", "")
     assert Settings().workspace_volume is None
     monkeypatch.setenv("LEY_KHAA_WORKSPACE_VOLUME", "vol")

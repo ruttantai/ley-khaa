@@ -176,7 +176,8 @@ re-confirmed by hand into something an automated gate catches.** `0004_registry_
 carried a `workflows_name_key` constraint the models never declare.
 
 **This drift was not discovered here, and saying so would be false.** Backlog item 9 raised it, item 26
-carries it (`2026-08-28-phase-5-backlog.md:824`), and it was re-confirmed by hand at the close of
+carries it (`2026-08-28-phase-5-backlog.md`, item 26, "This entry also carries the finding item 9
+raised and could not close" — `:894` at the time of writing), and it was re-confirmed by hand at the close of
 Phase 9 by upgrading a throwaway `postgres:16` database and running `compare_metadata`. What changed is
 that `test_migrations_match_the_models` now fails on it automatically, on a straight `upgrade head`, on
 every CI run — instead of depending on someone remembering to check by hand. Item 26's own "shape of

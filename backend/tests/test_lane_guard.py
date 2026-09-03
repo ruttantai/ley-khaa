@@ -21,7 +21,13 @@ BACKEND = Path(__file__).resolve().parent.parent
 # pytest's own exit code for a usage error (pytest.ExitCode.USAGE_ERROR).
 USAGE_ERROR = 4
 
-POSTGRES_URL = "postgresql+psycopg://ley:ley@localhost:55432/leykhaa"
+# Never connected to: the guard only string-matches the URL's scheme, and
+# every invocation below is `--collect-only`, which never builds the
+# session-scoped `_pg_engine`. The host is deliberately unresolvable (RFC 2606
+# reserves `.invalid`) rather than a real port, so if collection ever does open
+# a connection these tests fail loudly instead of reaching whatever Postgres
+# happens to be listening on the developer's machine.
+POSTGRES_URL = "postgresql+psycopg://ley:ley@postgres.invalid:5432/leykhaa"
 
 
 def _run(args, env_overrides):

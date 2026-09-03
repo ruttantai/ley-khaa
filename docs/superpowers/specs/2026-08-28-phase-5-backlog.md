@@ -13,7 +13,7 @@ Ordering is by what I would do first, not by severity.
 
 ## Everything still open here is post-1.0 work, by decision
 
-Written at the close of Phase 10 (v1.0.0). Nineteen of the thirty-three entries above are closed,
+Written at the close of Phase 10 (v1.0.0). Nineteen of the thirty-three entries below are closed,
 each with the commit that closed it in its heading. **The fourteen that stay open — 1, 2, 3, 20, 21,
 22, 23, 24, 27, 29, 30, 31, 32 and 33 — stay open deliberately**, and seven more (34–40) were filed
 during the release phase itself.

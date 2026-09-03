@@ -7,10 +7,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
 
 ## [1.0.0] — 2026-09-03
 
-The release. **Not a feature release — nothing new is added, and that is the point.** It closes the
-last three gate items the project's own backlog carried, adds the one gate that was still missing (a
-CI job that runs the real `docker compose` stack a visitor gets), records a fresh clone verified by
-hand with the dashboard confirmed by a person rather than by a 200 response, and states in the README
+The release. **Not a feature release — nothing new is added, and that is the point.** It closes the three
+backlog items that were gaps in the quality gates themselves, adds the one gate that was still
+missing (a CI job that runs the real `docker compose` stack a visitor gets), records a fresh clone
+verified by hand with the dashboard confirmed by a person rather than by a 200 response, and states
+in the README
 two things nine phases never stated: what the v1 definition of done actually met, line by line with
 the evidence for each, and what is stable across `1.x`.
 

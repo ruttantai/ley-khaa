@@ -114,7 +114,10 @@ class Settings:
     )
     # Set under compose so DockerSandbox mounts the named volume by name; a
     # sibling container cannot bind-mount the backend's own container paths.
-    # None rather than "": DockerSandbox branches on `is None`.
+    # None rather than "": both call sites (sandbox.py:304, :440) branch on
+    # falsiness, so "" and None behave identically today. None is kept because
+    # it is the honest value for "unset" under the declared `str | None`, and
+    # does not rely on every future caller staying with a falsy check.
     workspace_volume: str | None = field(
         default_factory=lambda: os.getenv("LEY_KHAA_WORKSPACE_VOLUME") or None
     )
