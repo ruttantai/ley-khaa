@@ -145,13 +145,35 @@ dropped afterwards). Migrations *create* tables, so they need a genuinely empty 
 share the `ley_khaa_test` schema the main suite truncates. The five hardcoded URLs read from the
 fixture.
 
-**The payoff, and it closes an admission this project made three times.** The migration round-trip
-currently cannot discriminate `0006_alias_jsonb`: `JSON` and `JSON().with_variant(JSONB,
-"postgresql")` render identically on SQLite, so mutating that downgrade to `pass` leaves the file
-green. v0.10.0 stated that limitation outright in the test docstring, the backlog item-7 closure, and
-the CHANGELOG. On Postgres the two do not render identically, so `0006`'s downgrade becomes
-exercised and coverage goes **9-of-10 → 10-of-10**. Those three admissions are then rewritten as
-facts — which is the point: a limitation you closed should stop being advertised.
+**What this was expected to close, and what actually happened — corrected after execution.**
+
+The spec originally claimed this task would make `0006_alias_jsonb` discriminable and take migration
+coverage from 9-of-10 to 10-of-10. **That claim was wrong, and executing the task disproved it.**
+
+The reasoning behind it was: `0006`'s downgrade is an `alter_column` between `sa.JSON()` and
+`JSON().with_variant(JSONB, "postgresql")`, those two render identically on SQLite, and therefore
+SQLite rendering identity was the reason a `pass` downgrade left the file green. On Postgres the two
+genuinely do differ — an `information_schema` probe over `head → 0005 → head` confirms the real
+downgrade produces `json` at 0005 while the mutated one leaves `jsonb`, which is the first direct
+evidence `0006`'s downgrade is correct on Postgres at all.
+
+**But the round-trip test compares only the schema after the RE-UPGRADE, and `0006.upgrade()` sets
+`jsonb` either way.** A no-op downgrade of a pure type change leaves no residue for a round trip to
+trip over — **on any database**. SQLite's rendering identity was never the only reason, and removing
+it changes nothing. Measured: `downgrade() -> pass` gives `14 passed` on Postgres *and* on SQLite.
+
+**Migration coverage therefore remains 9-of-10, and the three `0006` admissions stay true.** They are
+corrected only to state both reasons rather than one. Closing `0006` for real needs an assertion at
+the *downgraded* point rather than after the round trip, which can only mean anything on Postgres —
+that collides with the phase's 0-skipped bar and is a design decision, not an improvised test. It is
+filed as backlog work, not attempted here.
+
+**The task's real value turned out to be different, and larger: it found a genuine Postgres-only
+defect on its first run.** `0004_registry_memory` declared `workflows.name` with column-level
+`unique=True` *and* a unique index, so a migrated Postgres database carried a `workflows_name_key`
+constraint the models never declare — schema drift, invisible for six phases because migrations had
+only ever run on SQLite. `test_migrations_match_the_models` caught it on a straight `upgrade head`.
+That is precisely what backlog item 26 existed to expose.
 
 ## 5. Item 28 — the lane guard's own test
 
@@ -206,7 +228,8 @@ management surface for task memory; and `--strict` typing is a post-1.0 ratchet.
 - Every §11 line demonstrable **and demonstrated** — not asserted from memory.
 - Items 25, 26 and 28 closed, each with a test that fails without its fix, verified by mutation over
   the whole test file, with the observed output reported.
-- Migration coverage **10-of-10**, and the three `0006` admissions rewritten as facts.
+- Migration coverage stays **9-of-10**, with the `0006` admissions corrected to state BOTH reasons
+  (the round trip's shape, not only SQLite's type rendering) rather than being declared closed.
 - The compose smoke job green in CI (or non-blocking with a recorded reason, per §6), and the
   by-hand fresh-clone transcript recorded.
 - Both database lanes green, **0 failures, 0 skipped, 0 warnings**; `mypy` clean; frontend tests and
