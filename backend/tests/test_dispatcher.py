@@ -803,3 +803,41 @@ def test_a_real_driver_stuck_on_the_head_task_does_not_starve_the_queue(session_
         # Only a real interpretation can have put it here, so this is proof
         # the second task was actually driven, not merely listed.
         assert TaskState(repo.get(behind).state) is TaskState.NEEDS_CLARIFICATION
+
+
+def test_a_zero_concurrency_cap_still_ticks_instead_of_hanging_for_ever(
+    session_factory, monkeypatch
+):
+    """`asyncio.Semaphore(0)` can never be acquired. Unclamped,
+    LEY_KHAA_MAX_PROJECTS=0 left every `_work_one` blocked on `async with
+    limit`, so `gather` never completed and `tick()` never returned — and
+    `run_forever`'s `except Exception` cannot see a hang, so the dispatcher
+    stopped draining every project silently, with no log line at all.
+
+    Same ruling as `dead_letter_max_rows`: clamp, do not reject and do not
+    reinterpret 0 as "unlimited". `wait_for` is what turns the regression
+    into a failing test rather than a suite that hangs.
+    """
+    from ley_khaa.config import settings as real_settings
+
+    monkeypatch.setattr(
+        dispatcher_module, "settings", replace(real_settings, max_concurrent_projects=0)
+    )
+
+    with session_factory() as session:
+        task_id = _task(session, project="acme")
+
+    driven: list[str] = []
+
+    def drive(session, task_id):
+        driven.append(task_id)
+        TaskRepository(session).claim(
+            task_id, expected=TaskState.CLASSIFIED, target=TaskState.FAILED
+        )
+
+    result = asyncio.run(
+        asyncio.wait_for(Dispatcher(session_factory, drive=drive).tick(), timeout=10.0)
+    )
+
+    assert result == [task_id]
+    assert driven == [task_id]
