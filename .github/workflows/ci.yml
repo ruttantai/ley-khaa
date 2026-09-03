@@ -96,3 +96,82 @@ jobs:
         working-directory: frontend
       - run: npm test
         working-directory: frontend
+
+  compose-smoke:
+    runs-on: ubuntu-latest
+    # Spec §11's first line — "fresh clone -> docker compose up -> dashboard
+    # live" — was last verified by hand at v0.1.0. A claim with a timestamp
+    # rots; this is the same line as a mechanism. It runs against the checkout,
+    # which is what a visitor's clone gives them.
+    steps:
+      - uses: actions/checkout@v4
+
+      # No ANTHROPIC_API_KEY is set, deliberately: this is the zero-account
+      # demo path a first-time visitor gets, and it must work without one.
+      # `up -d` exits 0 even when the backend then crashes on startup — it
+      # reports that containers were started, not that they stayed up — so
+      # every assertion below is a poll, not a read of this step's exit code.
+      - name: Bring the stack up
+        run: docker compose up -d --build
+
+      # Only the `db` service declares a healthcheck, so the backend and the
+      # dashboard are polled here rather than waited on by compose.
+      - name: Wait for the backend to answer
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8000/health > /dev/null; then
+              echo "backend healthy after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "backend did not answer /health within 60s"; exit 1
+
+      - name: Wait for the dashboard to serve
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:5173 > /dev/null; then
+              echo "dashboard serving after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "dashboard did not serve within 60s"; exit 1
+
+      # The seeded demo task LEAVING `received` is what makes this a smoke test
+      # of the ORCHESTRATOR rather than of two web servers: it means the
+      # crystallizer, the interpreter and the autonomy engine all ran.
+      #
+      # NOT "reaches done". On a fresh clone the autonomy dial parks the golden
+      # conversation at `awaiting_approval` for a human, by design — the
+      # project's own end-to-end test (tests/test_executor_end_to_end.py:23-26)
+      # has to POST /tasks/{id}/mode {"mode":"auto"} before it can assert
+      # `done`. Asserting `done` here would fail the build on a correctly
+      # working stack, and making the job POST that mode itself would have CI
+      # drive the workflow rather than observe it.
+      #
+      # The substring match is sound because TaskOut.state is a plain `str` and
+      # FastAPI emits no space after the colon; verified against a live stack.
+      - name: Wait for the seeded demo task to leave `received`
+        run: |
+          for i in $(seq 1 120); do
+            body=$(curl -fsS http://localhost:8000/tasks || echo '[]')
+            if [ "$body" != "[]" ] && ! echo "$body" | grep -q '"state":"received"'; then
+              echo "the demo task advanced after ${i}s:"; echo "$body"; exit 0
+            fi
+            sleep 1
+          done
+          echo "the demo task did not advance within 120s; tasks were:"
+          curl -fsS http://localhost:8000/tasks || true
+          exit 1
+
+      # Always runs, so a failing assertion still leaves the logs behind — the
+      # only way to diagnose a compose failure after the runner is gone.
+      # `sandbox-image` exiting 0 is success, not failure: it exists only to
+      # build the sandbox image on the host daemon and is depended on with
+      # `condition: service_completed_successfully`.
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
