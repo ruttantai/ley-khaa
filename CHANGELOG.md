@@ -5,6 +5,133 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-09-03
+
+The release. **Not a feature release — nothing new is added, and that is the point.** It closes the three
+backlog items that were gaps in the quality gates themselves, adds the one gate that was still
+missing (a CI job that runs the real `docker compose` stack a visitor gets), records a fresh clone
+verified by hand with the dashboard confirmed by a person rather than by a 200 response, and states
+in the README
+two things nine phases never stated: what the v1 definition of done actually met, line by line with
+the evidence for each, and what is stable across `1.x`.
+
+### Added
+- **A compose smoke job in CI (`compose-smoke`).** Every push now brings the whole stack up with
+  `docker compose up -d --build` — no `ANTHROPIC_API_KEY`, the zero-account path a visitor gets — and
+  polls `/health`, the dashboard on `:5173`, and `/tasks` until the seeded demo task has **left
+  `received`**, which is what makes it a smoke test of the orchestrator rather than of two web
+  servers: the crystallizer, the interpreter and the autonomy engine all had to run. It asserts the
+  task advanced, **not** that it reaches `done`: on a fresh clone the autonomy dial parks the golden
+  conversation at `awaiting_approval` for a human, by design, so asserting `done` would fail the
+  build on a correctly working stack. The job blocks the build. Proven to gate rather than decorate,
+  by three independent routes: a backend pointed at a nonexistent host, `docker compose stop
+  frontend`, and `docker compose stop backend` each fail the job at the corresponding poll — and the
+  third never false-passes, because the body stays literal `[]`. `docker compose up -d` itself exits
+  0 on a stack whose backend is already dying, which is the whole argument for the polls.
+- **A stable/unstable contract, in the README.** SemVer was declared in CONTRIBUTING; what it
+  versions was not. All twenty-eight HTTP endpoints are enumerated as stable across `1.x`, along with
+  the `LEY_KHAA_*` variables and the Output Bundle layout — deliberately narrow, so that the next
+  honest improvement to a young internal interface is not a major version bump.
+- **The §11 definition of done, restated with its evidence.** Each line names a test, a CI job, or
+  the by-hand transcript. Where a line is narrower in practice than it reads — "with Ollama
+  fallback" describes a per-call step-down; what shipped is a backend selected once at startup — the
+  narrowing is written down. One line is honestly outstanding at the moment of writing and says so:
+  the `v1.0.0` tag itself, which is cut on this release's merge commit.
+- **A recorded fresh-clone verification** (`docs/GETTING_STARTED.md` §10). A genuine `git clone`,
+  brought up with no API key, walked to a parked task — **and the rendered dashboard confirmed
+  visually by a person**, which no automated check in this repo, the new smoke job included, can
+  honestly stand in for. §11's first line had last been checked by hand at v0.2.0, nine phases ago.
+  The section also documents three first-run wrinkles found doing it, with causes, including a
+  `FATAL: database "ley" does not exist` the `db` healthcheck logs every five seconds and which is
+  not an error.
+
+### Fixed
+- **Settings read their environment when they are constructed** (backlog item 25). All 27 fields
+  had `os.getenv(...)` defaults evaluated at class-definition time, so the only way to observe a
+  changed variable was `importlib.reload(ley_khaa.config)` — which rebinds the module-level
+  `settings` while every module that already did `from ..config import settings` keeps the old one.
+  That leak made the suite green only in pytest's default collection order: in reverse file order one
+  test failed, identically on both database lanes. Reverse-order runs are now green on both.
+  The item's own proposed fix could not have worked as written — building a `Settings()` from a
+  patched environment observes nothing while the defaults are import-time — and the item named one
+  reloading file when there were two; `test_vision_config.py` reloaded at eight further sites, and
+  removing them was load-bearing, proven by restoring that one file and watching the failure return.
+- **Every setting is falsy-safe.** `docker-compose.yml` passes `${VAR:-}`, which *sets* a variable to
+  the empty string, so the two-argument `os.getenv(NAME, default)` form returned `""` and the default
+  never fired. `_env_str` / `_env_int` / `_env_bool` fall back on an empty value. The three delicate
+  semantics — `disable_startup` true for exactly `"1"`, `vision_enabled`'s tri-state, and
+  `workspace_volume`'s `or None` — are preserved verbatim, each with its own test and its own
+  mutation. See Known limits for the one behaviour change this implies.
+- **`workflows.name` declared its uniqueness twice** (backlog item 26). Migration `0004` gave the
+  column a `unique=True` *and* a unique index, so a migrated Postgres database carried a
+  `workflows_name_key` constraint the models never declare, while the ORM's `unique=True,
+  index=True` renders one unique Index and no constraint. The redundant column-level flag is gone;
+  uniqueness is the index, the same shape `messages.external_id` already uses. The drift was known —
+  backlog items 9 and 26 both recorded it and it was re-confirmed by hand at the close of Phase 9 —
+  what changed is that it now fails an automated gate on every CI run instead of depending on someone
+  remembering to check. Note for anyone with a Postgres database migrated before this: it keeps the
+  extra constraint, which is inert (both enforce uniqueness on the same column) and removable with
+  one `ALTER TABLE ... DROP CONSTRAINT`.
+
+### Changed
+- **Alembic migrations run on whichever database the lane names** (backlog item 26).
+  `test_migrations.py` built its own `sqlite:///` URLs and was untouched by `DATABASE_URL`, so the
+  drift guard, the pre-Alembic stamping path and the downgrade tests had no Postgres coverage at
+  all — the database `docker compose up` actually deploys. Each test now gets a URL derived from the
+  lane, and on Postgres a throwaway `ley_khaa_mig_<hex>` schema of its own, created and dropped per
+  test. The main suite's schema is still built by `create_all`, deliberately and unchanged: a failure
+  there stays unambiguously a dialect difference rather than a migration bug.
+- **The `--database` lane guard has a test of its own** (backlog item 28). The guard exists so a lane
+  cannot silently re-run the other one and report it as Postgres; nothing drove its mismatch branch,
+  so a regression in the guard's own logic would have produced zero signal. `test_lane_guard.py`
+  drives it through real subprocess `pytest` runs and asserts exit code 4 and the whole message,
+  remedy clause included. It also pins lane *inference* on both lanes, not only on the one where the
+  default happens to match — without that, changing the option's default from `None` to `"sqlite"`
+  passed every test while breaking bare `pytest` for anyone with a Postgres `DATABASE_URL` set.
+- `backend/pyproject.toml` declares version `1.0.0`, bumped inside this release branch — the same
+  place and the same way `8246dec` bumped it to `0.10.0` for the last release. It is the only live
+  version declaration in the repository, so tagging with it left at `0.10.0` would ship a package
+  whose own metadata contradicts every document in the tree.
+- **Corrections to statements this project had already shipped.** `docs/GETTING_STARTED.md`, the
+  backlog's items 7 and 9, and 0.10.0's own entry above all said migrations were still exercised on
+  SQLite only; three documents gave SQLite's identical rendering of `json` and `jsonb` as the reason
+  `0006`'s downgrade is undiscriminated, which is true but is not the mechanism — the round trip
+  compares only the schema after the re-upgrade, so a no-op downgrade leaves no residue on *any*
+  database; the backlog prescribed the wrong direction for the `workflows_name_key` fix; the README's
+  route table declared itself complete while omitting `GET /dead-letters`; and four files quoted a
+  suite of 1038 tests. All corrected. A false statement in a shipped document is a real defect, which
+  is this phase's whole premise — including when this release wrote one itself: three places in this
+  branch said §11's first line was last hand-checked at `v0.1.0`. It was `v0.2.0`, whose own
+  `### Verified` block records it as "the last unverified part of 0.1.0". Caught in review, fixed
+  before the tag.
+
+### Known limits
+- **`DATABASE_URL=""` now falls back to the credentialed localhost default instead of failing.**
+  This follows directly from the falsy-safe rule above and is the right trade for a stack that passes
+  `${VAR:-}`, but an operator who blanks the variable deserves to find it written down rather than by
+  surprise: you get `postgresql+psycopg://ley:ley@localhost:5432/leykhaa`, not an error. Unset the
+  variable if you mean to change the database.
+- **`0006_alias_jsonb`'s downgrade is still discriminated by no test, on either database.** Nine of
+  the ten migration downgrades redden `test_migrations.py` when replaced by `pass`; this one does
+  not, and running it on Postgres did not change that. Coverage stays 9 of 10. Closing it needs an
+  assertion at the *downgraded* point, which can only mean anything on Postgres — a design decision
+  about how far a dialect-agnostic test file should reach into one dialect, filed as backlog item 40
+  rather than improvised at the end of a release phase.
+- **Seven new backlog entries (34–40) came out of this phase**, mostly about the new gates' own blind
+  spots and about `docker-compose.yml`: `run_migrations` crashes on any `DATABASE_URL` containing a
+  `%` (latent — compose ships `ley:ley`); compose hardcodes `DATABASE_URL` with no `${...:-}`, which
+  silently defeats the obvious way to point the stack elsewhere; the `db` healthcheck omits `-d`, so
+  it logs a harmless `FATAL` every five seconds; `backend` and `frontend` declare no healthcheck,
+  which is why the smoke job must poll them; and the task poll greps the whole `/tasks` body rather
+  than the one task's state. **None was fixed here**: all but the first would edit the compose file
+  the smoke job had just certified, and a release phase is the wrong time to change the artifact
+  under test.
+- **Fourteen entries from the Phase 5 backlog stay open by decision** (1, 2, 3, 20, 21, 22, 23, 24,
+  27, 29, 30, 31, 32, 33), each with its reason recorded in that file and a shared preamble saying
+  why they are post-1.0 work: memory still does not learn paraphrases, task memory still has no
+  management surface, vision is still text-only on the Ollama path, and there is still no runtime
+  step-down between backends.
+
 ## [0.10.0] — 2026-09-02
 
 Release hardening. No new features: ten defects fixed — nine carried in the Phase 5 backlog, one
@@ -101,8 +228,11 @@ and a mistyped retention cap that stopped the service at import.
 ### Changed
 - Test coverage for the two gaps §4.3 names (items 7 and 12): migration downgrades — `downgrade base`
   leaves no table behind, and a head → *each* revision → head round trip is diffed against the models
-  (nine of the ten downgrades redden it when deleted; `0006`'s JSON↔JSONB `alter_column` cannot be
-  discriminated on SQLite and stays uncovered, see backlog item 26) — `fingerprint_candidates`'
+  (nine of the ten downgrades redden it when deleted; `0006`'s JSON↔JSONB `alter_column` stays
+  uncovered — *corrected in 1.0.0: the reason given here, that SQLite renders the two types
+  identically, is true but is not the mechanism. The round trip compares only the schema after the
+  re-upgrade, and `0006.upgrade()` sets `jsonb` either way, so a no-op downgrade leaves no residue
+  on **any** database. Re-filed as backlog item 40*) — `fingerprint_candidates`'
   empty-operation guard,
   `confidence == CONFIDENCE_FLOOR` exactly as a match, `_remember`'s own empty-fingerprint guard, and
   `HeuristicLLM`'s offline `ProjectChoice` rule — which nothing tested, because `ProjectRouter`'s
@@ -116,10 +246,15 @@ and a mistyped retention cap that stopped the service at import.
   rebinds `settings` out from under modules that already imported it. The shipped code is not
   involved. Filed as backlog item 25 with a three-file reproducer; it must be fixed before anything
   introduces test-order randomisation or `pytest-xdist`.
+  ***Closed in 1.0.0** (`68b348c`, `f84d313`). Also corrected there: this named one reloading file,
+  and there were two — `test_vision_config.py` reloaded at eight further sites, and the fix needed
+  both of them as well as the production change.*
 - **Alembic migrations are still exercised on SQLite only** (backlog item 26). The Postgres lane
   builds its schema with `create_all`, deliberately, so that a failure there is unambiguously a
   dialect difference rather than a migration bug — which leaves the drift guard, the downgrade tests
   and the `JSONB` variant with no automatic Postgres coverage.
+  ***Closed in 1.0.0** (`8975f84`): `test_migrations.py` now runs on whichever database the lane
+  names, in a throwaway schema of its own.*
 - **mypy runs at default settings, and `ignore_missing_imports` is global** for the sake of one
   untyped dependency (openpyxl), so a future untyped dependency would be exempted silently (item 24).
   CI's mypy dependencies are also unpinned floors, so a stub release can redden the gate on a commit

@@ -25,6 +25,15 @@ generator code, exact inputs, seeded manifest — so any result can be audited a
 
 ## Status
 
+**v1.0.0 — the release.** Not a feature release: nothing new is added. It closes the three
+backlog items that were gaps in the quality gates themselves (the suite no longer depends on
+pytest's collection order; Alembic migrations run on whichever database the lane names, not on
+SQLite only; the `--database` lane guard has a test of its own), adds a CI job that brings the
+real `docker compose` stack up on every push and drives it through the seeded demo, records a fresh
+clone verified by hand with the dashboard confirmed by a person, and states two things the project
+had never stated: **what is met, with the evidence for each line, and what is stable across
+`1.x`**. See [What 1.0.0 commits to](#what-100-commits-to) below.
+
 **v0.10.0 — release hardening.** No new features: ten defects fixed — nine of them carried in the
 project's own backlog — each pinned by a test that fails without the fix, plus two gates that did
 not exist, plus four more defects the branch's own whole-branch review found and this release fixes.
@@ -74,10 +83,119 @@ relevance filtering and crystallization run on every message regardless, caches 
 | 7 | `v0.8.0` | **Vision intake** — an image read once and frozen as a reproducible checkpoint | ✅ shipped |
 | 8 | `v0.9.0` | **Ollama offline fallback** — a real local model with no API key, text-only | ✅ shipped |
 | 9 | `v0.10.0` | **Release hardening** — ten defects (nine from the backlog) plus four its own review found, mypy in CI, a Postgres test lane | ✅ shipped |
-| — | `v1.0.0` | Definition of done (spec §11), release tagged | 🎯 target |
+| 10 | `v1.0.0` | **The release** — the three backlog items that were gaps in the gates themselves, a compose smoke job, a fresh clone verified by hand, and the stable/unstable contract | ✅ shipped |
 
 Design spec: [`docs/superpowers/specs/2026-08-18-ley-khaa-design.md`](docs/superpowers/specs/2026-08-18-ley-khaa-design.md).
 Phase plans: [`docs/superpowers/plans/`](docs/superpowers/plans/).
+
+## What 1.0.0 commits to
+
+Two things, and they are the only two.
+
+### 1. The definition of done is met, and here is what demonstrates each line
+
+The design spec's §11 is the v1 definition of done. Every line below names a **test, a CI job, or
+the by-hand transcript** that shows it — no line is asserted from memory, and where a line is
+narrower in practice than it reads, the narrowing is written down rather than worded around. Run
+any test named here with `cd backend && python -m pytest -q -k <name>`.
+
+| §11 line | What demonstrates it |
+|---|---|
+| Fresh clone → `docker compose up` → dashboard live with seeded demo conversations | [`docs/GETTING_STARTED.md` §10](docs/GETTING_STARTED.md) — a genuine `git clone`, no `ANTHROPIC_API_KEY`, **and the rendered dashboard confirmed by a person** on 2026-09-03; plus CI's `compose-smoke` job, which brings the same stack up on every push and polls `/health`, `:5173` and `/tasks` |
+| A messy, multi-message, noisy conversation is crystallized into the correct task, no manual extraction | `test_messy_conversation_yields_one_clean_task`, `test_a_messy_conversation_parks_for_a_human_and_the_dial_releases_it` — and observed live in the §10 transcript |
+| Intake accepts multi-modal input; a pasted image is understood via vision and frozen as a reproducible checkpoint | `test_an_image_is_read_once_and_only_once`, `test_the_checkpoint_survives_a_fresh_extractor`, `test_the_cache_is_keyed_on_bytes_not_on_filename` |
+| The autonomy engine recommends a mode with a readable reason; the human can override | `test_the_reason_reads_like_the_spec_examples`, `test_overriding_the_mode_to_auto_releases_the_task`, `test_clearing_the_override_is_accepted` — §10 quotes the live reason the demo task produced |
+| Requests from multiple clients route into the correct projects, with concurrent queues | `test_two_clients_land_in_two_projects`, `test_two_projects_genuinely_run_at_the_same_time`, `test_a_slow_project_does_not_pace_a_fast_project` |
+| An ad-hoc mid-flight request triggers the amendment detector | `test_auto_folds_the_amendment_without_creating_a_second_task`, `test_suggest_parks_the_amendment_for_a_human` |
+| An arbitrary request with no registry match is handled by synthesis, run in the Docker sandbox within limits, script + output in the bundle | `test_a_request_with_no_match_still_synthesizes`; the limits by `test_a_runaway_script_is_killed`, `test_killing_a_runaway_script_also_kills_its_children`, `test_the_docker_sandbox_has_no_network`, `test_secrets_are_not_visible_to_the_script`; the bundle by `test_the_bundle_records_how_the_spreadsheet_was_made`. CI builds the sandbox image so these run rather than skip |
+| A request matching a seed registry workflow takes the fast path and runs the proven code | `test_the_seeded_demo_conversation_takes_the_registry_fast_path`, `test_a_matching_request_runs_the_proven_code_and_calls_no_model`, `test_the_binding_is_recorded_and_the_frozen_source_is_what_ran` |
+| Every task produces a reproducible Output Bundle; re-running the generator with its seed reproduces the identical deliverable | `test_the_bundle_re_runs_to_the_same_spreadsheet`, `test_a_csv_bundle_re_runs_byte_for_byte` |
+| The Model Router selects tiers (Haiku vs Opus, incl. vision routing) by complexity/risk, with Ollama fallback | `test_model_for_policy` (parametrized, vision routing included), `test_complex_conversation_routes_to_opus`, `test_short_conversation_stays_on_haiku`, `test_a_reachable_daemon_with_the_model_pulled_gives_an_ollama_client`. **Narrower than it reads:** "with Ollama fallback" describes the router stepping down per call. What shipped is Ollama as an explicitly-selected backend for a whole run (`LEY_KHAA_LLM=ollama`), chosen once at startup. The per-call step-down is backlog item 22 |
+| Task memory recognizes a repeated request and pre-fills its spec | `test_a_remembered_request_skips_the_interpreter`, `test_the_second_identical_request_makes_no_model_calls`, `test_a_second_identical_request_increments_familiarity` |
+| Real Slack + Discord adapters function when tokens are supplied; the simulator works with none | `test_a_channel_message_is_ingested` (both platforms), `test_notify_posts_into_the_conversations_thread` (Slack) and `test_notify_posts_into_the_thread_named_by_the_conversation_id` (Discord), `test_flattened_output_is_what_translate_accepts`; the no-token half by `test_replay_ingests_every_message` and by the `compose-smoke` job, which runs the seeded replay with no tokens and no API key. **See the known limit below on what "function" was and was not checked against a live workspace** |
+| Tests (unit + one end-to-end integration) pass | **1066 backend tests on SQLite and 1066 on Postgres 16**, 0 skipped, 0 warnings, plus 58 frontend tests; CI's `backend-tests` job runs both database lanes and `mypy`, `frontend-tests` runs vitest and `tsc`. The end-to-end integration is `test_executor_end_to_end.py` |
+| The README tells the positioning + "AI secretary" story and documents synthetic-only data | This file: the opening two paragraphs and the synthetic-data callout above them |
+| Public-repo hygiene: `README`, `LICENSE`, `CONTRIBUTING`, `CHANGELOG`, CI workflow | All five present in the repo root and `.github/workflows/ci.yml`, which runs three jobs and blocks the build |
+| Release tagged `1.0.0`, with milestone pre-release tags along the way | Ten milestone tags shipped: `v0.1.0` … `v0.10.0`. **`v1.0.0` is cut on this release's merge commit — the one line this table cannot evidence at the moment it is written, said plainly rather than worded around** |
+
+### 2. The stable/unstable contract across `1.x`
+
+[SemVer](https://semver.org) was already declared in [CONTRIBUTING](CONTRIBUTING.md); what it
+versions was not. **Stable — a breaking change to any of these requires `2.0.0`:**
+
+- **Every HTTP endpoint the application serves, and its response shape.** All twenty-eight of them,
+  listed below rather than gestured at, so the contract cannot quietly become a partial list.
+- **The `LEY_KHAA_*` environment variables and their meanings.**
+- **The Output Bundle layout** — `task-workspaces/task-<id>/` with its deliverable, `generator/`,
+  `inputs/` and `manifest.json` — and the manifest's field names.
+
+The twenty-eight, exactly as `backend/ley_khaa/api/app.py` declares them:
+
+```
+GET    /health                              POST   /messages
+GET    /conversations/{id}/messages         POST   /simulate/{name}
+GET    /candidates                          POST   /candidates/sweep
+POST   /candidates/{id}/fold                POST   /candidates/{id}/separate
+GET    /triage                              GET    /dead-letters
+GET    /projects                            POST   /projects
+GET    /projects/{name}/tasks               GET    /tasks
+GET    /tasks/{id}                          POST   /tasks/{id}/approve
+POST   /tasks/{id}/reject                   POST   /tasks/{id}/mode
+PATCH  /tasks/{id}/spec                     POST   /tasks/{id}/answer
+POST   /tasks/{id}/promote                  GET    /tasks/{id}/bundle
+GET    /tasks/{id}/bundle/file              GET    /tasks/{id}/bundle/deliverable
+GET    /tasks/{id}/bundle/download          GET    /registry
+POST   /registry/{name}/unquarantine        DELETE /registry/{name}
+```
+
+`/health` is load-bearing beyond the dashboard: compose's own health check and CI's `compose-smoke`
+job both depend on it. See the [Run](#run) section for what each endpoint does.
+
+**Unstable — these may change in any `1.x` release:**
+
+- internal module boundaries and function signatures (this is an application, not a library);
+- the registry and task-memory database schemas, which Alembic migrates for you;
+- prompt text and the synthesized-script format;
+- the dashboard's component structure.
+
+This is deliberately narrow. The project is local-first and single-operator, and over-promising on
+interfaces that are still young would make the next honest improvement a major version bump.
+
+### Known limits at 1.0.0
+
+Things a reader should learn here rather than by hitting them. The
+[backlog](docs/superpowers/specs/2026-08-28-phase-5-backlog.md) carries all twenty-one open
+entries with the reason each stays open; these are the ones that change what you can expect from a
+running system.
+
+- **The channel adapters were never exercised end to end against a live workspace.** Everything is
+  proven offline and against recorded transports and captured real payloads — the thin connection
+  wrappers are the only part checked by hand against real Slack and Discord workspaces, once. **No
+  image from a real Slack or Discord message has ever been through the vision path**, on either
+  platform (0.8.0 said so and it is still true).
+- **Ollama is text-only, so vision does not work on the offline path.** An image on that path is
+  carried, not read, exactly as with no API key at all. Backlog item 21.
+- **Memory does not learn paraphrases the way the registry learns aliases.** A remembered request
+  asked in a new wording forks a new row rather than adding an alias to the proven one, so
+  `times_seen` under-reports: served ten times across ten wordings, it reads "seen 1×" ten times
+  over. The dashboard badge is wrong, and the dial's familiarity bonus stays at its floor for
+  exactly the user whose history should earn it. Nothing is *incorrect* — the next identical
+  wording is still a free fingerprint hit. Backlog item 1.
+- **There is no management surface for task memory.** The registry has list, unquarantine and
+  delete, plus a dashboard page. Task memory has none of them, so a bad remembered spec has no
+  human off-switch short of SQL. Backlog item 3.
+- **`--strict` typing is a post-1.0 ratchet.** `mypy` runs at default settings and blocks the
+  build, but `ignore_missing_imports` is global for the sake of one untyped dependency, so a future
+  untyped dependency is exempted silently. Backlog item 24.
+- **`DATABASE_URL=""` falls back to the credentialed localhost default rather than failing.** Every
+  setting is now falsy-safe — an empty variable means "unset" — because `docker-compose.yml` passes
+  `${VAR:-}`, which *sets* the variable to the empty string. The trade is real and worth knowing:
+  blanking `DATABASE_URL` gets you `postgresql+psycopg://ley:ley@localhost:5432/leykhaa`, not an
+  error. Unset it if you mean to change it.
+- **One migration downgrade is still discriminated by no test.** `0006_alias_jsonb` moves a column
+  between `JSON` and `JSONB`; the round-trip test compares only the schema after the re-upgrade, and
+  the upgrade sets `jsonb` either way, so replacing that downgrade with `pass` turns nothing red —
+  on either database. The other nine of ten do redden it. Backlog item 40.
 
 ## Run
 
@@ -110,6 +228,10 @@ docker compose up
   - `GET /projects/{name}/tasks` — every task in one project, any state, DONE and FAILED included
   - `GET /triage` — candidates parked as a possible amendment to an active task, awaiting a human
     decision (see [Amendments](#amendments))
+  - `GET /dead-letters?limit=` — every inbound message, notification and connection that was
+    dropped, newest first, scrubbed of the token shapes the redactor knows. No filtering by
+    design: whatever went wrong is on the first page. Rows are capped by
+    `LEY_KHAA_DEAD_LETTER_MAX_ROWS`
   - `POST /candidates/{id}/fold` — fold a parked candidate into the task it amends
   - `POST /candidates/{id}/separate` — promote a parked candidate as its own task instead
   - `GET /conversations/{id}/messages`
@@ -498,7 +620,7 @@ cd frontend && npm install && npm run dev
 ## Develop
 
 ```bash
-cd backend  && python -m pytest -q   # 1038 tests, on SQLite; needs nothing installed
+cd backend  && python -m pytest -q   # 1066 tests, on SQLite; needs nothing installed
                                      # on Colima/Rancher/Lima the docker tests also want
                                      # TMPDIR under $HOME — GETTING_STARTED.md §7 says why
 cd backend  && python -m mypy        # typecheck; default settings, config in backend/pyproject.toml

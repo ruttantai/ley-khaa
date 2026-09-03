@@ -57,7 +57,8 @@ demonstrates it — a test name, a CI job, or a recorded transcript. No line is 
 - **every HTTP endpoint the application serves, and its response shape.** Enumerated rather than
   gestured at, so this cannot quietly become a partial list: `/health`, `/messages`,
   `/conversations/{id}/messages`, `/tasks` and its `/{id}` sub-resources (`answer`, `approve`,
-  `reject`, `mode`, `promote`, and the `bundle` family), `/projects` and `/projects/{name}/tasks`,
+  `reject`, `mode`, `spec`, `promote`, and the `bundle` family), `/projects` and
+  `/projects/{name}/tasks`,
   `/registry` and its `/{name}` sub-resources, `/candidates` with `sweep`/`fold`/`separate`,
   `/triage`, `/dead-letters`, and `/simulate/{...}`. `/health` is load-bearing beyond the dashboard —
   compose's own health check and the §6 smoke job both depend on it;
@@ -78,7 +79,8 @@ interfaces that are still young would make the next honest improvement a major v
 
 ### 3.1 The defect, and why the backlog's own proposed fix does not work
 
-`tests/test_ollama_config.py` calls `importlib.reload(ley_khaa.config)`, which **rebinds
+**Two** test files call `importlib.reload(ley_khaa.config)` — `tests/test_ollama_config.py` and
+`tests/test_vision_config.py` (eight call sites across four tests). Reloading **rebinds
 `ley_khaa.config.settings` to a new object**. Any module that did `from ..config import settings`
 before the reload keeps the old one. `test_api.py` imports `settings` inside the test body and gets
 the new one, raises `crystallizer_debounce_seconds` to hold a candidate ready-but-unpromoted — while
@@ -101,11 +103,13 @@ and move every field to `field(default_factory=...)`.
 Three consequences:
 
 1. `Settings()` genuinely re-reads the environment, so a test constructs an instance under
-   `monkeypatch.setenv` and never mutates a global. `test_ollama_config.py` drops `importlib.reload`
-   entirely.
+   `monkeypatch.setenv` and never mutates a global. **Both** reload sites drop `importlib.reload`
+   entirely — making the defaults lazy does NOT fix a `reload`, which rebinds the module attribute
+   regardless of how the defaults are computed, so removing every call site is load-bearing rather
+   than tidy-up.
 2. **The project's stated falsy-safe rule becomes true.** The rule — "settings are read
    `os.getenv(NAME) or default`, never `os.getenv(NAME, default)`, because compose passes
-   `${VAR:-}` which SETS the variable to empty" — is currently violated by **19 of 24 fields**.
+   `${VAR:-}` which SETS the variable to empty" — is currently violated by **19 of 27 fields**.
 3. Production behaviour is unchanged: the module-level `settings = Settings()` still evaluates
    exactly once, at import.
 
@@ -120,13 +124,14 @@ default.
 
 It is a live *hazard*. Adding one line such as `LEY_KHAA_DEBOUNCE_SECONDS: ${...:-}` to compose makes
 `int("")` raise `ValueError` during import, before logging is configured — the operator gets a
-traceback and no service. Since the fix touches all 24 fields anyway, closing the hazard costs
+traceback and no service. Since the fix touches all 27 fields anyway, closing the hazard costs
 almost nothing, and it makes a stated rule true instead of aspirational.
 
 ### 3.4 Risk
 
 This is the phase's only production-code change. The failure mode is loud (a wrong default surfaces
-as a wrong value everywhere it is read) and the regression net is 1038 tests across two databases.
+as a wrong value everywhere it is read) and the regression net is 1038 tests across two databases
+(the baseline at the time of writing; 1066 by the end of the phase).
 `mypy` must stay clean: `field(default_factory=...)` under annotations is well-typed, and the frozen
 dataclass is unaffected.
 
@@ -142,13 +147,42 @@ dropped afterwards). Migrations *create* tables, so they need a genuinely empty 
 share the `ley_khaa_test` schema the main suite truncates. The five hardcoded URLs read from the
 fixture.
 
-**The payoff, and it closes an admission this project made three times.** The migration round-trip
-currently cannot discriminate `0006_alias_jsonb`: `JSON` and `JSON().with_variant(JSONB,
-"postgresql")` render identically on SQLite, so mutating that downgrade to `pass` leaves the file
-green. v0.10.0 stated that limitation outright in the test docstring, the backlog item-7 closure, and
-the CHANGELOG. On Postgres the two do not render identically, so `0006`'s downgrade becomes
-exercised and coverage goes **9-of-10 → 10-of-10**. Those three admissions are then rewritten as
-facts — which is the point: a limitation you closed should stop being advertised.
+**What this was expected to close, and what actually happened — corrected after execution.**
+
+The spec originally claimed this task would make `0006_alias_jsonb` discriminable and take migration
+coverage from 9-of-10 to 10-of-10. **That claim was wrong, and executing the task disproved it.**
+
+The reasoning behind it was: `0006`'s downgrade is an `alter_column` between `sa.JSON()` and
+`JSON().with_variant(JSONB, "postgresql")`, those two render identically on SQLite, and therefore
+SQLite rendering identity was the reason a `pass` downgrade left the file green. On Postgres the two
+genuinely do differ — an `information_schema` probe over `head → 0005 → head` confirms the real
+downgrade produces `json` at 0005 while the mutated one leaves `jsonb`, which is the first direct
+evidence `0006`'s downgrade is correct on Postgres at all.
+
+**But the round-trip test compares only the schema after the RE-UPGRADE, and `0006.upgrade()` sets
+`jsonb` either way.** A no-op downgrade of a pure type change leaves no residue for a round trip to
+trip over — **on any database**. SQLite's rendering identity was never the only reason, and removing
+it changes nothing. Measured: `downgrade() -> pass` gives `14 passed` on Postgres *and* on SQLite.
+
+**Migration coverage therefore remains 9-of-10, and the three `0006` admissions stay true.** They are
+corrected only to state both reasons rather than one. Closing `0006` for real needs an assertion at
+the *downgraded* point rather than after the round trip, which can only mean anything on Postgres —
+that collides with the phase's 0-skipped bar and is a design decision, not an improvised test. It is
+filed as backlog work, not attempted here.
+
+**The task's real value turned out to be different: it converted a KNOWN defect from something
+re-confirmed by hand into something an automated gate catches.** `0004_registry_memory` declared
+`workflows.name` with column-level `unique=True` *and* a unique index, so a migrated Postgres database
+carried a `workflows_name_key` constraint the models never declare.
+
+**This drift was not discovered here, and saying so would be false.** Backlog item 9 raised it, item 26
+carries it (`2026-08-28-phase-5-backlog.md`, item 26, "This entry also carries the finding item 9
+raised and could not close" — `:894` at the time of writing), and it was re-confirmed by hand at the close of
+Phase 9 by upgrading a throwaway `postgres:16` database and running `compare_metadata`. What changed is
+that `test_migrations_match_the_models` now fails on it automatically, on a straight `upgrade head`, on
+every CI run — instead of depending on someone remembering to check by hand. Item 26's own "shape of
+the fix" says this should be done "in the same change that gives it a lane to be checked on", so
+fixing it here is inside the item's scope rather than an adjacent cleanup.
 
 ## 5. Item 28 — the lane guard's own test
 
@@ -193,17 +227,40 @@ than an honest non-blocking check. Flag it; do not quietly weaken it.
 ### 7.1 Known limits, stated once and properly
 
 What a reader should know before running it, written so they learn it from us rather than by hitting
-it: Slack vision is not live-tested (Discord's full loop is, Slack's is offline-and-recorded only);
+it: the channel adapters were never exercised end to end against a live workspace — everything is
+proven offline and against recorded transports, with the thin connection wrappers the only part
+checked by hand against real Slack and Discord workspaces, once, and **no image from a real message
+on either platform has ever been through the vision path**;
 Ollama is text-only, so vision does not work on the offline path; memory does not learn paraphrases
 the way the registry learns aliases, so `times_seen` under-reports across wordings; there is no
 management surface for task memory; and `--strict` typing is a post-1.0 ratchet.
+
+**Corrected while writing Task 6, and recorded rather than silently fixed** (this is the third
+correction to this spec in this phase, all of the same class): the first item above originally read
+"Slack vision is not live-tested — Discord's full loop is, Slack's is offline-and-recorded only."
+**Nothing in the repository supports that split.** The README's [Images](../../../README.md#images)
+section (`README.md:553` at the time of writing — cited by section as well, because a bare line
+number is exactly what M-1 caught going stale) and `CHANGELOG.md`'s 0.8.0 entry
+both say, of *both* platforms, "not live-tested against a real Slack or Discord image — proven
+offline and against recorded transports, the same call made for the channel adapters in 0.7.0", and
+the Phase 6 design spec (§7) says the thin connection wrappers are "the only part verified by hand,
+once, against real workspaces" — again for both. Writing the split into the README would have been a
+new false statement introduced by the section whose whole purpose is retiring them. This is the
+second time this phase that a claim in a correcting document was itself wrong; the pattern is
+reaching for the more specific-sounding story over the duller true one.
+
+Also added, from Task 1's review and Task 2's finding: `DATABASE_URL=""` now falls back to the
+credentialed localhost default rather than failing loudly (a consequence of §3.3's falsy-safe rule,
+correct but surprising), and `0006_alias_jsonb`'s downgrade is discriminated by no test on **either**
+database, for the reason §4 records.
 
 ## 8. Definition of done
 
 - Every §11 line demonstrable **and demonstrated** — not asserted from memory.
 - Items 25, 26 and 28 closed, each with a test that fails without its fix, verified by mutation over
   the whole test file, with the observed output reported.
-- Migration coverage **10-of-10**, and the three `0006` admissions rewritten as facts.
+- Migration coverage stays **9-of-10**, with the `0006` admissions corrected to state BOTH reasons
+  (the round trip's shape, not only SQLite's type rendering) rather than being declared closed.
 - The compose smoke job green in CI (or non-blocking with a recorded reason, per §6), and the
   by-hand fresh-clone transcript recorded.
 - Both database lanes green, **0 failures, 0 skipped, 0 warnings**; `mypy` clean; frontend tests and

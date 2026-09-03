@@ -316,7 +316,7 @@ Reinstall: `cd backend && pip install -e ".[dev]"`.
 ## 8. Running the tests
 
 ```bash
-cd backend  && python -m pytest -q   # 1038 passed, 0 skipped, 0 warnings
+cd backend  && python -m pytest -q   # 1066 passed, 0 skipped, 0 warnings
 cd backend  && python -m mypy        # CI fails the build on any error
 cd frontend && npm test              # 58 passed
 cd frontend && npm run typecheck     # npm run build is transpile-only
@@ -366,9 +366,11 @@ unavailable. What 0.9.0 actually built (see
 [Running without an API key](../README.md#running-without-an-api-key)) is Ollama as an
 explicitly-selected backend for a whole run (`LEY_KHAA_LLM=ollama`), chosen once at startup — not
 that automatic, per-call step-down, which remains backlog item 22 (see below). §11 also lists the
-`v1.0.0` release tag itself as part of that definition of done, and that tag has not been cut yet
-(see the phase table in the [README](../README.md#status)). Shipped is not the same as edge-free —
-stated plainly so you do not go looking for something that isn't there:
+`v1.0.0` release tag itself as part of that definition of done; that tag is cut on this release's
+merge commit, and the README's
+[What 1.0.0 commits to](../README.md#what-100-commits-to) section names the evidence for every
+other line. Shipped is not the same as edge-free — stated plainly so you do not go looking for
+something that isn't there:
 
 - **The Ollama offline fallback is text-only.** Vision still requires `ANTHROPIC_API_KEY` regardless
   of which LLM backend is selected — see [Images](../README.md#images).
@@ -399,5 +401,71 @@ reason written down in that file: memory does not learn paraphrases the way the 
 aliases (1), the recall candidate cap wants measurement before it is changed (2), task memory has no
 management surface (3), a same-backend vision failure stays frozen under that image's digest (20),
 vision is text-only on the Ollama path (21), and there is no runtime step-down between backends (22).
-Eleven new entries (23–33) were filed the same way — mostly about the new gates' own blind spots,
-such as migrations still being exercised on SQLite only.
+Eleven new entries (23–33) were filed the same way — mostly about the new gates' own blind spots.
+
+**v1.0.0 closed three more** (25, 26 and 28): the suite no longer depends on pytest's collection
+order, Alembic migrations now run on whichever database the lane names rather than on SQLite only,
+and the `--database` lane guard has a test of its own. Seven further entries (34–40) were filed —
+again mostly about the new gates' own blind spots, such as the compose stack's hardcoded
+`DATABASE_URL` and the one migration downgrade still discriminated by nothing.
+
+---
+
+## 10. Verified: a fresh clone, by hand (2026-09-03)
+
+Spec §11's first line — "fresh clone → `docker compose up` → dashboard live" — was last checked
+by hand at **v0.2.0**, nine phases ago — recorded in that release's own `### Verified` block, which
+calls it "the last unverified part of 0.1.0". Task 4 of the 1.0.0 release phase automated it in CI;
+this section records the human-eye complement CI cannot give: a genuine `git clone`, brought up
+with no `ANTHROPIC_API_KEY`, walked through the golden path, and the rendered dashboard confirmed
+visually by a person, not inferred from a 200 response.
+
+**Commit verified:** `5af6434`, a genuine fresh `git clone` (not a reused checkout).
+
+**Ran with no `ANTHROPIC_API_KEY` set** — the zero-account path every first-time visitor gets.
+
+**Timing.** Expect a couple of minutes to a serving dashboard on a cold Docker cache — base image
+pulls plus a full `pip install` and `npm install` from scratch. Once the images are built, `docker
+compose up` on subsequent runs is fast, seconds rather than minutes, because Docker reuses those
+layers. Do not hold either run to a specific second count; the point is "minutes, not instant" the
+first time and "fast" thereafter.
+
+```bash
+curl http://localhost:8000/health
+# {"status":"ok"}
+
+curl http://localhost:8000/tasks
+# [{"id":"...","state":"awaiting_approval", ... "title":"can you compare the Bloomberg
+#   universe against FactSet", ... "effective_mode":"suggest","confidence":0.55,"risk":0.45,
+#   "autonomy_reason":"55% sure, medium risk — it delivers something to someone → stay in
+#   Suggest", ...}]
+```
+
+The seeded demo task reached **`awaiting_approval`, not `done`** — as it should. The autonomy
+dial parks this task for a human by design (see step 4 above); a reader who expects `done` and
+sees `awaiting_approval` on their own first run is seeing the system work correctly, not fail.
+
+`curl http://localhost:5173` served the dashboard's HTML shell (200, the Vite-rendered
+`index.html`). That confirms bytes arrive; it does not confirm the page renders. A person then
+opened `http://localhost:5173` in a browser and confirmed the task list (showing the seeded
+Bloomberg/FactSet task), the Registry section, and the bundle panel on the task detail page all
+rendered correctly. Nothing looked broken. That visual step is the one link in this chain no
+automated check — including Task 4's CI job — can honestly stand in for.
+
+**Three wrinkles a first-time reader should expect**, none of them failures:
+
+- **`db-1` logs `FATAL: database "ley" does not exist` every five seconds, for the life of the
+  stack.** Cause: the compose healthcheck runs `pg_isready -U ley` with no `-d`, so it probes a
+  database named after the connecting *user* (`ley`) rather than the one actually created
+  (`leykhaa`, from `POSTGRES_DB`). The healthcheck still passes — `pg_isready` only checks that
+  Postgres is accepting connections, not that the probed database exists — and the backend
+  connects to `leykhaa` normally. It is noisy, not broken. Left as-is deliberately: fixing the
+  healthcheck would touch the exact compose file Task 4's smoke job just certified, and this
+  release phase does not do adjacent cleanups.
+- **`ANTHROPIC_API_KEY is not set — falling back to HeuristicLLM, the offline regex stand-in...`**
+  is the intended zero-account path, not an error — but it is the first thing a visitor with no
+  key sees, and it reads like a warning. See step 3 above for what it means.
+- **A host already listening on port 5432** (a local, non-Docker Postgres, common on a dev
+  machine) did not stop `docker compose up` from binding and publishing `db`'s `5432:5432` in
+  this run — the container reached `Healthy` normally. If you check with `lsof -i :5432` before
+  starting and see it occupied, that is not necessarily a blocker; it was not one here.

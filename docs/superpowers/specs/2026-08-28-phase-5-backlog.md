@@ -11,6 +11,30 @@ Ordering is by what I would do first, not by severity.
 
 ---
 
+## Everything still open here is post-1.0 work, by decision
+
+Written at the close of Phase 10 (v1.0.0). Nineteen of the thirty-three entries below are closed,
+each with the commit that closed it in its heading. **The fourteen that stay open — 1, 2, 3, 20, 21,
+22, 23, 24, 27, 29, 30, 31, 32 and 33 — stay open deliberately**, and seven more (34–40) were filed
+during the release phase itself.
+
+The reason is the same for all of them and is worth stating once rather than fourteen times.
+1.0.0 is a release phase, not a feature phase: its whole content is three backlog closures, two
+gates, and a documentation pass that makes the project's claims true. Every remaining entry is
+either a design decision that wants deciding rather than patching (memory paraphrases, the recall
+cap, a management surface for task memory, runtime step-down between backends, vision on the
+offline path), a coverage gap in something that is correct today (27, 29, 30, 33, 40), or a
+maintenance-policy question that a release week is the wrong time to answer (23, 24). None of them
+is a live defect on the shipped path — where one is a live-but-latent crash, its entry says so and
+says what makes it latent.
+
+**They are open, not forgotten.** A deferred finding nobody records is a silent discard, which is
+why this file exists; a deferred finding recorded and then quietly dropped from the count is the
+same discard with better manners. The README's known-limits section names the ones a reader can
+actually hit.
+
+---
+
 ## 1. Memory does not learn paraphrases the way the registry learns aliases
 
 **The asymmetry.** Spec §3.3 gives the registry a learning rule: a stage-2 (model) match that then
@@ -194,8 +218,15 @@ carried-forward gaps`). Four of the five gaps were still real and now have mutat
 
 The fifth — **case-insensitive suffix matching in `bind()` — had closed itself** before this phase.
 `test_suffix_matching_is_case_insensitive_declared_uppercase` and `_declared_mixed` cover both
-`.lower()` calls; confirmed by mutation rather than by reading. All of `test_migrations.py` runs on
-SQLite only — see item 26 below, which is where `0006`'s type change would finally get a lane.
+`.lower()` calls; confirmed by mutation rather than by reading.
+
+**Updated at 1.0.0 (`8975f84`):** the sentence that stood here said "all of `test_migrations.py` runs
+on SQLite only", which item 26's closure made false. It now runs on whichever database the lane
+names. **`0006` is still the tenth downgrade nothing discriminates**, and the reason is not the one
+this entry gave: the round trip compares only the schema after the *re-upgrade*, and `0006.upgrade()`
+sets `jsonb` either way, so a no-op downgrade leaves no residue for it to catch **on any database**.
+SQLite's identical rendering of the two types is true and was never the whole mechanism. Closing it
+needs an assertion at the *downgraded* point, on Postgres — filed as item 40.
 
 ## 8. Frontend polish — CLOSED (`bf9b27f`)
 
@@ -272,15 +303,22 @@ and gone green having never touched Postgres — this file's signature defect, i
 `--database=sqlite|postgres` states the expectation on the command line, where it survives anything
 that happens to the step's environment, and refuses the run otherwise.
 
-**Two things this entry named are NOT closed and are re-filed rather than quietly dropped:**
+**Two things this entry named were NOT closed by the commits above and were re-filed rather than
+quietly dropped** — both as item 26, and **both are now closed at 1.0.0**:
 
-- The **migration drift guard still runs on SQLite only** — `test_migrations.py` builds its own
-  `sqlite:///` URLs and is untouched by `DATABASE_URL`. Filed as item 26.
+- The **migration drift guard ran on SQLite only** — `test_migrations.py` built its own
+  `sqlite:///` URLs and was untouched by `DATABASE_URL`. Filed as item 26; closed by `8975f84`.
 - The **pre-existing `('remove_constraint', UniqueConstraint(workflows.name))` autogenerate diff on
-  Postgres is still there**, re-confirmed for this closure by upgrading a throwaway `postgres:16`
+  Postgres**, re-confirmed for this closure by upgrading a throwaway `postgres:16`
   database to head and running `compare_metadata` against it. (Also confirmed in the same run:
-  `upgrade head` and `downgrade base` both succeed on Postgres.) It is carried by item 26, which is
-  where it would get fixed deliberately.
+  `upgrade head` and `downgrade base` both succeed on Postgres.) Carried by item 26; closed by
+  `ff54900`.
+
+**Update at 1.0.0.** Everything above written in the present tense about SQLite-only migration
+coverage — including this entry's original body, preserved unchanged — describes the state at the
+close of Phase 9. Item 26 closed it: `test_migrations.py` now runs on whichever database the lane
+names, and `ff54900` removed the redundant `unique=True` that produced the autogenerate diff. Read
+the present tense above as of Phase 9, not as of today.
 
 ## 10. A false comment and a redundant read in `workflow_repository.py` — CLOSED (`3aaa59f`)
 
@@ -763,7 +801,7 @@ Both are small; neither was done in Phase 9 because the correct one depends on w
 stubs are good enough to keep, which is a five-minute experiment nobody had budget for at the end of
 the phase. The comment in `pyproject.toml` now states the true situation either way.
 
-## 25. Green depends on test collection order
+## 25. Green depends on test collection order — CLOSED (`68b348c`, `f84d313`, hardened `55fdb86`)
 
 The suite passes in pytest's default (alphabetical) file order and fails in reverse file order —
 **identically on both lanes**, so this is process-global state leaking between tests, not a database
@@ -804,7 +842,40 @@ rather than fixed because the honest fix is a small redesign of how `Settings` i
 closed with the ordering guaranteed by pytest's own default. Worth doing before anything introduces
 test-order randomisation or `pytest-xdist`, both of which would turn this from latent into red.
 
-## 26. Alembic migrations are still never run against Postgres
+**Closed by `68b348c`** (`fix(config): settings read their environment when constructed (item 25)`)
+**and `f84d313`** (`test(config): drop importlib.reload, closing the suite's order-dependence`).
+Every one of `Settings`' 27 fields now reads `os.environ` at construction time, through
+`_env_str` / `_env_int` / `_env_bool` helpers that are also falsy-safe — `VAR=""` falls back to the
+default, which the two-argument `os.getenv(NAME, default)` form did not. `ley_khaa.config.settings`
+is still a module-level singleton built once at import; what changed is that observing a changed
+variable no longer requires rebinding it. Both reload call sites are gone and no test in `tests/`
+reloads `config` any more. Reverse-file-order runs are green on **both** lanes, verified after
+purging `__pycache__`.
+
+**Two corrections this entry earned, recorded rather than quietly fixed:**
+
+1. **This entry's own "shape of the fix" could not work as written.** It proposed that
+   `test_ollama_config.py` "build a `Settings()` from a patched environment rather than reloading
+   the module". A fresh `Settings()` could not observe a patched environment at all: the dataclass
+   defaults were `os.getenv(...)` calls evaluated at class-definition time. The reload existed
+   precisely because the constructor did not read anything. Making the defaults lazy is what made
+   the proposed fix possible — the production change was a prerequisite, not an alternative.
+2. **This entry named one reloading file and there were two.** `test_vision_config.py` reloaded
+   `config` at eight further call sites across four tests, and under `sort -r` it collects *before*
+   `test_api.py`, so it rebound the singleton first. Laziness does not help there — `reload` rebinds
+   the module attribute however the defaults are computed. Proven load-bearing by mutation: with the
+   lazy config kept and only that file restored to `ff2da5f`, the reverse-order run is
+   `1 failed, 1060 passed` on the same test.
+
+**Hardened by `55fdb86`** (`test(config): the all-fields sweep now pins laziness, not just
+falsy-safety`). The sweep in `test_settings_env.py` compared one `Settings()` to another, which an
+import-time default satisfies identically — so it could not detect the very defect this item is
+about. Demonstrated, not argued: reverting `sandbox_image` to an eager `os.getenv(NAME, default)`
+gave `23 passed`, uncaught. The loop now sets a probe value the default is not, after the class is
+defined, so only a field read at construction time reports it back; the same mutation now names the
+field. It also refuses a probe that collides with a real default rather than passing vacuously.
+
+## 26. Alembic migrations are still never run against Postgres — CLOSED (`8975f84`, `ff54900`)
 
 Phase 9 put the *suite* on Postgres, but `tests/test_migrations.py` builds its own `sqlite:///` URLs
 and is untouched by `DATABASE_URL` — deliberately: `conftest.py` builds the Postgres schema with
@@ -829,13 +900,62 @@ passed`). No SQLite test can discriminate it, so this entry is the only thing th
 
 an autogenerate artifact of `unique=True` together with `index=True` on `WorkflowRow.name`, not a
 real schema gap. Re-confirmed by hand at the close of Phase 9 (`upgrade head` and `downgrade base`
-both succeed on Postgres, so the migrations themselves are sound there). Fixing it means declaring
-the constraint explicitly in the migration so the comparator stops asking for its removal — best done
-in the same change that gives it a lane to be checked on.
+both succeed on Postgres, so the migrations themselves are sound there). ~~Fixing it means declaring
+the constraint explicitly in the migration so the comparator stops asking for its removal~~ — best
+done in the same change that gives it a lane to be checked on.
+
+> **Correction, 1.0.0: the struck sentence prescribes the wrong direction, and following it would
+> have entrenched the drift instead of removing it.** `compare_metadata` emits `remove_constraint`
+> when the **database** holds something the **metadata** does not. Migration `0004` declared
+> `workflows.name` with a column-level `unique=True` *and* a separate unique index, so Postgres
+> ended up with `workflows_name_key` on top of `ix_workflows_name`; the ORM declares
+> `unique=True, index=True`, which renders one unique **Index** and no table constraint. Declaring
+> the constraint explicitly in the migration would have made the migration match a database the
+> models never asked for. `ff54900` went the other way and dropped the redundant column-level
+> `unique=True`, leaving uniqueness to the index alone — the same shape `messages.external_id` and
+> `image_extractions.url_sha256` already use.
 
 **Shape of the fix.** A dialect-parametrised `test_migrations.py` that runs the drift guard, the
 downgrade tests and the round trip against whatever `DATABASE_URL` names, skipping to SQLite when it
 is unset — the natural follow-on to Phase 9's Task 10.
+
+**Closed by `8975f84`** (`test(migrations): run every migration on the lane's own database (item
+26)`) **and `ff54900`** (`fix(migrations): workflows.name declared its uniqueness twice`).
+`test_migrations.py` no longer builds `sqlite:///` URLs of its own: a `migration_url` fixture hands
+each test a URL derived from whatever `DATABASE_URL` names, and on the Postgres lane it creates a
+throwaway `ley_khaa_mig_<hex>` schema per test, points `search_path` at it, and drops it afterwards.
+So the drift guard, the pre-alembic stamping path, the `downgrade base` sweep and the round trip all
+run on Postgres in CI, and the `with_variant(JSONB(), "postgresql")` branch is finally exercised by
+something automatic. The main suite's own schema is still built by `create_all`, deliberately and
+unchanged — this is a separate lane for the migration file, not a change to how the suite is set up.
+
+**What the lane immediately found is the `workflows_name_key` drift above**, on a straight
+`upgrade head` — `test_migrations_match_the_models` failed. It is worth being exact about the claim,
+because an earlier draft of this closure was not: the drift was **not** newly discovered. Item 9
+raised it, this entry reproduced the exact `compare_metadata` diff, and it was re-confirmed by hand
+at the close of Phase 9. What changed is that it now fails an **automated gate on every CI run**
+instead of depending on someone remembering to check by hand — which is the whole point of the lane,
+and a duller claim than "found a hidden defect".
+
+**The residual, recorded rather than hidden.** `ff54900` edits an already-released revision rather
+than adding a forward one. A Postgres database migrated before it keeps `workflows_name_key` and so
+differs from a fresh install; both enforce uniqueness on the same column, so no behaviour differs.
+The forward alternative is materially riskier — SQLite's constraint is unnamed and inline, so
+dropping it needs a batch table recreate, a real data-movement operation to remove a redundant
+constraint that harms nothing. The drift guard builds a fresh database, so it will not flag an
+existing one, and `run_migrations` does not check drift at runtime. Dropping it by hand on an old
+database is one `ALTER TABLE ... DROP CONSTRAINT`.
+
+**`0006_alias_jsonb` is NOT closed by this, and the reason this entry gave was incomplete.** Running
+the round trip on Postgres does not discriminate `0006`'s downgrade: mutating it to `pass` and
+running the whole file on Postgres gives `14 passed`. The round trip compares only the schema after
+the **re-upgrade**, and `0006.upgrade()` sets `jsonb` either way, so a no-op downgrade of a pure type
+change leaves no residue to catch on **any** database. SQLite's identical rendering of the two types
+is true — an `information_schema` probe over `head → 0005 → head` shows the real downgrade producing
+`json` at `0005` where the mutated one leaves `jsonb`, which is the first direct evidence `0006`'s
+downgrade is correct on Postgres at all — but it was never the mechanism. Migration downgrade
+coverage therefore stays **9 of 10**. Closing the tenth needs an assertion at the *downgraded* point,
+which can only mean anything on Postgres; re-filed as item 40.
 
 ## 27. `ley_khaa.db.engine` has no `search_path` on the Postgres lane
 
@@ -853,7 +973,7 @@ own `docker compose` database it would find the real ones.
 statements ran outside `ley_khaa_test`, or a `conftest` that points `ley_khaa.db.engine` at the test
 schema for the duration of the run.
 
-## 28. The `--database` guard is itself unpinned
+## 28. The `--database` guard is itself unpinned — CLOSED (`3efc479`, hardened `d84bf5b`)
 
 `pytest_configure`'s lane assertion (`tests/conftest.py`) exists so a lane cannot silently re-run the
 other one — but **no test drives its mismatch branch.** Both CI steps always match by construction, so
@@ -865,6 +985,30 @@ prevent.
 **Shape of the fix.** A `pytester`-based test, or a subprocess `pytest --database=postgres` on the
 SQLite lane asserting exit code 4 and the message. Deferred as small and self-referential; noted
 because a guard nothing tests is the shape of the defect it guards against.
+
+**Closed by `3efc479`** (`test(ci): pin the --database lane guard's own failure branch (item 28)`).
+`tests/test_lane_guard.py` drives the guard through real subprocess `pytest` runs, in the second
+shape above: `test_asking_for_postgres_on_the_sqlite_lane_is_a_usage_error` and
+`test_asking_for_sqlite_while_a_postgres_url_is_set_is_a_usage_error` assert exit code 4 and the
+whole message, remedy clause included, while `test_a_matching_lane_is_allowed_through` asserts the
+guard stays silent when the lane matches. Verified by mutation rather than by writing: inserting
+`return` as the first statement of `pytest_configure` fails exactly the two usage-error tests and
+leaves the positive control green, and inverting the comparison so the guard fires only on a match
+turns the positive control red too — so it is not vacuous. Four subprocess runs, ~1.6s total.
+
+**Hardened by `d84bf5b`** (`test(ci): pin lane inference on both lanes, not just the default's lucky
+match`). The original positive control for the no-flag path always ran with `DATABASE_URL` stripped,
+so mutating `conftest.py`'s `--database` option from `default=None` to `default="sqlite"` gave
+`4 passed` — the mutated default coincided with the lane actually running, and the test could not
+tell "inferred correctly" from "defaulted to the same answer by luck". That is a real break, not a
+theoretical one: with that mutation and a real Postgres `DATABASE_URL`, a bare `pytest` fails,
+because the option silently claims the SQLite lane and the guard starts rejecting a correct run.
+CI is unaffected — both steps pass `--database=` explicitly — but what breaks is the documented
+local-dev claim that a bare `pytest` needs no flag and infers its lane: the option's own help text
+says "omit (the default) to infer the lane from `DATABASE_URL`", and `CONTRIBUTING.md:9-10` gives
+bare `pytest` and the Postgres invocation as the two supported commands.
+`test_omitting_the_flag_infers_the_postgres_lane_and_never_fails`
+now covers the other half, and the same mutation names it.
 
 ## 29. The two fixture families are two databases on SQLite but one on Postgres
 
@@ -966,3 +1110,171 @@ amendment `TaskChoice` at exactly `0.8`, each asserted to be ACCEPTED. No produc
 was the two matchers. Widening a closure task's own scope mid-flight is how a fix wave stops being
 reviewable, so the remainder is filed here instead — which is what the ledger intended and, until
 now, forgot to do.
+
+---
+
+## Filed at the close of Phase 10 (v1.0.0)
+
+Items 34–40 came out of the 1.0.0 release phase's own tasks and reviews. Every one is deliberately
+deferred: none blocks 1.0.0, and spec §1.1 of that phase forbids adjacent cleanups — several of
+these are one-word fixes that were **not** taken precisely because taking them would have changed an
+artifact the phase had just certified. Numbering continues from 33; nothing above is renumbered, for
+the reason PR #9 exists.
+
+## 34. `run_migrations` crashes on any `DATABASE_URL` containing a `%`
+
+`ley_khaa/db.py:42` does `config.set_main_option("sqlalchemy.url", url)`. Alembic's `Config` is a
+`ConfigParser` underneath, and `set_main_option` runs the value through `BasicInterpolation`, which
+rejects a raw `%` outright. Any URL carrying one — most obviously a **percent-encoded password**,
+which is the documented way to put a `@`, `:` or `/` in a Postgres password — takes the app down at
+startup, since `run_migrations` runs on the FastAPI startup path.
+
+Reproduced directly, not inferred:
+
+```
+>>> Config(ALEMBIC_INI).set_main_option(
+...     "sqlalchemy.url", "postgresql+psycopg://ley:p%40ss@db:5432/leykhaa")
+ValueError: invalid interpolation syntax in
+'postgresql+psycopg://ley:p%40ss@db:5432/leykhaa' at position 26
+```
+
+**Latent today, and it is worth being precise about why.** `docker-compose.yml` ships the password
+`ley`, and the local-dev URLs in the README and CONTRIBUTING are the same. Nothing in the repo
+produces a `%`. The first person to hit it is whoever points the stack at a real database with a
+generated password — i.e. exactly the person least able to guess what the error means.
+
+**Same mechanism, two more places.** `tests/conftest.py`'s `migration_url` fixture already carries a
+comment about it (the `=` in `options=-csearch_path=` is deliberately not percent-encoded for this
+reason), and a `%` in `TMPDIR` would do the same to the SQLite lane's throwaway URLs.
+
+**Shape of the fix.** `config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))` — the
+escape ConfigParser expects. One line, plus a test that a `%`-bearing URL migrates. Deferred because
+1.0.0 changed no production code beyond item 25's.
+
+## 35. `docker-compose.yml:19` hardcodes `DATABASE_URL` with no interpolation
+
+```yaml
+DATABASE_URL: postgresql+psycopg://ley:ley@db:5432/leykhaa
+```
+
+No `${DATABASE_URL:-...}`, so exporting `DATABASE_URL` before `docker compose up` does nothing at
+all. Twelve of the fifteen environment keys in that service take `${VAR:-default}`; the two others
+that do not (`LEY_KHAA_WORKSPACE_ROOT`, `LEY_KHAA_WORKSPACE_VOLUME`) are hardcoded for a stated
+reason — the path and volume name must match what the sandbox container mounts — and `DATABASE_URL`
+is the only one hardcoded with no reason given.
+
+**This is not a style complaint; it produced a false pass.** Phase 10's Task 4 brief prescribed
+`DATABASE_URL=... docker compose up` as the recipe for deliberately breaking the stack, to prove the
+new smoke job's polls can actually fail. Run as written the stack comes up **green**, and the natural
+reading of that green is "the gate cannot fail" — the exact conclusion the step existed to disprove,
+arrived at backwards. The implementer instead injected the breakage through a compose override file
+applied with `-f docker-compose.yml -f <override>`, which left the shipped file untouched and still
+under test.
+
+**Shape of the fix.** `DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://ley:ley@db:5432/leykhaa}`,
+matching every sibling. Deferred because editing `docker-compose.yml` in the release phase would
+have changed the artifact the smoke job had just certified.
+
+## 36. The `db` healthcheck probes a database that does not exist
+
+`docker-compose.yml:11` is `pg_isready -U ley` with no `-d`. `pg_isready` defaults the database name
+to the **user** name, so it connects to `ley`, and `docker compose up` logs
+
+```
+db-1  | FATAL:  database "ley" does not exist
+```
+
+every five seconds, for as long as the stack runs.
+
+**Harmless and still worth fixing.** The healthcheck passes regardless — `pg_isready` reports the
+server as accepting connections, which is what the exit code means — so nothing is broken. But a
+`FATAL` on a five-second loop reads as a real error to a first-time user watching their first
+`docker compose up`, and this project's whole first-run story is "nothing here is broken, and here is
+why". CI's own `postgres` service already gets this right: `.github/workflows/ci.yml:28` is
+`pg_isready -U ley -d leykhaa`.
+
+**Shape of the fix.** Add `-d leykhaa`. One word. Not taken in 1.0.0 for the same reason as item 35,
+and documented in `docs/GETTING_STARTED.md` §10 in the meantime so a reader learns it from us.
+
+## 37. `backend` and `frontend` declare no compose healthcheck
+
+Only `db` has one. That is why Phase 10's compose smoke job has to poll `http://localhost:8000/health`
+and `http://localhost:5173` itself in a `for` loop rather than letting `depends_on:
+condition: service_healthy` do it — and it is also why `docker compose up -d` **exits 0 on a stack
+whose backend is already dying**, which was observed directly while proving the job can fail.
+
+Compose's own dependency graph therefore cannot express "the backend is up"; `frontend`
+`depends_on: backend` today means only that the container started.
+
+**Shape of the fix.** A `healthcheck` on `backend` hitting `/health` and one on `frontend` hitting
+its port, then `condition: service_healthy` on the `depends_on` edges. The smoke job's polls could
+then shrink to `docker compose up -d --wait`. Deferred with items 35 and 36 — all three touch the
+same file, and they should be taken together with one re-certification, not three.
+
+## 38. CI's task poll greps the whole `/tasks` body, unscoped
+
+`.github/workflows/ci.yml:157`:
+
+```sh
+if [ "$body" != "[]" ] && ! echo "$body" | grep -q '"state":"received"'; then
+```
+
+The assertion it is meant to make is "the seeded demo task has left `received`". What it actually
+asserts is "**no** task anywhere in the response is `received`". Those coincide only because startup
+seeds exactly one task — an invariant nothing asserts, in CI or in the suite. Add a second seeded
+task later and the poll silently becomes a weaker claim: it would still pass with the demo task
+stuck at `received` as long as it had advanced, or fail on an unrelated freshly-ingested task.
+
+The substring match itself is sound and stays sound — `TaskOut.state` is a plain `str` and FastAPI
+emits no space after the colon, verified against a live stack.
+
+**Shape of the fix.** Parse the one task's state rather than substring-matching the body:
+`jq -e 'length == 1 and .[0].state != "received"'`, which pins
+the one-task invariant in the same expression instead of depending on it silently. Deferred as a CI
+refinement to a job whose first real GitHub Actions run had not happened yet when it was written.
+
+## 39. The smoke job's failing polls emit ~60 lines of `curl: (7)` noise
+
+All three polls in `compose-smoke` run `curl -fsS`, where `-S` keeps error output even under `-s`.
+Every failing iteration therefore prints its own `curl: (7) Failed to connect ...` line, so a poll
+that runs its full ceiling buries the one line that matters — the job's own
+`backend did not answer /health within 60s` — under sixty near-identical ones. Observed at 60 lines
+on the dashboard poll while proving the gate can fail.
+
+Deliberately not "fixed" by dropping `-S`: the failure output is the only diagnostic a reader has
+when the log dump is the whole story, and silence would be worse than noise.
+
+**Shape of the fix.** Redirect the per-iteration error to a file and print only the last one on
+timeout, or count the failures and print `N attempts failed, last error: ...`. Cosmetic, and it
+touches the assertions, which is why it was left until the job had proven itself on real CI.
+
+## 40. `0006_alias_jsonb`'s downgrade is discriminated by nothing, and not for the reason previously given
+
+**The remainder of items 7 and 26, re-filed so a closed entry does not have to carry a live gap** —
+the same handling items 19 → 32 and 9 → 26 got.
+
+Nine of the ten migration downgrades redden `test_migrations.py` when replaced by `pass`. `0006` is
+the tenth and stays green — **including on Postgres**, which is the part items 7 and 26 got wrong.
+Both said the cause was SQLite rendering `sa.JSON()` and `JSON().with_variant(JSONB(),
+"postgresql")` identically, and therefore implied the Postgres lane would close it. Item 26's lane
+landed, and the mutation still gives `14 passed`.
+
+**The real mechanism.** `test_a_downgrade_and_re_upgrade_lands_on_the_same_schema` walks
+head → *stop_at* → head and runs `compare_metadata` **only at the end**. `0006.upgrade()` sets
+`jsonb` whether or not the downgrade ran, so a no-op downgrade of a pure type change leaves nothing
+behind for the final comparison to see — on any database. No assertion in the file reads the
+downgraded state at all.
+
+**The comparator is not the problem, and this was checked rather than assumed:** with
+`compare_type: True`, a forced `ALTER` between the two types is reported as `modify_type`, so
+`compare_metadata` is perfectly capable of seeing the difference. It is never asked to look at the
+moment when there is one. Separately confirmed on Postgres by an `information_schema` probe over
+head → `0005` → head: the real downgrade leaves `json` at `0005`, the mutated one leaves `jsonb`,
+which is the first direct evidence `0006`'s downgrade is correct on Postgres at all.
+
+**Shape of the fix.** An assertion at the **downgraded** point — read the column's type from
+`information_schema.columns` after `downgrade 0005` and require `json` — which can only mean
+anything on Postgres, so it is a Postgres-only case in a file that is otherwise dialect-agnostic.
+That is a design decision about how far a migration test should reach into a specific dialect, not
+an improvised extra assert, which is why it is filed rather than bolted on at the end of a release
+phase. Migration downgrade coverage stays 9 of 10 until it is taken.
