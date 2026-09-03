@@ -168,12 +168,18 @@ the *downgraded* point rather than after the round trip, which can only mean any
 that collides with the phase's 0-skipped bar and is a design decision, not an improvised test. It is
 filed as backlog work, not attempted here.
 
-**The task's real value turned out to be different, and larger: it found a genuine Postgres-only
-defect on its first run.** `0004_registry_memory` declared `workflows.name` with column-level
-`unique=True` *and* a unique index, so a migrated Postgres database carried a `workflows_name_key`
-constraint the models never declare — schema drift, invisible for six phases because migrations had
-only ever run on SQLite. `test_migrations_match_the_models` caught it on a straight `upgrade head`.
-That is precisely what backlog item 26 existed to expose.
+**The task's real value turned out to be different: it converted a KNOWN defect from something
+re-confirmed by hand into something an automated gate catches.** `0004_registry_memory` declared
+`workflows.name` with column-level `unique=True` *and* a unique index, so a migrated Postgres database
+carried a `workflows_name_key` constraint the models never declare.
+
+**This drift was not discovered here, and saying so would be false.** Backlog item 9 raised it, item 26
+carries it (`2026-08-28-phase-5-backlog.md:824`), and it was re-confirmed by hand at the close of
+Phase 9 by upgrading a throwaway `postgres:16` database and running `compare_metadata`. What changed is
+that `test_migrations_match_the_models` now fails on it automatically, on a straight `upgrade head`, on
+every CI run — instead of depending on someone remembering to check by hand. Item 26's own "shape of
+the fix" says this should be done "in the same change that gives it a lane to be checked on", so
+fixing it here is inside the item's scope rather than an adjacent cleanup.
 
 ## 5. Item 28 — the lane guard's own test
 
