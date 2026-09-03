@@ -78,7 +78,8 @@ interfaces that are still young would make the next honest improvement a major v
 
 ### 3.1 The defect, and why the backlog's own proposed fix does not work
 
-`tests/test_ollama_config.py` calls `importlib.reload(ley_khaa.config)`, which **rebinds
+**Two** test files call `importlib.reload(ley_khaa.config)` — `tests/test_ollama_config.py` and
+`tests/test_vision_config.py` (eight call sites across four tests). Reloading **rebinds
 `ley_khaa.config.settings` to a new object**. Any module that did `from ..config import settings`
 before the reload keeps the old one. `test_api.py` imports `settings` inside the test body and gets
 the new one, raises `crystallizer_debounce_seconds` to hold a candidate ready-but-unpromoted — while
@@ -101,11 +102,13 @@ and move every field to `field(default_factory=...)`.
 Three consequences:
 
 1. `Settings()` genuinely re-reads the environment, so a test constructs an instance under
-   `monkeypatch.setenv` and never mutates a global. `test_ollama_config.py` drops `importlib.reload`
-   entirely.
+   `monkeypatch.setenv` and never mutates a global. **Both** reload sites drop `importlib.reload`
+   entirely — making the defaults lazy does NOT fix a `reload`, which rebinds the module attribute
+   regardless of how the defaults are computed, so removing every call site is load-bearing rather
+   than tidy-up.
 2. **The project's stated falsy-safe rule becomes true.** The rule — "settings are read
    `os.getenv(NAME) or default`, never `os.getenv(NAME, default)`, because compose passes
-   `${VAR:-}` which SETS the variable to empty" — is currently violated by **19 of 24 fields**.
+   `${VAR:-}` which SETS the variable to empty" — is currently violated by **19 of 27 fields**.
 3. Production behaviour is unchanged: the module-level `settings = Settings()` still evaluates
    exactly once, at import.
 
@@ -120,7 +123,7 @@ default.
 
 It is a live *hazard*. Adding one line such as `LEY_KHAA_DEBOUNCE_SECONDS: ${...:-}` to compose makes
 `int("")` raise `ValueError` during import, before logging is configured — the operator gets a
-traceback and no service. Since the fix touches all 24 fields anyway, closing the hazard costs
+traceback and no service. Since the fix touches all 27 fields anyway, closing the hazard costs
 almost nothing, and it makes a stated rule true instead of aspirational.
 
 ### 3.4 Risk
