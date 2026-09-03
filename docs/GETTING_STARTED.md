@@ -316,12 +316,17 @@ Reinstall: `cd backend && pip install -e ".[dev]"`.
 ## 8. Running the tests
 
 ```bash
-mkdir -p "$HOME/tmp"
-cd backend  && TMPDIR="$HOME/tmp" python -m pytest -q   # 1030 passed, 0 skipped, 0 warnings
-cd backend  && python -m mypy                            # CI fails the build on any error
-cd frontend && npm test                                  # 58 passed
-cd frontend && npm run typecheck                         # npm run build is transpile-only
+cd backend  && python -m pytest -q   # 1030 passed, 0 skipped, 0 warnings
+cd backend  && python -m mypy        # CI fails the build on any error
+cd frontend && npm test              # 58 passed
+cd frontend && npm run typecheck     # npm run build is transpile-only
 ```
+
+No `TMPDIR` is needed, and CI sets none. If you are on **Colima, Rancher or Lima**, the
+docker-parametrized tests are the exception — those runtimes mount only `$HOME` — and
+[§7 Troubleshooting](#7-troubleshooting) has the `mkdir -p "$HOME/tmp" && TMPDIR="$HOME/tmp"` form
+and the reason for it. It is a workaround for one container runtime, not something the suite
+requires.
 
 The backend suite runs on SQLite by default, which needs nothing installed. It also runs against
 **Postgres** — the database `docker compose up` deploys — and CI runs both lanes:
@@ -330,7 +335,7 @@ The backend suite runs on SQLite by default, which needs nothing installed. It a
 docker run -d --name leykhaa-test-pg -e POSTGRES_USER=ley -e POSTGRES_PASSWORD=ley \
   -e POSTGRES_DB=leykhaa -p 5432:5432 postgres:16
 cd backend && DATABASE_URL=postgresql+psycopg://ley:ley@localhost:5432/leykhaa \
-              TMPDIR="$HOME/tmp" python -m pytest -q --database=postgres
+              python -m pytest -q --database=postgres
 ```
 
 `--database` asserts only — it fails the run if the lane you asked for is not the lane you got, so a

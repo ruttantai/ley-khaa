@@ -497,6 +497,8 @@ cd frontend && npm install && npm run dev
 
 ```bash
 cd backend  && python -m pytest -q   # 1030 tests, on SQLite; needs nothing installed
+                                     # on Colima/Rancher/Lima the docker tests also want
+                                     # TMPDIR under $HOME — GETTING_STARTED.md §7 says why
 cd backend  && python -m mypy        # typecheck; default settings, config in backend/pyproject.toml
 cd frontend && npm test              # 58 tests (vitest)
 cd frontend && npm run typecheck     # `npm run build` is transpile-only; this is the real check
