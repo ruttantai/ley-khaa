@@ -1,5 +1,6 @@
 import os
 import tempfile
+import uuid
 
 os.environ["LEY_KHAA_DISABLE_STARTUP"] = "1"
 os.environ["LEY_KHAA_LLM"] = "heuristic"
@@ -175,6 +176,46 @@ def _clean_database(_pg_engine):
     with _pg_engine.begin() as conn:
         conn.execute(text(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE"))
     yield
+
+
+@pytest.fixture
+def migration_url(tmp_path):
+    """An empty database for one migration test, on whichever lane is running.
+
+    Migration tests CREATE tables, so they need a namespace of their own — they
+    cannot share `ley_khaa_test`, which `_clean_database` truncates but does not
+    drop. On SQLite that is a tmp_path file. On Postgres it is a throwaway schema
+    dropped at teardown, with search_path set through the URL's libpq `options`
+    parameter so Alembic (which is handed only a URL) creates everything inside
+    it — including its own `alembic_version` table.
+
+    Before v1.0.0 these tests hardcoded SQLite URLs, so migrations never ran
+    against Postgres at all (backlog item 26) — which is how `0004`'s workflows
+    table shipped a `workflows_name_key` UNIQUE constraint the models never
+    declared, on top of the unique index they do declare.
+    """
+    if not POSTGRES:
+        yield f"sqlite:///{tmp_path / 'migration.db'}"
+        return
+
+    schema = f"ley_khaa_mig_{uuid.uuid4().hex[:12]}"
+    bootstrap = create_engine(DATABASE_URL, future=True, isolation_level="AUTOCOMMIT")
+    try:
+        with bootstrap.connect() as conn:
+            conn.execute(text(f"CREATE SCHEMA {schema}"))
+        separator = "&" if "?" in DATABASE_URL else "?"
+        # The `=` is deliberately NOT percent-encoded. SQLAlchemy parses
+        # `options=-csearch_path=x` and `options=-csearch_path%3Dx` into the
+        # identical psycopg connect argument, but only the first survives
+        # alembic: Config.set_main_option() hands the URL to ConfigParser.set(),
+        # whose BasicInterpolation rejects any raw `%` outright
+        # (ValueError: invalid interpolation syntax). See the report's finding
+        # on run_migrations for the same hazard in production code.
+        yield f"{DATABASE_URL}{separator}options=-csearch_path={schema}"
+    finally:
+        with bootstrap.connect() as conn:
+            conn.execute(text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
+        bootstrap.dispose()
 
 
 @pytest.fixture
