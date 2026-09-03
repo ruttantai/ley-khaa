@@ -35,19 +35,10 @@ def test_an_empty_env_var_does_not_silently_empty_the_allowlist(monkeypatch):
     "". If that beat the default, every image fetch would be refused and the
     only symptom would be dead letters."""
     monkeypatch.setenv("LEY_KHAA_IMAGE_HOSTS", "")
-    from importlib import reload
-
-    import ley_khaa.config as config_module
-
-    reload(config_module)
-    try:
-        assert channel_set(config_module.Settings().image_hosts) != frozenset(), (
-            "an empty LEY_KHAA_IMAGE_HOSTS must fall back to the default, "
-            "or compose's ${VAR:-} silently disables all image fetching"
-        )
-    finally:
-        monkeypatch.delenv("LEY_KHAA_IMAGE_HOSTS", raising=False)
-        reload(config_module)
+    assert channel_set(Settings().image_hosts) != frozenset(), (
+        "an empty LEY_KHAA_IMAGE_HOSTS must fall back to the default, "
+        "or compose's ${VAR:-} silently disables all image fetching"
+    )
 
 
 def test_an_empty_max_bytes_env_var_falls_back_to_the_default(monkeypatch):
@@ -56,45 +47,18 @@ def test_an_empty_max_bytes_env_var_falls_back_to_the_default(monkeypatch):
     variable, so a naive read would crash the whole process at import time
     with ValueError: invalid literal for int() with base 10: ''."""
     monkeypatch.setenv("LEY_KHAA_IMAGE_MAX_BYTES", "")
-    from importlib import reload
-
-    import ley_khaa.config as config_module
-
-    try:
-        reload(config_module)
-        assert config_module.Settings().image_max_bytes == 5 * 1024 * 1024
-    finally:
-        monkeypatch.delenv("LEY_KHAA_IMAGE_MAX_BYTES", raising=False)
-        reload(config_module)
+    assert Settings().image_max_bytes == 5 * 1024 * 1024
 
 
 def test_a_set_max_bytes_env_var_is_honored(monkeypatch):
     monkeypatch.setenv("LEY_KHAA_IMAGE_MAX_BYTES", "1024")
-    from importlib import reload
-
-    import ley_khaa.config as config_module
-
-    try:
-        reload(config_module)
-        assert config_module.Settings().image_max_bytes == 1024
-    finally:
-        monkeypatch.delenv("LEY_KHAA_IMAGE_MAX_BYTES", raising=False)
-        reload(config_module)
+    assert Settings().image_max_bytes == 1024
 
 
 def test_vision_can_be_turned_off_via_the_environment(monkeypatch):
     """test_vision_can_be_turned_off only proves the field is a settable
     dataclass attribute via `replace` — it never exercises the
-    os.getenv(...) != "off" line at all. This drives it through the env var
+    tri-state LEY_KHAA_VISION read at all. This drives it through the env var
     the way an operator actually would."""
     monkeypatch.setenv("LEY_KHAA_VISION", "off")
-    from importlib import reload
-
-    import ley_khaa.config as config_module
-
-    try:
-        reload(config_module)
-        assert config_module.Settings().vision_enabled is False
-    finally:
-        monkeypatch.delenv("LEY_KHAA_VISION", raising=False)
-        reload(config_module)
+    assert Settings().vision_enabled is False
