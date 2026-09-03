@@ -57,7 +57,8 @@ demonstrates it — a test name, a CI job, or a recorded transcript. No line is 
 - **every HTTP endpoint the application serves, and its response shape.** Enumerated rather than
   gestured at, so this cannot quietly become a partial list: `/health`, `/messages`,
   `/conversations/{id}/messages`, `/tasks` and its `/{id}` sub-resources (`answer`, `approve`,
-  `reject`, `mode`, `promote`, and the `bundle` family), `/projects` and `/projects/{name}/tasks`,
+  `reject`, `mode`, `spec`, `promote`, and the `bundle` family), `/projects` and
+  `/projects/{name}/tasks`,
   `/registry` and its `/{name}` sub-resources, `/candidates` with `sweep`/`fold`/`separate`,
   `/triage`, `/dead-letters`, and `/simulate/{...}`. `/health` is load-bearing beyond the dashboard —
   compose's own health check and the §6 smoke job both depend on it;
@@ -129,7 +130,8 @@ almost nothing, and it makes a stated rule true instead of aspirational.
 ### 3.4 Risk
 
 This is the phase's only production-code change. The failure mode is loud (a wrong default surfaces
-as a wrong value everywhere it is read) and the regression net is 1038 tests across two databases.
+as a wrong value everywhere it is read) and the regression net is 1038 tests across two databases
+(the baseline at the time of writing; 1066 by the end of the phase).
 `mypy` must stay clean: `field(default_factory=...)` under annotations is well-typed, and the frozen
 dataclass is unaffected.
 
@@ -224,10 +226,30 @@ than an honest non-blocking check. Flag it; do not quietly weaken it.
 ### 7.1 Known limits, stated once and properly
 
 What a reader should know before running it, written so they learn it from us rather than by hitting
-it: Slack vision is not live-tested (Discord's full loop is, Slack's is offline-and-recorded only);
+it: the channel adapters were never exercised end to end against a live workspace — everything is
+proven offline and against recorded transports, with the thin connection wrappers the only part
+checked by hand against real Slack and Discord workspaces, once, and **no image from a real message
+on either platform has ever been through the vision path**;
 Ollama is text-only, so vision does not work on the offline path; memory does not learn paraphrases
 the way the registry learns aliases, so `times_seen` under-reports across wordings; there is no
 management surface for task memory; and `--strict` typing is a post-1.0 ratchet.
+
+**Corrected while writing Task 6, and recorded rather than silently fixed** (this is the third
+correction to this spec in this phase, all of the same class): the first item above originally read
+"Slack vision is not live-tested — Discord's full loop is, Slack's is offline-and-recorded only."
+**Nothing in the repository supports that split.** `README.md:435` and `CHANGELOG.md`'s 0.8.0 entry
+both say, of *both* platforms, "not live-tested against a real Slack or Discord image — proven
+offline and against recorded transports, the same call made for the channel adapters in 0.7.0", and
+the Phase 6 design spec (§7) says the thin connection wrappers are "the only part verified by hand,
+once, against real workspaces" — again for both. Writing the split into the README would have been a
+new false statement introduced by the section whose whole purpose is retiring them. This is the
+second time this phase that a claim in a correcting document was itself wrong; the pattern is
+reaching for the more specific-sounding story over the duller true one.
+
+Also added, from Task 1's review and Task 2's finding: `DATABASE_URL=""` now falls back to the
+credentialed localhost default rather than failing loudly (a consequence of §3.3's falsy-safe rule,
+correct but surprising), and `0006_alias_jsonb`'s downgrade is discriminated by no test on **either**
+database, for the reason §4 records.
 
 ## 8. Definition of done
 
