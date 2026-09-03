@@ -16,8 +16,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 BACKEND = Path(__file__).resolve().parent.parent
 
 # pytest's own exit code for a usage error (pytest.ExitCode.USAGE_ERROR).
@@ -76,8 +74,24 @@ def test_a_matching_lane_is_allowed_through():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_omitting_the_flag_infers_the_lane_and_never_fails():
+def test_omitting_the_flag_infers_the_sqlite_lane_and_never_fails():
     """The SQLite lane stays zero-configuration: bare pytest needs no flag."""
     result = _run(["tests/test_lane_guard.py"], {})
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_omitting_the_flag_infers_the_postgres_lane_and_never_fails():
+    """The other half of inference: bare pytest against a Postgres DATABASE_URL
+    must be allowed through too, not just the SQLite case.
+
+    A default of "sqlite" instead of None would pass the SQLite-only version of
+    this test by coincidence — DATABASE_URL is stripped there anyway, so a
+    wrong default and a correct inference agree by luck. Running the same
+    omitted-flag case against a real Postgres DATABASE_URL is what tells them
+    apart: a hardcoded "sqlite" default would assert the wrong lane here and
+    the guard would reject a correct run.
+    """
+    result = _run(["tests/test_lane_guard.py"], {"DATABASE_URL": POSTGRES_URL})
 
     assert result.returncode == 0, result.stdout + result.stderr
