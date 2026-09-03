@@ -76,11 +76,12 @@ class Dispatcher:
         # completes, `tick()` never returns, and `run_forever`'s
         # `except Exception` cannot see a hang, so the dispatcher would stop
         # draining every project silently, with no log line and no error.
-        # A negative value is the loud version of the same mistake
-        # (`ValueError: Semaphore initial value must be >= 0`). "Set it to 0
-        # to disable the dispatcher" is a natural operator gesture; it now
-        # means "one project at a time", which is the right direction to be
-        # wrong in for a setting whose only job is to BOUND concurrency.
+        # A negative value is clamped the same way, silently: it no longer
+        # raises `ValueError: Semaphore initial value must be >= 0`, it just
+        # means "one project at a time" too. "Set it to 0 to disable the
+        # dispatcher" is a natural operator gesture; it now means "one project
+        # at a time", which is the right direction to be wrong in for a
+        # setting whose only job is to BOUND concurrency.
         limit = asyncio.Semaphore(max(1, settings.max_concurrent_projects))
 
         results = await asyncio.gather(

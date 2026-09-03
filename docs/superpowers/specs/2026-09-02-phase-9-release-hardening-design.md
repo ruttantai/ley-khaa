@@ -116,9 +116,10 @@ it; it does not gate the item.
 
 ### 4.1 mypy, at default settings, enforced in CI — the "typecheck clean" line
 
-Spec §7 has required "typecheck clean" since v0.1.0, but CI runs pytest only and the backend has
-**no Python typechecker configured at all**. That definition-of-done line has been unverifiable for
-eight phases.
+"Typecheck clean" is a definition-of-done line in three of the five phase specs since Phase 4
+(v0.5.0) — Phases 4, 6 and 7 name it, Phases 5 and 8 do not — but CI runs pytest only and the
+backend has **no Python typechecker configured at all**. That definition-of-done line has been
+unverifiable since it first appeared in Phase 4's spec.
 
 **Fixed** means: mypy added to `[dev]` in `pyproject.toml` at a pinned version, its configuration in
 `pyproject.toml` beside the pytest config, all errors resolved, and a CI lane that fails the build on
