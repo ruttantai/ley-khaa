@@ -176,3 +176,13 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  frontend-prod-image:
+    runs-on: ubuntu-latest
+    # The Kubernetes image (frontend/Dockerfile.prod) is built only on release
+    # tags, so without this job a broken production build would be discovered
+    # at release time rather than on the PR that broke it.
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f frontend/Dockerfile.prod -t ley-khaa-frontend:ci frontend
+      - run: frontend/scripts/smoke-prod-image.sh ley-khaa-frontend:ci
