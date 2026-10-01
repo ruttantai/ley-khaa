@@ -36,8 +36,11 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/ley-khaa-${{ matrix.name }}
-          # v1.0.1 -> 1.0.1. No `latest`: a deployment names the version it runs.
+          # v1.0.1 -> 1.0.1. flavor: latest=false turns off metadata-action's default
+          # latest=auto, which would otherwise also push `latest`: a deployment names
+          # the version it runs.
           tags: type=semver,pattern={{version}}
+          flavor: latest=false
       - uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
