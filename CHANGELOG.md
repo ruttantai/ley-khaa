@@ -5,6 +5,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com); versioning is [S
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-10-01
+
+Packaging only; no application behaviour changes.
+
+### Added
+- `frontend/Dockerfile.prod`: the dashboard built and served by nginx on port 8080, proxying `/api/` to the
+  backend (`BACKEND_URL`, default `http://backend:8000`), for Kubernetes. The dev image and `docker compose up`
+  are unchanged.
+- CI job `frontend-prod-image` builds that image and smoke-tests it on every push.
+- `.github/workflows/release.yml`: a `v*` tag publishes `ghcr.io/ruttantai/ley-khaa-backend` and
+  `ley-khaa-frontend` for amd64 and arm64.
+
 ## [1.0.0] — 2026-09-03
 
 The release. **Not a feature release — nothing new is added, and that is the point.** It closes the three

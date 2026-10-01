@@ -669,6 +669,13 @@ Tailwind · Docker Compose.
 [SemVer](https://semver.org) tags per milestone · [Conventional Commits](https://www.conventionalcommits.org) ·
 TDD throughout · `main` stays green and runnable at every tag.
 
+## Deploying on Kubernetes
+
+Each release publishes two images, `ghcr.io/ruttantai/ley-khaa-backend` and `ghcr.io/ruttantai/ley-khaa-frontend`
+(amd64 and arm64). [ruttantai/homelab](https://github.com/ruttantai/homelab) deploys them to a three-node k3s
+cluster built with Terraform and Ansible, with Prometheus, Grafana and Loki. On Kubernetes there is no Docker
+socket, so the backend runs with `LEY_KHAA_SANDBOX=subprocess`, and the bundle manifest records that.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

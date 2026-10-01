@@ -3,6 +3,8 @@
 Revision ID: 0002_autonomy
 Revises: 0001_baseline
 """
+from typing import Any
+
 import sqlalchemy as sa
 from alembic import op
 
@@ -11,7 +13,7 @@ down_revision = "0001_baseline"
 branch_labels = None
 depends_on = None
 
-_TASK_COLUMNS = [
+_TASK_COLUMNS: list[sa.Column[Any]] = [
     sa.Column("candidate_id", sa.String(), nullable=True),
     sa.Column("spec", sa.JSON(), nullable=True),
     sa.Column("recommended_mode", sa.String(), nullable=True),

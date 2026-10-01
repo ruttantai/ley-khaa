@@ -3,6 +3,8 @@
 Revision ID: 0003_executor
 Revises: 0002_autonomy
 """
+from typing import Any
+
 import sqlalchemy as sa
 from alembic import op
 
@@ -11,7 +13,7 @@ down_revision = "0002_autonomy"
 branch_labels = None
 depends_on = None
 
-_TASK_COLUMNS = [
+_TASK_COLUMNS: list[sa.Column[Any]] = [
     sa.Column("workspace_path", sa.String(), nullable=True),
     sa.Column("execution_verdict", sa.JSON(), nullable=True),
 ]
